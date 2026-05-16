@@ -1,0 +1,11 @@
+# Example self-hosted ntfy config for NetMon.
+# Copy to config/ntfy/server.yml or set NTFY_CONFIG in .env.
+
+base-url: http://localhost:2586
+listen-http: :2586
+cache-file: data/ntfy/cache.db
+auth-file: data/ntfy/auth.db
+
+# Start open for local testing. For phone action buttons, add ntfy users and
+# set auth-default-access to deny-all once NTFY_PASS is configured in .env.
+auth-default-access: read-write

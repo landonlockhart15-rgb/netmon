@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>NetMon</title>
+  <style>
+    :root {
+      --bg: #0a0e1a;
+      --card: #111827;
+      --border: #1e2d40;
+      --cyan: #00d4ff;
+      --green: #00ff88;
+      --warn: #ffb800;
+      --danger: #ff4444;
+      --dim: #4a5568;
+      --text: #e2e8f0;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px 8px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #logo { color: var(--cyan); font-size: 13px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; }
+    #clock { font-size: 22px; font-weight: 300; color: var(--text); font-variant-numeric: tabular-nums; }
+    #date { font-size: 11px; color: var(--dim); text-align: right; margin-top: 1px; }
+    #grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      padding: 12px;
+      flex: 1;
+      overflow: hidden;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .card-label {
+      font-size: 10px;
+      color: var(--dim);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 6px;
+    }
+    .card-value {
+      font-size: 36px;
+      font-weight: 700;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .card-sub { font-size: 11px; color: var(--dim); margin-top: 5px; }
+    .green  { color: var(--green); }
+    .cyan   { color: var(--cyan); }
+    .warn   { color: var(--warn); }
+    .danger { color: var(--danger); }
+    .card-wide {
+      grid-column: 1 / -1;
+    }
+    #ai-card { grid-column: 1 / -1; }
+    #ai-text {
+      font-size: 12px;
+      color: var(--dim);
+      line-height: 1.5;
+      margin-top: 6px;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    #footer {
+      padding: 8px 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    #last-update { font-size: 10px; color: var(--dim); }
+    #status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      display: inline-block;
+      margin-right: 5px;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%,100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    #latency-bar {
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      margin-top: 8px;
+      overflow: hidden;
+    }
+    #latency-fill {
+      height: 100%;
+      background: var(--green);
+      border-radius: 2px;
+      transition: width 0.5s ease;
+      max-width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <div>
+      <div id="logo">⬡ NetMon</div>
+      <div id="date"></div>
+    </div>
+    <div id="clock">--:--:--</div>
+  </div>
+
+  <div id="grid">
+    <div class="card">
+      <div class="card-label">Online Devices</div>
+      <div class="card-value green" id="online-count">--</div>
+      <div class="card-sub" id="total-count">of -- known</div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Alerts</div>
+      <div class="card-value" id="alert-count">--</div>
+      <div class="card-sub" id="alert-sub">unread</div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Gateway Ping</div>
+      <div class="card-value cyan" id="latency">--</div>
+      <div class="card-sub">ms</div>
+      <div id="latency-bar"><div id="latency-fill" style="width:0%"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Last Scan</div>
+      <div class="card-value" id="scan-age" style="font-size:24px">--</div>
+      <div class="card-sub" id="scan-sub">ago</div>
+    </div>
+
+    <div class="card" id="ai-card">
+      <div class="card-label">AI Summary</div>
+      <div id="ai-text">No analysis yet.</div>
+    </div>
+  </div>
+
+  <div id="footer">
+    <span><span id="status-dot"></span><span id="last-update">Loading…</span></span>
+    <a href="/" style="color:var(--dim);font-size:10px;text-decoration:none">Full Dashboard →</a>
+  </div>
+
+  <script>
+    function tick() {
+      const now = new Date();
+      document.getElementById("clock").textContent =
+        now.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"});
+      document.getElementById("date").textContent =
+        now.toLocaleDateString([], {weekday:"short",month:"short",day:"numeric"});
+    }
+    setInterval(tick, 1000); tick();
+
+    function timeAgo(iso) {
+      if (!iso) return ["--", ""];
+      const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+      if (diff < 60)  return [diff + "s", "ago"];
+      if (diff < 3600) return [Math.floor(diff/60) + "m", "ago"];
+      return [Math.floor(diff/3600) + "h", "ago"];
+    }
+
+    async function refresh() {
+      try {
+        const [devRes, scanRes, healthRes, alertRes, aiRes] = await Promise.all([
+          fetch("/api/devices").then(r => r.ok ? r.json() : null),
+          fetch("/api/scans").then(r => r.ok ? r.json() : null),
+          fetch("/api/health/current").then(r => r.ok ? r.json() : null),
+          fetch("/api/alerts").then(r => r.ok ? r.json() : null),
+          fetch("/api/ai/latest").then(r => r.ok ? r.json() : null),
+        ]);
+
+        if (devRes) {
+          const devices = Array.isArray(devRes) ? devRes : [];
+          document.getElementById("online-count").textContent = devices.length;
+        }
+        if (scanRes) {
+          const scans = Array.isArray(scanRes) ? scanRes : [];
+          const total = scans[0]?.device_count ?? "--";
+          document.getElementById("total-count").textContent = "of " + total + " known";
+          const lastScan = scans[0]?.started_at;
+          const [val, unit] = timeAgo(lastScan);
+          document.getElementById("scan-age").textContent = val;
+          document.getElementById("scan-sub").textContent = unit;
+        }
+        if (healthRes) {
+          const ms = healthRes.latency_ms ?? null;
+          const el = document.getElementById("latency");
+          if (ms !== null) {
+            el.textContent = Math.round(ms);
+            el.className = "card-value " + (ms < 20 ? "green" : ms < 80 ? "cyan" : ms < 200 ? "warn" : "danger");
+            const pct = Math.min(ms / 2, 100);
+            document.getElementById("latency-fill").style.width = pct + "%";
+            document.getElementById("latency-fill").style.background =
+              ms < 20 ? "var(--green)" : ms < 80 ? "var(--cyan)" : ms < 200 ? "var(--warn)" : "var(--danger)";
+          } else {
+            el.textContent = "—";
+            el.className = "card-value danger";
+          }
+        }
+        if (alertRes) {
+          const unread = alertRes.unread_count ?? 0;
+          const el = document.getElementById("alert-count");
+          el.textContent = unread;
+          el.className = "card-value " + (unread === 0 ? "green" : unread < 5 ? "warn" : "danger");
+        }
+        if (aiRes?.summary) {
+          document.getElementById("ai-text").textContent = aiRes.summary;
+        }
+
+        document.getElementById("last-update").textContent =
+          "Updated " + new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+        document.getElementById("status-dot").style.background = "var(--green)";
+      } catch {
+        document.getElementById("status-dot").style.background = "var(--danger)";
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 30000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,1604 @@
+<!DOCTYPE html>
+<html lang="en" data-reduced-motion="false">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#070b11" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>NetMon — Home Network Monitor</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+
+<!--
+  LAYOUT
+  ══════════════════════════════════════════════════════════
+  body (CSS grid)
+  ├── #topbar              full-width chrome bar
+  └── #app-shell
+       ├── #sidebar        left nav (switches sections)
+       └── #content-area
+            ├── #stat-strip  always-visible data row
+            └── #page-content (scrollable)
+                 ├── #section-overview   (default visible)
+                 ├── #section-health
+                 ├── #section-devices    (device management + map)
+                 ├── #section-alerts     (alert inbox)
+                 └── #section-settings
+  ══════════════════════════════════════════════════════════
+-->
+
+<body>
+
+  <!-- ═══════════════════════════════════════ TOPBAR ═ -->
+  <header id="topbar">
+    <div class="topbar-brand">
+      <span class="brand-mark" aria-hidden="true">◈</span>
+      <span class="brand-name">NETMON</span>
+      <span class="brand-version">v0.1</span>
+    </div>
+    <div class="topbar-right">
+      <!-- Live activity chips — shown only while something is running -->
+      <div id="activity-chips" aria-live="polite">
+        <span class="activity-chip" id="chip-scan" style="display:none">
+          <span class="activity-pulse" aria-hidden="true"></span>
+          <span class="chip-label">Scanning</span>
+        </span>
+        <span class="activity-chip activity-chip--ai" id="chip-ai" style="display:none">
+          <span class="activity-pulse" aria-hidden="true"></span>
+          <span class="chip-label">AI</span>
+        </span>
+        <span class="activity-chip activity-chip--capture" id="chip-capture" style="display:none">
+          <span class="activity-pulse" aria-hidden="true"></span>
+          <span class="chip-label">Capturing</span>
+        </span>
+      </div>
+      <span id="topbar-clock" class="topbar-clock"></span>
+      <button id="motion-toggle" class="topbar-btn" onclick="toggleMotion()" title="Toggle UI animations">
+        <span class="btn-icon" aria-hidden="true">⚡</span>
+        <span class="btn-label">Motion</span>
+      </button>
+      <a href="/auth/logout" class="topbar-btn topbar-btn--logout" title="Sign out">
+        <span class="btn-icon" aria-hidden="true">⏻</span>
+        <span class="btn-label">Sign Out</span>
+      </a>
+    </div>
+  </header>
+
+  <!-- Toast notification container -->
+  <div id="toast-container" aria-live="assertive" aria-atomic="true"></div>
+
+  <!-- ═══════════════════════════════════════ APP SHELL ═ -->
+  <div id="app-shell">
+
+    <!-- ───────── SIDEBAR ───────── -->
+    <nav id="sidebar" aria-label="Main navigation">
+      <ul class="nav-list">
+        <li class="nav-item active" data-section="overview" title="Overview" onclick="switchSection('overview')">
+          <span class="nav-icon" aria-hidden="true">▦</span>
+          <span class="nav-label">Overview</span>
+        </li>
+        <li class="nav-item" data-section="health" title="Network Health" onclick="switchSection('health')">
+          <span class="nav-icon" aria-hidden="true">◎</span>
+          <span class="nav-label">Health</span>
+        </li>
+        <li class="nav-item" data-section="devices" title="Devices" onclick="switchSection('devices')">
+          <span class="nav-icon" aria-hidden="true">◉</span>
+          <span class="nav-label">Devices</span>
+        </li>
+        <li class="nav-item" data-section="alerts" title="Alerts" onclick="switchSection('alerts')">
+          <span class="nav-icon" aria-hidden="true">◬</span>
+          <span class="nav-label">Alerts</span>
+        </li>
+        <li class="nav-item" data-section="traffic" title="Traffic Capture" onclick="switchSection('traffic')">
+          <span class="nav-icon" aria-hidden="true">⟋</span>
+          <span class="nav-label">Traffic</span>
+        </li>
+        <li class="nav-item" data-section="shield" title="Security Shield" onclick="switchSection('shield')">
+          <span class="nav-icon" aria-hidden="true">⬡</span>
+          <span class="nav-label">Shield</span>
+        </li>
+        <li class="nav-item" data-section="reports" title="Security Reports" onclick="switchSection('reports')">
+          <span class="nav-icon" aria-hidden="true">▤</span>
+          <span class="nav-label">Reports</span>
+        </li>
+        <li class="nav-item" data-section="dns" title="DNS Ad Blocker" onclick="switchSection('dns')">
+          <span class="nav-icon" aria-hidden="true">⊘</span>
+          <span class="nav-label">Ad Block</span>
+        </li>
+        <li class="nav-item" data-section="logs" title="Activity Logs" onclick="switchSection('logs')">
+          <span class="nav-icon" aria-hidden="true">☰</span>
+          <span class="nav-label">Logs</span>
+        </li>
+      </ul>
+      <ul class="nav-list nav-list--bottom">
+        <li class="nav-item" data-section="seclab" title="Security Lab" onclick="switchSection('seclab')">
+          <span class="nav-icon" aria-hidden="true">⚔</span>
+          <span class="nav-label">Security</span>
+        </li>
+        <li class="nav-item" data-section="settings" title="Settings" onclick="switchSection('settings')">
+          <span class="nav-icon" aria-hidden="true">⚙</span>
+          <span class="nav-label">Settings</span>
+        </li>
+      </ul>
+    </nav>
+
+    <!-- ───────── CONTENT AREA ───────── -->
+    <div id="content-area">
+
+      <!-- STAT STRIP — always visible, all sections -->
+      <div id="stat-strip" role="status" aria-live="polite">
+
+        <div class="stat-card" id="stat-network-card">
+          <span class="stat-label">Network</span>
+          <span class="stat-value" id="stat-network">
+            <span class="status-dot status-dot--unknown" id="stat-network-dot" aria-hidden="true"></span>
+            <span id="stat-network-text">Checking…</span>
+          </span>
+        </div>
+
+        <div class="stat-card">
+          <span class="stat-label">Latency</span>
+          <span class="stat-value" id="stat-latency">—</span>
+        </div>
+
+        <div class="stat-card">
+          <span class="stat-label">Devices</span>
+          <span class="stat-value" id="stat-device-count">—</span>
+        </div>
+
+        <div class="stat-card" id="stat-scan-card">
+          <span class="stat-label" id="stat-scan-label">Last Scan</span>
+          <span class="stat-value" id="stat-last-scan">—</span>
+        </div>
+
+        <div class="stat-card">
+          <span class="stat-label">Changes</span>
+          <span class="stat-value" id="stat-changes">—</span>
+        </div>
+
+      </div><!-- /#stat-strip -->
+
+      <!-- SCROLLABLE CONTENT -->
+      <main id="page-content">
+
+
+        <!-- ══════════════════════════════════════════
+             SECTION: OVERVIEW  (default)
+        ══════════════════════════════════════════ -->
+        <div id="section-overview" class="page-section">
+
+          <!-- Top row: scan control + scan summary -->
+          <div class="panel-row">
+
+            <section class="panel" id="scan-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Scan Control</h2>
+                <span class="panel-tag">MANUAL</span>
+              </div>
+              <p id="scan-status" class="scan-status-text">
+                Ready. Scan your network to discover connected devices.
+              </p>
+              <button id="scan-btn" class="btn-primary" onclick="runScan()">
+                <span aria-hidden="true">▶</span> Run Scan Now
+              </button>
+            </section>
+
+            <section class="panel" id="scan-summary-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Latest Scan Summary</h2>
+              </div>
+              <div id="scan-summary-content">
+                <div class="empty-state">
+                  <div class="empty-icon" aria-hidden="true">◎</div>
+                  <div class="empty-text">No scan data yet.</div>
+                  <div class="empty-hint">Run a scan to populate this panel.</div>
+                </div>
+              </div>
+            </section>
+
+          </div><!-- /.panel-row -->
+
+          <!-- Devices table -->
+          <section class="panel" id="devices-panel">
+            <div class="panel-header">
+              <h2 class="panel-title">
+                Discovered Devices
+                <span class="count-badge" id="device-count" aria-label="Device count"></span>
+              </h2>
+            </div>
+            <div id="devices-container">
+              <div class="empty-state">
+                <div class="empty-icon" aria-hidden="true">◉</div>
+                <div class="empty-text">No devices discovered yet.</div>
+                <div class="empty-hint">Run a scan to see devices on your network.</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Recent activity -->
+          <section class="panel" id="activity-panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Recent Activity</h2>
+              <span class="panel-tag">SCAN DIFF</span>
+            </div>
+            <div id="activity-content">
+              <div class="empty-state">
+                <div class="empty-icon" aria-hidden="true">◬</div>
+                <div class="empty-text">No recent activity.</div>
+                <div class="empty-hint">Scan events and alerts will appear here.</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- AI Analysis panel -->
+          <section class="panel" id="ai-panel">
+            <div class="panel-header">
+              <h2 class="panel-title">AI Analysis</h2>
+              <span class="panel-tag" id="ai-panel-tag">OPTIONAL</span>
+            </div>
+            <div id="ai-content">
+              <div class="empty-state">
+                <div class="empty-icon" aria-hidden="true">◈</div>
+                <div class="empty-text">No analysis yet.</div>
+                <div class="empty-hint">Enable AI in Settings, then click Analyze.</div>
+              </div>
+            </div>
+            <div id="ai-actions" style="margin-top:14px;">
+              <button class="btn-secondary" id="ai-analyze-btn" onclick="runAIAnalysis()">
+                ◈ Analyze Latest Changes
+              </button>
+              <span id="ai-status-msg" class="settings-save-msg"></span>
+            </div>
+          </section>
+
+          <!-- Network Info panel -->
+          <section class="panel" id="netinfo-panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Network Info</h2>
+              <button class="btn-sm" onclick="loadNetworkInfo(true)" title="Refresh">↺ Refresh</button>
+            </div>
+            <div id="netinfo-content" class="netinfo-grid">
+              <div class="netinfo-loading">Loading…</div>
+            </div>
+          </section>
+
+          <!-- Scan history (populated by JS) -->
+          <section class="panel" id="scan-history-panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Scan History</h2>
+              <div class="panel-actions">
+                <span class="panel-tag">LAST 10</span>
+                <a class="btn-secondary btn-sm" href="/api/export/scans.csv" download>↓ Export CSV</a>
+              </div>
+            </div>
+            <div id="scan-history-content">
+              <div class="empty-state">
+                <div class="empty-icon" aria-hidden="true">◎</div>
+                <div class="empty-text">No scans yet.</div>
+                <div class="empty-hint"></div>
+              </div>
+            </div>
+          </section>
+
+        </div><!-- /#section-overview -->
+
+
+        <!-- ══════════════════════════════════════════
+             SECTION: HEALTH
+        ══════════════════════════════════════════ -->
+        <div id="section-health" class="page-section" style="display:none">
+
+          <!-- Top row: status + speed -->
+          <div class="panel-row panel-row--3">
+
+            <section class="panel health-stat-panel" id="hp-status">
+              <div class="panel-header">
+                <h2 class="panel-title">Internet Status</h2>
+              </div>
+              <div class="health-big-stat" id="hp-status-val">
+                <span class="hbs-icon" id="hp-status-icon">◎</span>
+                <span class="hbs-value" id="hp-status-text">—</span>
+              </div>
+              <div class="health-meta" id="hp-status-meta"></div>
+              <button class="btn-secondary" style="margin-top:12px;" onclick="runHealthCheck()">
+                Check Now
+              </button>
+            </section>
+
+            <section class="panel health-stat-panel" id="hp-latency">
+              <div class="panel-header">
+                <h2 class="panel-title">Latency</h2>
+              </div>
+              <div class="latency-dual">
+                <div class="latency-stat">
+                  <span class="latency-label">INTERNET</span>
+                  <div class="health-big-stat">
+                    <span class="hbs-value" id="hp-latency-val">—</span>
+                    <span class="hbs-unit">ms</span>
+                  </div>
+                  <div class="health-meta">ping 8.8.8.8</div>
+                </div>
+                <div class="latency-divider"></div>
+                <div class="latency-stat">
+                  <span class="latency-label">LOCAL</span>
+                  <div class="health-big-stat">
+                    <span class="hbs-value" id="hp-local-latency-val">—</span>
+                    <span class="hbs-unit">ms</span>
+                  </div>
+                  <div class="health-meta" id="hp-local-latency-meta">ping router</div>
+                </div>
+              </div>
+              <div class="health-meta" id="hp-latency-meta">avg ping RTT · 4 packets</div>
+              <div class="health-meta" id="hp-loss-meta"></div>
+            </section>
+
+            <section class="panel health-stat-panel" id="hp-speed">
+              <div class="panel-header">
+                <h2 class="panel-title">Speed Test</h2>
+              </div>
+              <div class="speed-dual-stat">
+                <div class="speed-stat-item">
+                  <span class="speed-stat-label">↓ Down</span>
+                  <span class="speed-stat-value" id="hp-speed-val">—</span>
+                  <span class="speed-stat-unit">Mbps</span>
+                </div>
+                <div class="speed-stat-divider"></div>
+                <div class="speed-stat-item">
+                  <span class="speed-stat-label">↑ Up</span>
+                  <span class="speed-stat-value" id="hp-upload-val">—</span>
+                  <span class="speed-stat-unit">Mbps</span>
+                </div>
+              </div>
+              <div class="health-meta" id="hp-speed-meta">run a test to measure</div>
+              <button class="btn-secondary" style="margin-top:12px;" id="speed-test-btn" onclick="runSpeedTest()">
+                Run Speed Test
+              </button>
+            </section>
+
+          </div><!-- /.panel-row.panel-row--3 -->
+
+          <!-- Latency timeline chart -->
+          <section class="panel" id="hp-chart-panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Latency History</h2>
+              <span class="panel-tag" id="hp-chart-tag">LAST 120 CHECKS</span>
+            </div>
+            <!--
+              ECharts renders into this div.
+              Height is set in CSS. Width is 100% of the panel.
+              The chart instance is created in app.js on first load.
+            -->
+            <div id="latency-chart" style="width:100%;height:220px;"></div>
+          </section>
+
+          <!-- Speed test history chart -->
+          <section class="panel" id="hp-speed-chart-panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Download Speed History</h2>
+              <span class="panel-tag" id="hp-speed-chart-tag">0 TESTS</span>
+            </div>
+            <div id="speed-chart" style="width:100%;height:200px;"></div>
+          </section>
+
+          <!-- Outage / degraded event log -->
+          <section class="panel" id="hp-events-panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Outage &amp; Degraded Events</h2>
+              <span class="panel-tag">HISTORICAL LOG</span>
+            </div>
+            <div id="hp-events-content">
+              <div class="empty-state">
+                <div class="empty-icon" aria-hidden="true">◎</div>
+                <div class="empty-text">No events yet.</div>
+                <div class="empty-hint">Outage and high-latency events will appear here.</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- App telemetry -->
+          <section class="panel" id="hp-telemetry-panel">
+            <div class="panel-header">
+              <h2 class="panel-title">App Telemetry</h2>
+              <span class="panel-tag">LIVE</span>
+            </div>
+            <div class="telemetry-row" id="telemetry-content">
+              <div class="telemetry-stat">
+                <span class="telemetry-label">CPU</span>
+                <span class="telemetry-value" id="tel-cpu">—</span>
+              </div>
+              <div class="telemetry-stat">
+                <span class="telemetry-label">Memory</span>
+                <span class="telemetry-value" id="tel-mem">—</span>
+              </div>
+              <div class="telemetry-stat">
+                <span class="telemetry-label">PID</span>
+                <span class="telemetry-value" id="tel-pid">—</span>
+              </div>
+            </div>
+          </section>
+
+        </div><!-- /#section-health -->
+
+
+        <!-- ══════════════════════════════════════════
+             SECTION: DEVICES
+        ══════════════════════════════════════════ -->
+        <div id="section-devices" class="page-section" style="display:none">
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">
+                Devices
+                <span class="count-badge" id="all-device-count"></span>
+              </h2>
+              <div class="panel-actions">
+                <div class="view-toggle">
+                  <button class="view-toggle-btn" id="filter-all-btn" onclick="setDeviceFilter('all')">All</button>
+                  <button class="view-toggle-btn active" id="filter-current-btn" onclick="setDeviceFilter('current')">Current</button>
+                </div>
+                <div class="view-toggle">
+                  <button class="view-toggle-btn active" id="view-list-btn" onclick="setDeviceView('list')">List</button>
+                  <button class="view-toggle-btn" id="view-map-btn" onclick="setDeviceView('map')">Map</button>
+                </div>
+                <a class="btn-secondary btn-sm" href="/api/export/devices.csv" download>↓ Export CSV</a>
+              </div>
+            </div>
+
+            <!-- List view -->
+            <div id="all-devices-list-view">
+              <div id="all-devices-container">
+                <div class="empty-state">
+                  <div class="empty-icon" aria-hidden="true">◉</div>
+                  <div class="empty-text">No devices yet.</div>
+                  <div class="empty-hint">Run a scan to discover devices.</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Map view (hidden by default) -->
+            <div id="all-devices-map-view" style="display:none">
+              <div id="device-map-container" class="device-map"></div>
+            </div>
+          </section>
+
+        </div><!-- /#section-devices -->
+
+
+        <!-- ══════════════════════════════════════════
+             SECTION: ALERTS
+        ══════════════════════════════════════════ -->
+        <div id="section-alerts" class="page-section" style="display:none">
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">
+                Alerts
+                <span class="count-badge count-badge--warn" id="alert-unread-badge" style="display:none"></span>
+              </h2>
+              <div class="panel-actions">
+                <button class="btn-secondary btn-sm" onclick="markAllAlertsRead()">Mark All Read</button>
+              </div>
+            </div>
+            <div id="alerts-container">
+              <div class="empty-state">
+                <div class="empty-icon" aria-hidden="true">◬</div>
+                <div class="empty-text">No alerts yet.</div>
+                <div class="empty-hint">New device detections and anomalies appear here.</div>
+              </div>
+            </div>
+          </section>
+
+        </div><!-- /#section-alerts -->
+
+        <!-- ══════════════════════════════════════════
+             SECTION: SETTINGS
+        ══════════════════════════════════════════ -->
+        <div id="section-settings" class="page-section" style="display:none">
+
+          <div class="cfg-grid">
+
+            <!-- ── Network Scanning ───────────────────────── -->
+            <div class="cfg-card" id="cfg-scanning">
+              <div class="cfg-card-head">
+                <span class="cfg-card-icon">◉</span>
+                <div>
+                  <h2 class="cfg-title">Network Scanning</h2>
+                  <p class="cfg-desc">Automatic discovery of every device on your network</p>
+                </div>
+              </div>
+              <div class="cfg-rows">
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Auto-Scan</span>
+                    <span class="cfg-hint">Runs nmap on a schedule so new devices and changes are detected automatically — no need to click anything.</span>
+                  </div>
+                  <label class="cfg-toggle" title="Toggle auto-scan">
+                    <input type="checkbox" id="s-auto-scan-enabled" data-setting="auto_scan_enabled" class="cfg-toggle-input" />
+                    <span class="cfg-toggle-track"><span class="cfg-toggle-thumb"></span></span>
+                    <span class="cfg-toggle-label" data-on="On" data-off="Off"></span>
+                  </label>
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Scan Interval</span>
+                    <span class="cfg-hint">How many hours between scheduled scans. Shorter = faster detection. 4 hours is a good default for most homes.</span>
+                  </div>
+                  <div class="cfg-num-wrap">
+                    <input type="number" id="s-scan-interval-h" name="auto_scan_interval_h"
+                           class="cfg-num-input" min="0.5" max="24" step="0.5" placeholder="4" />
+                    <span class="cfg-unit">hrs</span>
+                  </div>
+                </div>
+
+                <div class="cfg-row cfg-row--info-only">
+                  <span class="cfg-inline-note">◈ Scan target is auto-detected from the active Windows adapter. Set <code>SCAN_TARGET</code> in <code>.env</code> only if you want to force a specific range.</span>
+                </div>
+
+              </div>
+              <div class="cfg-footer">
+                <button class="cfg-save-btn" data-cfg="scanning">Save</button>
+                <span class="cfg-save-status" data-cfg="scanning"></span>
+              </div>
+            </div>
+
+            <!-- ── Health Monitoring ──────────────────────── -->
+            <div class="cfg-card" id="cfg-health">
+              <div class="cfg-card-head">
+                <span class="cfg-card-icon">◎</span>
+                <div>
+                  <h2 class="cfg-title">Health Monitoring</h2>
+                  <p class="cfg-desc">Continuous internet connectivity and latency checks</p>
+                </div>
+              </div>
+              <div class="cfg-rows">
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Check Interval</span>
+                    <span class="cfg-hint">How often to ping the internet target. 300 seconds (5 min) is the default. Lower values give faster alerts but more background activity.</span>
+                  </div>
+                  <div class="cfg-num-wrap">
+                    <input type="number" id="s-health-interval" name="health_check_interval_s"
+                           class="cfg-num-input" min="30" max="3600" placeholder="300" />
+                    <span class="cfg-unit">sec</span>
+                  </div>
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Internet Ping Target</span>
+                    <span class="cfg-hint">IP or hostname to test internet connectivity. 8.8.8.8 (Google DNS) is reliable and globally reachable.</span>
+                  </div>
+                  <input type="text" id="s-health-target" name="health_target"
+                         class="cfg-text-input" placeholder="8.8.8.8" />
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Router / Gateway Target</span>
+                    <span class="cfg-hint">Auto-detected from your current network. Set only to override (e.g. force a static router IP). Leave blank to always follow the active gateway.</span>
+                  </div>
+                  <input type="text" id="s-local-target" name="health_local_target"
+                         class="cfg-text-input" placeholder="Auto-detected" />
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Latency Warning</span>
+                    <span class="cfg-hint">Round-trip time above this threshold changes status to "degraded". Most broadband connections stay under 50ms.</span>
+                  </div>
+                  <div class="cfg-num-wrap">
+                    <input type="number" id="s-warn-latency" name="latency_warn_ms"
+                           class="cfg-num-input" min="10" max="2000" placeholder="100" />
+                    <span class="cfg-unit">ms</span>
+                  </div>
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Latency Critical</span>
+                    <span class="cfg-hint">Stored for reference and future alerting rules. Anything above this is effectively unusable for real-time apps.</span>
+                  </div>
+                  <div class="cfg-num-wrap">
+                    <input type="number" id="s-crit-latency" name="latency_crit_ms"
+                           class="cfg-num-input" min="10" max="5000" placeholder="300" />
+                    <span class="cfg-unit">ms</span>
+                  </div>
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Packet Loss Warning</span>
+                    <span class="cfg-hint">Percentage of dropped ping packets above which the connection is considered degraded. 10% means 1 in 10 packets is lost.</span>
+                  </div>
+                  <div class="cfg-num-wrap">
+                    <input type="number" id="s-warn-loss" name="packet_loss_warn_pct"
+                           class="cfg-num-input" min="0" max="100" placeholder="10" />
+                    <span class="cfg-unit">%</span>
+                  </div>
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Health Alerts</span>
+                    <span class="cfg-hint">Create alert notifications when internet connectivity drops or degrades. Turn off if you find the alerts noisy.</span>
+                  </div>
+                  <label class="cfg-toggle" title="Toggle health alerts">
+                    <input type="checkbox" id="s-health-alerts" data-setting="health_alerts_enabled" class="cfg-toggle-input" />
+                    <span class="cfg-toggle-track"><span class="cfg-toggle-thumb"></span></span>
+                    <span class="cfg-toggle-label" data-on="On" data-off="Off"></span>
+                  </label>
+                </div>
+
+              </div>
+              <div class="cfg-footer">
+                <button class="cfg-save-btn" data-cfg="health">Save</button>
+                <span class="cfg-save-status" data-cfg="health"></span>
+              </div>
+            </div>
+
+            <!-- ── AI & Investigation ─────────────────────── -->
+            <div class="cfg-card" id="cfg-ai">
+              <div class="cfg-card-head">
+                <span class="cfg-card-icon">◈</span>
+                <div>
+                  <h2 class="cfg-title">AI &amp; Investigation</h2>
+                  <p class="cfg-desc">Qwen-powered device identification and threat analysis</p>
+                </div>
+              </div>
+              <div class="cfg-rows">
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">AI Analysis</span>
+                    <span class="cfg-hint">Enables Qwen (via Ollama) to analyze your network and investigate suspicious devices. Requires Ollama running locally with qwen2.5:3b pulled.</span>
+                  </div>
+                  <label class="cfg-toggle" title="Toggle AI">
+                    <input type="checkbox" id="s-ai-enabled" data-setting="ai_enabled" class="cfg-toggle-input" />
+                    <span class="cfg-toggle-track"><span class="cfg-toggle-thumb"></span></span>
+                    <span class="cfg-toggle-label" data-on="On" data-off="Off"></span>
+                  </label>
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Auto-Analyze After Scan</span>
+                    <span class="cfg-hint">Automatically run an AI summary after every scan completes. Adds ~5-15 seconds. Requires AI to be enabled above.</span>
+                  </div>
+                  <label class="cfg-toggle" title="Toggle auto-analyze">
+                    <input type="checkbox" id="s-ai-auto" data-setting="ai_auto_analyze" class="cfg-toggle-input" />
+                    <span class="cfg-toggle-track"><span class="cfg-toggle-thumb"></span></span>
+                    <span class="cfg-toggle-label" data-on="On" data-off="Off"></span>
+                  </label>
+                </div>
+
+                <div class="cfg-row cfg-row--status">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Ollama Status</span>
+                    <span class="cfg-hint">Connection to the local Ollama instance. If this shows "unavailable", start Ollama and ensure the model is pulled: <code>ollama pull qwen2.5:3b</code></span>
+                  </div>
+                  <div class="ai-provider-status" id="ai-provider-status">Checking…</div>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- ── Speed Test ─────────────────────────────── -->
+            <div class="cfg-card" id="cfg-speed">
+              <div class="cfg-card-head">
+                <span class="cfg-card-icon">⟋</span>
+                <div>
+                  <h2 class="cfg-title">Speed Test</h2>
+                  <p class="cfg-desc">On-demand bandwidth measurement</p>
+                </div>
+              </div>
+              <div class="cfg-rows">
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Download Test URL</span>
+                    <span class="cfg-hint">File URL used to measure download speed. Larger files (50–100MB) give more accurate readings because TCP has time to reach full throughput. The first few seconds of download are excluded as warmup.</span>
+                  </div>
+                  <input type="text" id="s-speed-url" name="speed_test_url"
+                         class="cfg-text-input cfg-text-input--wide"
+                         placeholder="https://speed.cloudflare.com/__down?bytes=50000000" />
+                </div>
+
+              </div>
+              <div class="cfg-footer">
+                <button class="cfg-save-btn" data-cfg="speed">Save</button>
+                <span class="cfg-save-status" data-cfg="speed"></span>
+              </div>
+            </div>
+
+            <!-- ── Notifications & Alerts ─────────────────── -->
+            <div class="cfg-card" id="cfg-notifications">
+              <div class="cfg-card-head">
+                <span class="cfg-card-icon">◎</span>
+                <div>
+                  <h2 class="cfg-title">Notifications &amp; Alerts</h2>
+                  <p class="cfg-desc">Push alerts to your phone — new devices, threats, outages</p>
+                </div>
+              </div>
+              <div class="cfg-rows">
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Push Notifications (ntfy)</span>
+                    <span class="cfg-hint">Free push alerts to your Android or iPhone. Install the <strong>ntfy</strong> app and subscribe to your topic. Supports two-way commands — tap Block or Investigate directly in the notification.</span>
+                  </div>
+                  <label class="cfg-toggle">
+                    <input type="checkbox" class="cfg-toggle-input" data-setting="ntfy_enabled" />
+                    <span class="cfg-toggle-track"><span class="cfg-toggle-thumb"></span></span>
+                    <span class="cfg-toggle-label"></span>
+                  </label>
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">ntfy Server</span>
+                    <span class="cfg-hint">Default is <code>https://ntfy.sh</code> (free, no account needed). Self-host for full privacy.</span>
+                  </div>
+                  <input type="text" name="ntfy_server" class="cfg-text-input"
+                         placeholder="https://ntfy.sh" />
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">ntfy Topic</span>
+                    <span class="cfg-hint">Your private channel name. Use something random and hard to guess — anyone who knows it can see alerts. Example: <code>netmon-alex-x7k2</code></span>
+                  </div>
+                  <input type="text" name="ntfy_topic" class="cfg-text-input"
+                         placeholder="netmon-alerts" />
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">ntfy Username</span>
+                    <span class="cfg-hint">Required for self-hosted ntfy with auth enabled. Leave blank for public ntfy.sh topics.</span>
+                  </div>
+                  <input type="text" name="ntfy_user" class="cfg-text-input"
+                         placeholder="your-username" autocomplete="off" />
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">ntfy Password</span>
+                    <span class="cfg-hint">Password for your self-hosted ntfy user account.</span>
+                  </div>
+                  <input type="password" name="ntfy_pass" class="cfg-text-input"
+                         placeholder="••••••••" autocomplete="new-password" />
+                </div>
+
+                <div class="cfg-row cfg-row--divider">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Email Alerts (Gmail)</span>
+                    <span class="cfg-hint">Backup alerts via email. Requires a Gmail App Password (not your regular password). Enable 2-Step Verification in Google Account → Security → App Passwords → create one for "NetMon".</span>
+                  </div>
+                  <label class="cfg-toggle">
+                    <input type="checkbox" class="cfg-toggle-input" data-setting="email_enabled" />
+                    <span class="cfg-toggle-track"><span class="cfg-toggle-thumb"></span></span>
+                    <span class="cfg-toggle-label"></span>
+                  </label>
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Send Alerts To</span>
+                    <span class="cfg-hint">Email address that receives alerts</span>
+                  </div>
+                  <input type="email" name="email_to" class="cfg-text-input"
+                         placeholder="you@gmail.com" />
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Gmail Address</span>
+                    <span class="cfg-hint">The Gmail account that <em>sends</em> the alerts</span>
+                  </div>
+                  <input type="email" name="smtp_user" class="cfg-text-input"
+                         placeholder="sender@gmail.com" />
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Gmail App Password</span>
+                    <span class="cfg-hint">16-character app password (not your Gmail login password)</span>
+                  </div>
+                  <input type="password" name="smtp_pass" class="cfg-text-input"
+                         placeholder="xxxx xxxx xxxx xxxx" autocomplete="new-password" />
+                </div>
+
+              </div>
+              <div class="cfg-footer">
+                <button class="cfg-save-btn" data-cfg="notifications">Save</button>
+                <button class="cfg-test-btn" onclick="testNotification('info')">Send Test</button>
+                <button class="cfg-test-btn cfg-test-btn--critical" onclick="testNotification('critical')">Test Critical Alert</button>
+                <span class="cfg-save-status" data-cfg="notifications"></span>
+              </div>
+            </div>
+
+            <!-- ── Anomaly Detection ──────────────────────── -->
+            <div class="cfg-card" id="cfg-anomaly">
+              <div class="cfg-card-head">
+                <span class="cfg-card-icon">⬡</span>
+                <div>
+                  <h2 class="cfg-title">Anomaly Detection</h2>
+                  <p class="cfg-desc">Behavioral monitoring — traffic spikes, port scans, night-time devices</p>
+                </div>
+              </div>
+              <div class="cfg-rows">
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Anomaly Detection</span>
+                    <span class="cfg-hint">Runs every 60 seconds. Detects traffic spikes, port scans inside the network, and sustained outages. Auto-blocks confirmed port scanners.</span>
+                  </div>
+                  <label class="cfg-toggle">
+                    <input type="checkbox" class="cfg-toggle-input" data-setting="anomaly_detection_enabled" />
+                    <span class="cfg-toggle-track"><span class="cfg-toggle-thumb"></span></span>
+                    <span class="cfg-toggle-label"></span>
+                  </label>
+                </div>
+
+                <div class="cfg-row">
+                  <div class="cfg-row-info">
+                    <span class="cfg-label">Traffic Spike Threshold</span>
+                    <span class="cfg-hint">Alert when a device's traffic is this many times above its normal baseline. Lower = more sensitive. 4× is a good default.</span>
+                  </div>
+                  <div class="cfg-num-wrap">
+                    <input type="number" name="anomaly_spike_multiplier" class="cfg-num-input"
+                           min="1.5" max="20" step="0.5" />
+                    <span class="cfg-unit">×</span>
+                  </div>
+                </div>
+
+              </div>
+              <div class="cfg-footer">
+                <button class="cfg-save-btn" data-cfg="anomaly">Save</button>
+                <span class="cfg-save-status" data-cfg="anomaly"></span>
+              </div>
+            </div>
+
+          </div><!-- /.cfg-grid -->
+
+        </div><!-- /#section-settings -->
+
+
+        <!-- ══════════════════════════════════════════
+             SECTION: TRAFFIC CAPTURE
+        ══════════════════════════════════════════ -->
+        <div id="section-traffic" class="page-section" style="display:none">
+
+          <!-- Visibility notice -->
+          <div class="traffic-notice">
+            <span class="traffic-notice-icon" aria-hidden="true">ℹ</span>
+            <div>
+              <strong>Visibility limitation:</strong>
+              On a typical home network this machine only sees its <em>own</em> traffic
+              plus broadcast/multicast (ARP, mDNS, DHCP). Traffic between other devices
+              passes through the switch and is <em>not</em> captured here unless port
+              mirroring is configured. Results reflect what reaches this host's NIC only.
+            </div>
+          </div>
+
+          <!-- Capture controls row -->
+          <div class="panel-row">
+
+            <section class="panel" id="traffic-control-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Capture Control</h2>
+                <span class="panel-tag" id="traffic-status-tag">IDLE</span>
+              </div>
+              <div id="traffic-dep-warning" class="traffic-dep-warning" style="display:none">
+                <!-- populated when Wireshark/Npcap is not found -->
+              </div>
+              <div class="traffic-controls">
+                <div class="settings-group">
+                  <label class="settings-label">Interface</label>
+                  <select class="settings-input" id="traffic-interface-select">
+                    <option value="">Loading interfaces…</option>
+                  </select>
+                </div>
+                <div class="traffic-controls-row">
+                  <div class="settings-group" style="flex:1">
+                    <label class="settings-label">File size (MB)</label>
+                    <input class="settings-input" type="number" id="traffic-file-size"
+                           value="10" min="1" max="200" />
+                  </div>
+                  <div class="settings-group" style="flex:1">
+                    <label class="settings-label">Ring files</label>
+                    <input class="settings-input" type="number" id="traffic-file-count"
+                           value="5" min="2" max="50" />
+                  </div>
+                </div>
+                <div class="traffic-btn-row">
+                  <button class="btn-primary" id="traffic-start-btn" onclick="startCapture()">
+                    <span aria-hidden="true">▶</span> Start Capture
+                  </button>
+                  <button class="btn-secondary" id="traffic-stop-btn" onclick="stopCapture()" style="display:none">
+                    <span aria-hidden="true">■</span> Stop Capture
+                  </button>
+                </div>
+                <div id="traffic-ctrl-msg" class="traffic-ctrl-msg"></div>
+
+                <!-- Full visibility via ARP MitM -->
+                <div class="mitm-section">
+                  <div class="mitm-header">
+                    <span class="mitm-title">Full Network Visibility</span>
+                    <span class="panel-tag" id="mitm-status-tag">OFF</span>
+                  </div>
+                  <p class="mitm-desc">
+                    Routes all device traffic through this machine (ARP positioning — same as zAnti).
+                    Requires a scan to be run first. All devices keep their internet connection.
+                  </p>
+                  <div class="traffic-btn-row">
+                    <button class="btn-primary btn--warn" id="mitm-start-btn" onclick="startMitm()">
+                      <span aria-hidden="true">⟁</span> Enable Full Visibility
+                    </button>
+                    <button class="btn-secondary" id="mitm-stop-btn" onclick="stopMitm()" style="display:none">
+                      <span aria-hidden="true">■</span> Disable
+                    </button>
+                  </div>
+                  <div id="mitm-msg" class="traffic-ctrl-msg"></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel" id="traffic-stats-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Latest Analysis</h2>
+                <span class="panel-tag" id="traffic-analysis-age">—</span>
+              </div>
+              <div id="traffic-stats-content">
+                <div class="empty-state">
+                  <div class="empty-icon" aria-hidden="true">⟋</div>
+                  <div class="empty-text">No analysis data yet.</div>
+                  <div class="empty-hint">Start capture — summaries run every minute.</div>
+                </div>
+              </div>
+            </section>
+
+          </div><!-- /.panel-row -->
+
+          <!-- Top talkers + Top destinations -->
+          <div class="panel-row">
+
+            <section class="panel" id="traffic-talkers-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Top Talkers</h2>
+                <span class="panel-hint">Internal IPs — most data this session</span>
+              </div>
+              <div id="traffic-talkers-content">
+                <div class="empty-state small-empty">
+                  <div class="empty-text">No data yet.</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel" id="traffic-dests-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Top Destinations</h2>
+                <span class="panel-hint">External IPs — most data this session</span>
+              </div>
+              <div id="traffic-dests-content">
+                <div class="empty-state small-empty">
+                  <div class="empty-text">No data yet.</div>
+                </div>
+              </div>
+            </section>
+
+          </div><!-- /.panel-row -->
+
+          <!-- Protocol mix chart -->
+          <section class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Protocol Mix</h2>
+              <span class="panel-hint">Packet counts by protocol</span>
+            </div>
+            <div id="traffic-proto-chart" class="traffic-proto-chart"></div>
+          </section>
+
+        <!-- AI Analysis panel — full width below the grid -->
+        <section class="panel traffic-ai-panel" id="traffic-ai-panel">
+          <div class="panel-header">
+            <h2 class="panel-title">AI Analysis</h2>
+            <span class="panel-tag" id="traffic-ai-tag">—</span>
+            <button class="btn btn--sm" id="traffic-ai-btn"
+                    onclick="analyzeTraffic()" style="margin-left:auto">
+              Analyze Now
+            </button>
+          </div>
+          <div id="traffic-ai-body">
+            <p class="traffic-ai-empty">Analysis runs automatically when capture stops, or click <em>Analyze Now</em>.</p>
+          </div>
+        </section>
+
+        <!-- Live DNS / Activity Feed -->
+        <section class="panel dns-live-panel" id="dns-live-panel">
+          <div class="panel-header">
+            <h2 class="panel-title">Live Activity — What Devices Are Doing Right Now</h2>
+            <button class="panel-action-btn" onclick="refreshDnsLive()">Refresh</button>
+          </div>
+          <p class="dns-live-hint">DNS queries and HTTPS destinations captured from your network. Requires active packet capture. Updates show the domains each device has contacted in recent capture windows.</p>
+          <div id="dns-live-list" class="dns-live-list">
+            <span class="dns-empty">Start packet capture to see live activity.</span>
+          </div>
+        </section>
+
+        </div><!-- /#section-traffic -->
+
+
+        <!-- ══════════════════════════════════ SHIELD SECTION ══ -->
+        <div id="section-shield" class="page-section shield-section" style="display:none">
+
+          <!-- Threat level banner -->
+          <div class="shield-banner" id="shield-banner">
+            <div class="shield-banner-scan"></div>
+            <div class="shield-banner-left">
+              <span class="shield-banner-icon" id="shield-icon">⬡</span>
+              <div>
+                <div class="shield-banner-status" id="shield-status">SCANNING...</div>
+                <div class="shield-banner-sub" id="shield-sub">Initializing protection systems</div>
+              </div>
+            </div>
+            <div class="shield-stats" id="shield-stats">
+              <div class="shield-stat"><span class="shield-stat-val" id="ss-devices">—</span><span class="shield-stat-lbl">devices</span></div>
+              <div class="shield-stat"><span class="shield-stat-val" id="ss-uptime">—</span><span class="shield-stat-lbl">uptime</span></div>
+              <div class="shield-stat"><span class="shield-stat-val" id="ss-blocks">—</span><span class="shield-stat-lbl">blocked</span></div>
+              <div class="shield-stat"><span class="shield-stat-val" id="ss-threats">—</span><span class="shield-stat-lbl">threats 24h</span></div>
+            </div>
+          </div>
+
+          <!-- Main grid -->
+          <div class="shield-grid">
+
+            <!-- Protection layers -->
+            <div class="shield-card" id="shield-layers-card">
+              <div class="shield-card-head">
+                <span class="shield-card-title">PROTECTION LAYERS</span>
+                <span class="shield-card-sub">Enable or disable each defense</span>
+              </div>
+              <div id="shield-layers">
+                <div class="shield-loading">Loading...</div>
+              </div>
+            </div>
+
+            <!-- Live defense feed -->
+            <div class="shield-card" id="shield-feed-card">
+              <div class="shield-card-head">
+                <span class="shield-card-title">LIVE DEFENSE FEED</span>
+                <span class="shield-card-sub" id="shield-feed-age">—</span>
+              </div>
+              <div id="shield-feed" class="shield-feed">
+                <div class="shield-loading">Waiting for events...</div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Autonomous actions table -->
+          <div class="shield-card shield-card--full" id="shield-auto-card">
+            <div class="shield-card-head">
+              <span class="shield-card-title">AUTONOMOUS ACTIONS</span>
+              <span class="shield-card-sub">Things NetMon did on its own — tap Undo to reverse</span>
+              <span class="shield-card-actions">
+                <select id="auto-filter" class="rpt-filter-select" onchange="loadAutonomousActions()">
+                  <option value="active">Active only</option>
+                  <option value="all">All (incl. reverted)</option>
+                  <option value="reverted">Reverted only</option>
+                </select>
+                <button class="rpt-refresh-btn" onclick="loadAutonomousActions()">Refresh</button>
+              </span>
+            </div>
+            <div id="shield-auto-actions">
+              <div class="shield-loading">Loading...</div>
+            </div>
+          </div>
+
+          <!-- Active blocks table -->
+          <div class="shield-card shield-card--full" id="shield-blocks-card">
+            <div class="shield-card-head">
+              <span class="shield-card-title">ACTIVE FIREWALL BLOCKS</span>
+              <span class="shield-card-sub">Rules created automatically or manually by NetMon</span>
+            </div>
+            <div id="shield-blocks">
+              <div class="shield-loading">Loading...</div>
+            </div>
+          </div>
+
+        </div><!-- /#section-shield -->
+
+
+        <!-- ══════════════════════════════════ REPORTS SECTION ══ -->
+        <div id="section-reports" class="page-section" style="display:none">
+
+          <div class="rpt-header">
+            <div class="rpt-header-left">
+              <h2 class="rpt-title">Security Reports</h2>
+              <span class="rpt-sub">Hourly AI analysis of your network activity — generated autonomously by Qwen</span>
+            </div>
+            <div class="rpt-header-right">
+              <select id="rpt-filter-sev" class="rpt-filter-select" onchange="loadReportsSection()">
+                <option value="">All severities</option>
+                <option value="critical">Critical</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+              <button class="rpt-run-btn" id="rpt-run-btn" onclick="runReportNow()">Run Now</button>
+              <button class="rpt-refresh-btn" onclick="loadReportsSection()">Refresh</button>
+            </div>
+          </div>
+
+          <div id="rpt-empty" class="rpt-empty" style="display:none">
+            <div class="rpt-empty-icon">▤</div>
+            <div class="rpt-empty-text">No reports yet</div>
+            <div class="rpt-empty-sub">Reports are generated hourly when AI is enabled. The first report will appear after the server has been running for one hour.</div>
+          </div>
+
+          <div id="rpt-list" class="rpt-list"></div>
+
+          <!-- Qwen chat panel -->
+          <div class="rpt-chat-panel" id="rpt-chat-panel">
+            <div class="rpt-chat-header">
+              <span class="rpt-chat-title">⬡ Ask Qwen</span>
+              <span class="rpt-chat-sub">Ask about your network, reports, or background tasks</span>
+            </div>
+
+            <div class="rpt-chat-quick">
+              <button class="rpt-quick-btn" onclick="sendQuickQuestion('Is everything running in the background?')">Is everything running?</button>
+              <button class="rpt-quick-btn" onclick="sendQuickQuestion('Any threats or anomalies in the last 24 hours?')">Any threats?</button>
+              <button class="rpt-quick-btn" onclick="sendQuickQuestion('Summarize the last few hours of network activity')">Summarize recent activity</button>
+              <button class="rpt-quick-btn" onclick="sendQuickQuestion('Should I be concerned about anything right now?')">Anything to worry about?</button>
+            </div>
+
+            <div class="rpt-chat-messages" id="rpt-chat-messages">
+              <div class="rpt-chat-intro">Ask me anything about your network security, background tasks, or recent reports.</div>
+            </div>
+
+            <div class="rpt-chat-input-row">
+              <input type="text" id="rpt-chat-input" class="rpt-chat-input"
+                     placeholder="Ask Qwen about your network…"
+                     onkeydown="if(event.key==='Enter')sendChatQuestion()" />
+              <button class="rpt-chat-send" id="rpt-chat-send" onclick="sendChatQuestion()">Send</button>
+            </div>
+          </div>
+
+        </div><!-- /#section-reports -->
+
+
+        <!-- ══════════════════════════════════ DNS BLOCKER SECTION ══ -->
+        <div id="section-dns" class="page-section" style="display:none">
+
+          <!-- Header card -->
+          <section class="panel dns-blocker-panel">
+            <div class="dns-blocker-header">
+              <div class="dns-blocker-title-row">
+                <span class="dns-blocker-icon">⊘</span>
+                <div>
+                  <h2 class="dns-blocker-title">Network Ad Blocker</h2>
+                  <p class="dns-blocker-sub">DNS-level blocking for your entire network — ads, trackers, and malware domains</p>
+                </div>
+              </div>
+              <div class="dns-toggle-row">
+                <span class="dns-status-badge" id="dns-status-badge">Checking…</span>
+                <button class="dns-toggle-btn dns-toggle-btn--on"  id="dns-enable-btn"  onclick="dnsEnable()"  style="display:none">Enable</button>
+                <button class="dns-toggle-btn dns-toggle-btn--off" id="dns-disable-btn" onclick="dnsDisable()" style="display:none">Disable</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- Stats row -->
+          <div class="dns-stats-row">
+            <section class="panel dns-stat-card">
+              <div class="dns-stat-label">Blocked Domains</div>
+              <div class="dns-stat-value" id="dns-total-domains">—</div>
+              <div class="dns-stat-sub">in blocklist</div>
+            </section>
+            <section class="panel dns-stat-card">
+              <div class="dns-stat-label">Queries Today</div>
+              <div class="dns-stat-value" id="dns-queries-today">—</div>
+              <div class="dns-stat-sub">DNS lookups</div>
+            </section>
+            <section class="panel dns-stat-card">
+              <div class="dns-stat-label">Blocked Today</div>
+              <div class="dns-stat-value" id="dns-blocked-today">—</div>
+              <div class="dns-stat-sub" id="dns-block-pct">—%</div>
+            </section>
+            <section class="panel dns-stat-card">
+              <div class="dns-stat-label">Sources</div>
+              <div class="dns-stat-value" id="dns-source-count">3</div>
+              <div class="dns-stat-sub">blocklists</div>
+            </section>
+          </div>
+
+          <!-- Sources & top blocked -->
+          <div class="dns-detail-row">
+
+            <!-- Blocklist sources -->
+            <section class="panel dns-sources-panel">
+              <div class="dns-panel-header">
+                <h3 class="dns-panel-title">Blocklist Sources</h3>
+                <button class="btn-sm" onclick="dnsRefresh()" id="dns-refresh-btn">Refresh Lists</button>
+              </div>
+              <div class="dns-sources-list" id="dns-sources-list">
+                <div class="dns-source-row">
+                  <div class="dns-source-name">StevenBlack Unified</div>
+                  <div class="dns-source-desc">Ads + malware + tracking — the gold standard hosts list</div>
+                  <div class="dns-source-count" id="dns-src-stevenblack">—</div>
+                </div>
+                <div class="dns-source-row">
+                  <div class="dns-source-name">OISD Small</div>
+                  <div class="dns-source-desc">Conservative, very low false-positives — safe for all devices</div>
+                  <div class="dns-source-count" id="dns-src-oisd_small">—</div>
+                </div>
+                <div class="dns-source-row">
+                  <div class="dns-source-name">AdGuard DNS Filter</div>
+                  <div class="dns-source-desc">Aggressive ad network blocking — catches pre-roll ad servers</div>
+                  <div class="dns-source-count" id="dns-src-adguard">—</div>
+                </div>
+              </div>
+              <div class="dns-updated-row">
+                <span class="dns-updated-label">Last updated:</span>
+                <span id="dns-last-updated">Never</span>
+              </div>
+            </section>
+
+            <!-- Top blocked domains -->
+            <section class="panel dns-top-panel">
+              <div class="dns-panel-header">
+                <h3 class="dns-panel-title">Top Blocked Today</h3>
+                <button class="btn-sm" onclick="dnsResetStats()">Reset</button>
+              </div>
+              <div id="dns-top-list" class="dns-top-list">
+                <div class="dns-top-empty">No blocked queries yet today</div>
+              </div>
+            </section>
+
+          </div>
+
+          <!-- Setup instructions -->
+          <section class="panel dns-setup-panel">
+            <h3 class="dns-setup-title">Router Setup — Point Your Network Here</h3>
+            <p class="dns-setup-intro">
+              For the ad blocker to work network-wide, your router needs to tell every device to use
+              this PC as its DNS server. Each router is different — look for <strong>DHCP Settings</strong>
+              or <strong>LAN Settings</strong> and set the <strong>Primary DNS</strong> to:
+            </p>
+            <div class="dns-ip-box" id="dns-ip-box">
+              <span id="dns-local-ip">Detecting…</span>
+              <button class="dns-copy-btn" onclick="dnsCopyIp()" title="Copy IP">Copy</button>
+            </div>
+            <div class="dns-setup-steps">
+              <div class="dns-step"><span class="dns-step-num">1</span>Log in to your router (usually <code>192.168.1.1</code> or <code>192.168.0.1</code>)</div>
+              <div class="dns-step"><span class="dns-step-num">2</span>Find <strong>LAN / DHCP Settings</strong></div>
+              <div class="dns-step"><span class="dns-step-num">3</span>Set <strong>Primary DNS Server</strong> to the IP above</div>
+              <div class="dns-step"><span class="dns-step-num">4</span>Set <strong>Secondary DNS</strong> to <code>8.8.8.8</code> (fallback if this PC is off)</div>
+              <div class="dns-step"><span class="dns-step-num">5</span>Save and reconnect your devices (or wait for DHCP lease renewal)</div>
+            </div>
+            <div class="dns-setup-note">
+              <strong>What gets blocked:</strong> Ad network domains, tracking pixels, telemetry servers, known malware C&amp;C domains.
+              <br>
+              <strong>What does NOT get blocked:</strong> YouTube/Netflix in-stream ads (those are served from the same domains as the content itself — no DNS blocker can block them without breaking the service).
+              <br>
+              <strong>This PC must stay on</strong> for DNS to work. The secondary DNS ensures devices still reach the internet if this PC is off.
+            </div>
+          </section>
+
+        </div><!-- /#section-dns -->
+
+
+        <!-- ══════════════════════════════════ LOGS SECTION ══ -->
+        <div id="section-logs" class="page-section" style="display:none">
+          <section class="section-card">
+            <div class="section-header">
+              <h2 class="section-title">Activity Log</h2>
+              <div class="log-toolbar">
+                <input type="text" id="log-search" class="log-search-input" placeholder="Search logs…" />
+                <div class="log-filter-tabs" id="log-filter-tabs">
+                  <button class="log-filter-tab active" data-cat="">All</button>
+                  <button class="log-filter-tab" data-cat="scan">Scan</button>
+                  <button class="log-filter-tab" data-cat="traffic">Traffic</button>
+                  <button class="log-filter-tab" data-cat="ai">AI</button>
+                  <button class="log-filter-tab" data-cat="firewall">Firewall</button>
+                  <button class="log-filter-tab" data-cat="threat">Threat</button>
+                  <button class="log-filter-tab" data-cat="system">System</button>
+                </div>
+                <button class="btn-sm btn-danger" id="log-clear-btn" title="Clear all log entries">Clear</button>
+              </div>
+            </div>
+
+            <div id="log-stats" class="log-stats"></div>
+            <div id="log-list" class="log-list">
+              <div class="log-empty">Loading…</div>
+            </div>
+            <div id="log-load-more" class="log-load-more" style="display:none">
+              <button class="btn-sm" id="log-load-more-btn">Load more</button>
+            </div>
+          </section>
+        </div><!-- /#section-logs -->
+
+        <!-- ═══════════════════════════════════════════════════════════
+             SECURITY LAB
+        ════════════════════════════════════════════════════════════ -->
+        <div id="section-seclab" class="page-section" style="display:none">
+
+          <div class="seclab-header">
+            <h2 class="seclab-title">Security Lab</h2>
+            <p class="seclab-subtitle muted">Test your own devices and networks. All tools require your authorization.</p>
+          </div>
+
+          <!-- WSL Setup -->
+          <section class="panel seclab-wsl-panel">
+            <div class="panel-header">
+              <span class="panel-title">WSL / Kali Tools</span>
+              <div class="panel-actions">
+                <button id="seclab-wsl-check-btn" class="btn-sm btn-secondary">Check Tools</button>
+                <button id="seclab-wsl-install-btn" class="btn-sm btn-primary">Install Missing</button>
+              </div>
+            </div>
+            <pre id="seclab-wsl-status" class="seclab-wsl-status">Click "Check Tools" to verify Kali WSL tool availability.</pre>
+          </section>
+
+          <!-- Tool Tabs -->
+          <div class="seclab-tabs">
+            <button class="seclab-tab active" data-seclab-tab="vulnerability">Vulnerability Scan</button>
+            <button class="seclab-tab" data-seclab-tab="password">Password Test</button>
+            <button class="seclab-tab" data-seclab-tab="exploit">Exploit Test</button>
+            <button class="seclab-tab" data-seclab-tab="wifi">WiFi Test</button>
+            <button class="seclab-tab" data-seclab-tab="exposure">Internet Exposure</button>
+          </div>
+
+          <!-- Vulnerability Scan (Nikto) -->
+          <section id="seclab-tab-vulnerability" class="panel seclab-tool-panel">
+            <div class="panel-header"><span class="panel-title">Vulnerability Scan — Nikto</span></div>
+            <p class="seclab-tool-desc muted">Scans a device's web interface for known security issues.</p>
+            <div class="seclab-form">
+              <div class="seclab-field">
+                <label>Target IP or hostname</label>
+                <input id="seclab-nikto-target" type="text" placeholder="192.168.1.1" class="seclab-input">
+              </div>
+              <div class="seclab-field seclab-field--sm">
+                <label>Port</label>
+                <input id="seclab-nikto-port" type="number" placeholder="80" class="seclab-input">
+              </div>
+              <div class="seclab-field seclab-field--check">
+                <label><input id="seclab-nikto-ssl" type="checkbox"> Use HTTPS</label>
+              </div>
+            </div>
+            <button id="seclab-nikto-start-btn" class="btn-primary seclab-run-btn">Start Scan</button>
+          </section>
+
+          <!-- Password Test (Hydra + John) -->
+          <section id="seclab-tab-password" class="panel seclab-tool-panel" style="display:none">
+            <div class="panel-header"><span class="panel-title">Password Test</span></div>
+
+            <h4 class="seclab-sub">Login Brute-Force — Hydra</h4>
+            <p class="seclab-tool-desc muted">Tests whether a device accepts weak or default passwords.</p>
+            <div class="seclab-form">
+              <div class="seclab-field">
+                <label>Target IP</label>
+                <input id="seclab-hydra-target" type="text" placeholder="192.168.1.10" class="seclab-input">
+              </div>
+              <div class="seclab-field">
+                <label>Service</label>
+                <select id="seclab-hydra-service" class="seclab-input">
+                  <option value="ssh">SSH</option>
+                  <option value="http-get">HTTP Basic</option>
+                  <option value="https-get">HTTPS Basic</option>
+                  <option value="http-post-form">HTTP Form</option>
+                  <option value="https-post-form">HTTPS Form</option>
+                </select>
+              </div>
+              <div class="seclab-field seclab-field--sm">
+                <label>Port</label>
+                <input id="seclab-hydra-port" type="number" placeholder="22" class="seclab-input">
+              </div>
+              <div class="seclab-field">
+                <label>Username</label>
+                <input id="seclab-hydra-username" type="text" placeholder="admin" class="seclab-input">
+              </div>
+              <div class="seclab-field">
+                <label>Password list <span class="muted">(text file, one per line)</span></label>
+                <input id="seclab-hydra-pw-file" type="file" accept=".txt" class="seclab-file">
+              </div>
+            </div>
+            <button id="seclab-hydra-start-btn" class="btn-danger seclab-run-btn">Start Password Test</button>
+
+            <hr class="seclab-divider">
+
+            <h4 class="seclab-sub">Hash Cracking — John the Ripper</h4>
+            <p class="seclab-tool-desc muted">Tests password hash strength using a wordlist.</p>
+            <div class="seclab-form">
+              <div class="seclab-field">
+                <label>Hash file</label>
+                <input id="seclab-john-hash-file" type="file" accept=".txt,.hash" class="seclab-file">
+              </div>
+              <div class="seclab-field">
+                <label>Wordlist <span class="muted">(optional)</span></label>
+                <input id="seclab-john-wordlist-file" type="file" accept=".txt" class="seclab-file">
+              </div>
+              <div class="seclab-field">
+                <label>Hash format</label>
+                <select id="seclab-john-format" class="seclab-input">
+                  <option value="auto">Auto-detect</option>
+                  <option value="raw-md5">MD5</option>
+                  <option value="raw-sha1">SHA1</option>
+                  <option value="sha256crypt">SHA256crypt</option>
+                  <option value="bcrypt">bcrypt</option>
+                  <option value="nt">Windows NT</option>
+                </select>
+              </div>
+            </div>
+            <button id="seclab-john-start-btn" class="btn-danger seclab-run-btn">Start Hash Test</button>
+          </section>
+
+          <!-- Exploit Test (Metasploit) -->
+          <section id="seclab-tab-exploit" class="panel seclab-tool-panel" style="display:none">
+            <div class="panel-header"><span class="panel-title">Exploit Test — Metasploit</span></div>
+            <p class="seclab-tool-desc muted">Run any Metasploit module against a target you have permission to test.</p>
+            <div class="seclab-form">
+              <div class="seclab-field">
+                <label>Target IP</label>
+                <input id="seclab-msf-target" type="text" placeholder="192.168.1.1" class="seclab-input">
+              </div>
+              <div class="seclab-field">
+                <label>Module <span class="muted">(e.g. auxiliary/scanner/ssh/ssh_version)</span></label>
+                <input id="seclab-msf-module" type="text" placeholder="auxiliary/scanner/http/http_version" class="seclab-input">
+              </div>
+              <div class="seclab-field">
+                <label>Options <span class="muted">(JSON, optional — e.g. {"RPORT": 8080})</span></label>
+                <textarea id="seclab-msf-options" class="seclab-input seclab-textarea" placeholder='{"RPORT": 80}'></textarea>
+              </div>
+            </div>
+            <button id="seclab-msf-start-btn" class="btn-danger seclab-run-btn">Run Module</button>
+          </section>
+
+          <!-- WiFi Test (Aircrack) -->
+          <section id="seclab-tab-wifi" class="panel seclab-tool-panel" style="display:none">
+            <div class="panel-header"><span class="panel-title">WiFi Test — Aircrack-ng</span></div>
+            <p class="seclab-tool-desc muted">Test WPA2 security on your own WiFi network. Requires a monitor-mode adapter.</p>
+
+            <h4 class="seclab-sub">Capture Handshake — airodump-ng</h4>
+            <div class="seclab-form">
+              <div class="seclab-field seclab-field--sm">
+                <label>Interface</label>
+                <input id="seclab-wifi-interface" type="text" placeholder="wlan0" class="seclab-input">
+              </div>
+              <div class="seclab-field">
+                <label>BSSID <span class="muted">(optional — target specific network)</span></label>
+                <input id="seclab-wifi-bssid" type="text" placeholder="AA:BB:CC:DD:EE:FF" class="seclab-input">
+              </div>
+              <div class="seclab-field seclab-field--sm">
+                <label>Channel</label>
+                <input id="seclab-wifi-channel" type="number" placeholder="6" class="seclab-input">
+              </div>
+              <div class="seclab-field seclab-field--sm">
+                <label>Duration</label>
+                <select id="seclab-wifi-duration" class="seclab-input">
+                  <option value="30">30 sec</option>
+                  <option value="60" selected>1 min</option>
+                  <option value="300">5 min</option>
+                </select>
+              </div>
+            </div>
+            <button id="seclab-wifi-capture-btn" class="btn-danger seclab-run-btn">Start Capture</button>
+
+            <hr class="seclab-divider">
+
+            <h4 class="seclab-sub">Test Handshake — Aircrack-ng</h4>
+            <div class="seclab-form">
+              <div class="seclab-field">
+                <label>Capture file <span class="muted">(.cap)</span></label>
+                <input id="seclab-aircrack-cap-file" type="file" accept=".cap,.pcap" class="seclab-file">
+              </div>
+              <div class="seclab-field">
+                <label>Wordlist</label>
+                <input id="seclab-aircrack-wl-file" type="file" accept=".txt" class="seclab-file">
+              </div>
+              <div class="seclab-field">
+                <label>BSSID <span class="muted">(optional)</span></label>
+                <input id="seclab-aircrack-bssid" type="text" placeholder="AA:BB:CC:DD:EE:FF" class="seclab-input">
+              </div>
+            </div>
+            <button id="seclab-aircrack-start-btn" class="btn-danger seclab-run-btn">Start Crack Test</button>
+          </section>
+
+          <!-- Internet Exposure (Shodan) -->
+          <section id="seclab-tab-exposure" class="panel seclab-tool-panel" style="display:none">
+            <div class="panel-header"><span class="panel-title">Internet Exposure — Shodan</span></div>
+            <p class="seclab-tool-desc muted">Check whether your public IP or devices are visible on the internet.</p>
+            <div class="seclab-form">
+              <div class="seclab-field">
+                <label>Shodan API Key</label>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <input id="seclab-shodan-key" type="password" placeholder="Saved locally" class="seclab-input" style="flex:1">
+                  <button id="seclab-shodan-save-btn" class="btn-sm btn-secondary">Save</button>
+                </div>
+              </div>
+              <div class="seclab-field">
+                <label>Device to check</label>
+                <select id="seclab-shodan-device-select" class="seclab-input"></select>
+              </div>
+              <div class="seclab-field">
+                <label>Or enter a specific IP <span class="muted">(leave blank to check your WAN IP)</span></label>
+                <input id="seclab-shodan-ip" type="text" placeholder="Leave blank for auto WAN IP" class="seclab-input">
+              </div>
+            </div>
+            <button id="seclab-shodan-check-btn" class="btn-primary seclab-run-btn">Check Exposure</button>
+          </section>
+
+          <!-- Live Output -->
+          <div class="panel-row">
+            <section class="panel seclab-output-panel">
+              <div class="panel-header">
+                <span class="panel-title">Live Output</span>
+              </div>
+              <pre id="seclab-progress" class="seclab-output"></pre>
+            </section>
+            <section class="panel seclab-ai-panel">
+              <div class="panel-header">
+                <span class="panel-title">AI Explanation</span>
+              </div>
+              <div id="seclab-fix-buttons" style="padding:8px 4px 0;display:none"></div>
+              <div id="seclab-ai-output" class="seclab-ai-content">
+                <p class="muted">Run a tool to see an explanation here.</p>
+              </div>
+            </section>
+          </div>
+
+          <!-- History -->
+          <section class="panel">
+            <div class="panel-header">
+              <span class="panel-title">Recent Runs</span>
+              <button id="seclab-history-refresh-btn" class="btn-sm btn-secondary">Refresh</button>
+            </div>
+            <div id="seclab-history"><p class="muted">No runs yet.</p></div>
+          </section>
+
+        </div><!-- /#section-seclab -->
+
+        <!-- Run detail modal -->
+        <div id="seclab-run-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:900;justify-content:center;align-items:flex-start;overflow-y:auto;padding:40px 16px"></div>
+
+        <!-- Confirm modal -->
+        <div id="seclab-confirm-modal" class="seclab-modal-overlay" style="display:none">
+          <div class="seclab-modal">
+            <p id="seclab-confirm-msg" class="seclab-confirm-msg"></p>
+            <div class="seclab-modal-btns">
+              <button id="seclab-confirm-yes-btn" class="btn-danger">Yes, proceed</button>
+              <button id="seclab-confirm-cancel-btn" class="btn-secondary">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+
+      </main><!-- /#page-content -->
+    </div><!-- /#content-area -->
+  </div><!-- /#app-shell -->
+
+  <!-- Device detail modal -->
+  <div id="device-modal" class="modal-overlay" style="display:none" onclick="closeDeviceModal(event)">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-title">Device Detail</h3>
+        <button class="modal-close" onclick="closeDeviceModal()" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body">
+        <!-- populated by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ECharts — served locally from static/lib/ so works without internet -->
+  <link rel="stylesheet" href="/static/seclab.css">
+  <script src="/static/lib/echarts.min.js"></script>
+  <script src="/static/app.js"></script>
+  <script src="/static/seclab.js"></script>
+
+</body>
+</html>

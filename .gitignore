@@ -1,0 +1,52 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Database & user data
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Security tool uploads/outputs
+security_uploads/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# VS Code
+.vscode/
+
+# DNS blocklist cache (auto-downloaded on startup)
+dns_blocker/.cache/
+
+# Captured traffic (can be large + private)
+*.pcap
+*.pcapng
+captures/
+
+# Compiled CSS/JS (if added later)
+*.min.js
+*.min.css
+!static/lib/
+!static/lib/echarts.min.js

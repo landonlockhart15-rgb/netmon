@@ -1,0 +1,13 @@
+fastapi==0.115.12
+uvicorn==0.34.0
+sqlalchemy==2.0.40
+python-dotenv==1.1.0
+python-multipart==0.0.20
+psutil==7.2.2
+bcrypt==5.0.0
+anthropic>=0.40.0   # optional — only needed if AI_PROVIDER=anthropic
+scapy>=2.5.0        # ARP MitM for full network visibility on switched networks
+pystray>=0.19.0     # Windows system tray icon
+pillow>=10.0.0      # Required by pystray for icon rendering
+
+dnslib>=0.9.0

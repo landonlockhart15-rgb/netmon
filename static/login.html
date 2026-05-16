@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NetMon — Sign In</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #070b11;
+      color: #c8d6e8;
+      font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+
+    .login-box {
+      background: #0d1219;
+      border: 1px solid #1e2a3e;
+      border-radius: 10px;
+      padding: 40px 36px;
+      width: 340px;
+    }
+
+    .brand {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .brand-mark {
+      display: block;
+      font-size: 2rem;
+      color: #00c8f0;
+      margin-bottom: 6px;
+    }
+    .brand-name {
+      display: block;
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      color: #e8f2ff;
+    }
+    .brand-sub {
+      display: block;
+      font-size: 0.7rem;
+      color: #3a4a5e;
+      letter-spacing: 0.1em;
+      margin-top: 4px;
+    }
+
+    .error-box {
+      background: rgba(255, 68, 68, 0.08);
+      border: 1px solid rgba(255, 68, 68, 0.25);
+      border-radius: 6px;
+      color: #ff6666;
+      font-size: 0.78rem;
+      line-height: 1.5;
+      padding: 10px 12px;
+      margin-bottom: 18px;
+    }
+
+    .field {
+      margin-bottom: 14px;
+    }
+    label {
+      display: block;
+      font-size: 0.7rem;
+      color: #647a94;
+      letter-spacing: 0.1em;
+      margin-bottom: 6px;
+    }
+    input {
+      width: 100%;
+      background: #101620;
+      border: 1px solid #1e2a3e;
+      border-radius: 6px;
+      color: #c8d6e8;
+      font-family: inherit;
+      font-size: 0.88rem;
+      padding: 10px 12px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus { border-color: #00c8f0; }
+
+    .btn {
+      width: 100%;
+      background: #00c8f0;
+      color: #070b11;
+      border: none;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      padding: 11px;
+      cursor: pointer;
+      margin-top: 10px;
+      transition: opacity 0.15s;
+    }
+    .btn:hover  { opacity: 0.85; }
+    .btn:active { opacity: 0.7;  }
+  </style>
+</head>
+<body>
+
+  <div class="login-box">
+
+    <div class="brand">
+      <span class="brand-mark">◈</span>
+      <span class="brand-name">NETMON</span>
+      <span class="brand-sub">HOME NETWORK MONITOR</span>
+    </div>
+
+    <div class="error-box" id="err" style="display:none"></div>
+
+    <form method="POST" action="/auth/login">
+      <div class="field">
+        <label for="username">USERNAME</label>
+        <input type="text" id="username" name="username"
+               autocomplete="username" autofocus required />
+      </div>
+      <div class="field">
+        <label for="password">PASSWORD</label>
+        <input type="password" id="password" name="password"
+               autocomplete="current-password" required />
+      </div>
+      <button type="submit" class="btn">▶ Sign In</button>
+    </form>
+
+  </div>
+
+  <script>
+    // Show error message from query param (set by the server on failed login)
+    const params = new URLSearchParams(location.search);
+    const code   = params.get("error");
+    const box    = document.getElementById("err");
+    if (code === "invalid") {
+      box.textContent = "Invalid username or password.";
+      box.style.display = "block";
+    } else if (code === "not_configured") {
+      box.textContent = "No password set. Run: python tools/set_password.py";
+      box.style.display = "block";
+    } else if (code === "throttled") {
+      box.textContent = "Too many sign-in attempts. Wait a minute and try again.";
+      box.style.display = "block";
+    }
+  </script>
+
+</body>
+</html>
