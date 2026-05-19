@@ -842,8 +842,14 @@ def _run_autonomous_report() -> None:
             for h in health_rows
         ]
         log_ctx = [
-            {"level": l.level, "category": l.category, "summary": l.summary}
+            {"level": l.level, "category": l.category, "event": l.event, "summary": l.summary}
             for l in log_rows
+        ]
+        dns_blocked = [l for l in log_rows if l.category == "dns" and l.event == "dns_blocked"]
+        non_dns_security = [l for l in log_rows if l.category != "dns"]
+        confirmed_threats = [
+            l for l in log_rows
+            if l.level == "threat" or l.event in ("threat_intel_hit", "malware_domain", "c2_detected")
         ]
 
         context = json.dumps({
@@ -851,11 +857,26 @@ def _run_autonomous_report() -> None:
             "traffic_samples": traffic_ctx,
             "health_samples":  health_ctx,
             "security_events": log_ctx,
+            "dns_blocking_context": {
+                "enabled_by_user": _s("dns_blocker_enabled", "false") == "true",
+                "purpose": "NetMon intentionally blocks ad, tracker, telemetry, and malware-list domains at DNS level.",
+                "blocked_event_count": len(dns_blocked),
+                "standalone_dns_blocks_are_expected": True,
+            },
+            "corroboration": {
+                "non_dns_security_event_count": len(non_dns_security),
+                "confirmed_threat_event_count": len(confirmed_threats),
+            },
         }, indent=2)
 
         prompt = (
             "You are an autonomous network security analyst for a home network.\n\n"
             "Analyze this 1-hour network snapshot and write a brief security report.\n\n"
+            "Important DNS rule:\n"
+            "- DNS blocked events are expected when NetMon's DNS ad blocker is enabled.\n"
+            "- A blocked DNS query by itself means the blocker worked; do NOT call it malware, a security threat, or an infection.\n"
+            "- Treat DNS blocks as benign filtering/noise unless corroborated by confirmed threat-intel hits, unknown devices, repeated unusual traffic to the same suspicious destination, or non-DNS critical events.\n"
+            "- For normal DNS blocking, recommendations should be quiet operational suggestions such as reviewing top blocked domains or lowering notification priority, not virus scans or new security products.\n\n"
             f"Data:\n{context}\n\n"
             "Respond with ONLY valid JSON (no markdown) containing:\n"
             '  "severity": "low"|"medium"|"high"|"critical"\n'
@@ -881,6 +902,37 @@ def _run_autonomous_report() -> None:
         if not match:
             raise ValueError(f"No JSON in AI response: {raw[:200]}")
         data = json.loads(match.group(0))
+
+        # Deterministic guardrail: if the only notable events were DNS blocks,
+        # do not let the model turn expected ad/tracker blocking into malware.
+        only_dns_noise = bool(dns_blocked) and not non_dns_security and not confirmed_threats
+        if only_dns_noise:
+            sev = (data.get("severity") or "low").lower()
+            if sev not in ("low", "medium", "high", "critical"):
+                sev = "low"
+            data["severity"] = "low" if sev in ("medium", "high", "critical") else sev
+
+            anomalies = data.get("anomalies") or []
+            data["anomalies"] = [
+                a for a in anomalies
+                if "dns blocked" not in str(a).lower()
+                and "malware" not in str(a).lower()
+                and "virus" not in str(a).lower()
+            ]
+
+            body = data.get("body") or ""
+            scary = ("malware", "infected", "infection", "virus", "security threats")
+            if any(word in body.lower() for word in scary):
+                data["body"] = (
+                    "Network health was stable during this snapshot. NetMon recorded DNS blocked events, "
+                    "which is expected when the DNS ad blocker is intentionally filtering ads, trackers, "
+                    "and telemetry domains. No corroborating threat-intel hits or non-DNS critical events "
+                    "were present in this report window."
+                )
+            data["recommendations"] = [
+                "Treat routine DNS blocked entries as ad/tracker filtering noise.",
+                "Review top blocked domains only if one device suddenly becomes unusually noisy.",
+            ]
 
         report = SecurityReport(
             report_type      = "hourly",

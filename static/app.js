@@ -3050,6 +3050,80 @@ async function _fetchLogs(append = false) {
   }
 }
 
+function _renderLogAiResult(data, mode) {
+  const el = document.getElementById("log-ai-result");
+  if (!el) return;
+  el.style.display = "";
+
+  if (data.status === "disabled") {
+    el.innerHTML = `<strong>AI disabled.</strong> ${escapeHtml(data.message || "Enable AI in Settings to run synthesis.")}`;
+    return;
+  }
+
+  if (mode === "noise") {
+    const patterns = data.repeated_patterns || [];
+    el.innerHTML = `
+      <strong>Noise learning complete.</strong>
+      <div>${escapeHtml(data.safety || "No network behavior changed.")}</div>
+      ${patterns.length ? `<ul>${patterns.slice(0, 6).map(p =>
+        `<li>${escapeHtml(p.event)} × ${p.count}: ${escapeHtml(p.summary)}</li>`
+      ).join("")}</ul>` : `<div>No repeated DNS patterns met the threshold.</div>`}
+    `;
+    return;
+  }
+
+  const steps = Array.isArray(data.next_steps) ? data.next_steps : [];
+  const concerning = Array.isArray(data.concerning) ? data.concerning : [];
+  el.innerHTML = `
+    <strong>${escapeHtml(data.summary || "History synthesis complete.")}</strong>
+    ${concerning.length ? `<div>Common issues:</div><ul>${concerning.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul>` : ""}
+    ${steps.length ? `<div>Safe suggestions:</div><ul>${steps.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul>` : ""}
+    ${data.error ? `<div class="log-empty--error">${escapeHtml(data.error)}</div>` : ""}
+  `;
+}
+
+async function runLogAiSynthesis() {
+  const btn = document.getElementById("log-ai-synthesize-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Analyzing..."; }
+  try {
+    const data = await _apiFetch("/api/ai/history-synthesis", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({
+        days: 7,
+        question: "What common issues, repeated noise, and safe autonomous suggestions do you see?",
+      }),
+      timeoutMs: 120000,
+    });
+    _renderLogAiResult(data, "synthesis");
+    _logsState.offset = 0;
+    _fetchLogs(false);
+  } catch (err) {
+    _renderLogAiResult({ summary: "History synthesis failed.", error: err.message }, "synthesis");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Analyze last 7 days"; }
+  }
+}
+
+async function runDnsNoiseLearning() {
+  const btn = document.getElementById("log-ai-noise-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Learning..."; }
+  try {
+    const data = await _apiFetch("/api/autonomy/learn-noise", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ category: "dns", days: 7, apply: false }),
+    });
+    _renderLogAiResult(data, "noise");
+    _logsState.offset = 0;
+    _fetchLogs(false);
+  } catch (err) {
+    _renderLogAiResult({ repeated_patterns: [], safety: `Noise learning failed: ${err.message}` }, "noise");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Learn DNS noise"; }
+  }
+}
+
 // ── Shield / Security Dashboard ──────────────────────────────────────────────
 
 let _shieldTimer            = null;
@@ -4078,6 +4152,16 @@ document.addEventListener("click", (e) => {
   if (e.target.id === "log-load-more-btn") {
     _logsState.offset += _LOGS_PAGE;
     _fetchLogs(true);
+    return;
+  }
+
+  if (e.target.id === "log-ai-synthesize-btn") {
+    runLogAiSynthesis();
+    return;
+  }
+
+  if (e.target.id === "log-ai-noise-btn") {
+    runDnsNoiseLearning();
     return;
   }
 });

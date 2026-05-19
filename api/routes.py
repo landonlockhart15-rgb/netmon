@@ -2353,6 +2353,9 @@ def mark_all_alerts_read(db: Session = Depends(get_db)):
 def get_activity_logs(
     category: str = "",
     level:    str = "",
+    event:    str = "",
+    actor:    str = "",
+    device_ip: str = "",
     search:   str = "",
     limit:    int = 50,
     offset:   int = 0,
@@ -2364,20 +2367,37 @@ def get_activity_logs(
     Query params:
       category — filter by category (scan|traffic|ai|firewall|threat|system|alert)
       level    — filter by level (info|warning|critical|action|threat)
-      search   — substring match against summary
+      event    — filter by machine event name
+      actor    — filter by initiator (system|user|ai_auto|anomaly_auto|ntfy_command)
+      device_ip — filter by device IP
+      search   — substring match against summary, detail, event, actor, or device_ip
       limit    — rows to return (max 200)
       offset   — pagination offset
     """
     from sqlalchemy import or_
 
-    limit = min(limit, 200)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
     q = db.query(ActivityLog).order_by(ActivityLog.id.desc())
     if category:
         q = q.filter(ActivityLog.category == category)
     if level:
         q = q.filter(ActivityLog.level == level)
+    if event:
+        q = q.filter(ActivityLog.event == event)
+    if actor:
+        q = q.filter(ActivityLog.actor == actor)
+    if device_ip:
+        q = q.filter(ActivityLog.device_ip == device_ip)
     if search:
-        q = q.filter(ActivityLog.summary.ilike(f"%{search}%"))
+        like = f"%{search}%"
+        q = q.filter(or_(
+            ActivityLog.summary.ilike(like),
+            ActivityLog.detail.ilike(like),
+            ActivityLog.event.ilike(like),
+            ActivityLog.actor.ilike(like),
+            ActivityLog.device_ip.ilike(like),
+        ))
 
     total = q.count()
     rows  = q.offset(offset).limit(limit).all()
@@ -2397,10 +2417,132 @@ def get_activity_logs(
                 "detail":     r.detail,
                 "device_ip":  r.device_ip,
                 "device_id":  r.device_id,
+                "actor":      r.actor,
+                "reversible": bool(r.revert_json) and r.reverted_at is None,
+                "reverted_at": _iso(r.reverted_at),
+                "reverted_by": r.reverted_by,
             }
             for r in rows
         ],
     }
+
+
+@router.get("/api/logs/facets")
+def get_activity_log_facets(db: Session = Depends(get_db)):
+    """Return lightweight log filter metadata for custom queries."""
+    from sqlalchemy import func
+
+    def _counts(column, limit=50):
+        rows = (
+            db.query(column, func.count(ActivityLog.id))
+            .group_by(column)
+            .order_by(func.count(ActivityLog.id).desc())
+            .limit(limit)
+            .all()
+        )
+        return [{"value": value, "count": count} for value, count in rows if value]
+
+    return {
+        "levels": _counts(ActivityLog.level),
+        "categories": _counts(ActivityLog.category),
+        "events": _counts(ActivityLog.event),
+        "actors": _counts(ActivityLog.actor),
+    }
+
+
+@router.get("/api/logs/insights")
+def get_activity_log_insights(
+    days: int = 7,
+    db: Session = Depends(get_db),
+):
+    """Return deterministic, non-AI history insights for the requested window."""
+    from ai.history import build_history_context
+
+    return build_history_context(db, days=days)
+
+
+@router.post("/api/ai/history-synthesis")
+def run_history_synthesis(body: dict | None = None, db: Session = Depends(get_db)):
+    """
+    Ask AI to synthesize recent logs, alerts, health, reports, and traffic history.
+    This does not execute network/security actions. It writes one queryable
+    ActivityLog row with event=history_synthesis.
+    """
+    body = body or {}
+    if _get_setting_str(db, "ai_enabled", "false").lower() != "true":
+        return {"status": "disabled", "message": "AI is disabled in Settings"}
+
+    days = int(body.get("days", 7) or 7)
+    question = str(body.get("question", "") or "")
+
+    from ai.history import synthesize_history
+
+    return synthesize_history(db, days=days, question=question)
+
+
+@router.post("/api/autonomy/learn-noise")
+def learn_noise_patterns(body: dict | None = None, db: Session = Depends(get_db)):
+    """
+    Safely learn noisy patterns from recent logs.
+
+    This endpoint does not delete logs, block devices, or change firewall rules.
+    It records a queryable ActivityLog decision. If apply=true and the category
+    is dns, it only dismisses old DNS feed entries so the Shield feed is quieter;
+    DNS blocking behavior remains unchanged.
+    """
+    from collections import Counter
+
+    body = body or {}
+    category = str(body.get("category", "dns") or "dns").strip()
+    days = max(1, min(int(body.get("days", 7) or 7), 30))
+    apply = bool(body.get("apply", False))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    q = db.query(ActivityLog).filter(ActivityLog.created_at >= since)
+    if category:
+        q = q.filter(ActivityLog.category == category)
+    rows = q.order_by(desc(ActivityLog.id)).limit(1000).all()
+
+    patterns = Counter((r.event, r.summary) for r in rows)
+    repeated = [
+        {"event": event, "summary": summary, "count": count}
+        for (event, summary), count in patterns.most_common(20)
+        if count >= 3
+    ]
+
+    changed = 0
+    if apply and category == "dns":
+        changed = (
+            db.query(ActivityLog)
+            .filter(
+                ActivityLog.category == "dns",
+                ActivityLog.created_at >= since,
+                ActivityLog.dismissed == False,  # noqa: E712
+            )
+            .update({"dismissed": True}, synchronize_session=False)
+        )
+        db.commit()
+
+    detail = {
+        "category": category,
+        "days": days,
+        "apply": apply,
+        "dismissed_rows": changed,
+        "repeated_patterns": repeated,
+        "safety": "Only feed dismissal is applied; no network, DNS, firewall, or device behavior changed.",
+    }
+    write_log(
+        "info",
+        "ai",
+        "noise_learning",
+        (
+            f"Learned {len(repeated)} repeated {category or 'all'} log patterns"
+            + (f"; dismissed {changed} DNS feed rows" if changed else "")
+        ),
+        detail=detail,
+        actor="ai_auto",
+    )
+    return {"status": "ok", **detail}
 
 
 @router.delete("/api/logs")
