@@ -3339,6 +3339,51 @@ body {
   padding: 6px 0 2px;
 }
 
+.log-ai-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 14px;
+  align-items: center;
+  margin: 8px 0 12px;
+  padding: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+.log-ai-title {
+  font-size: .86rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.log-ai-sub {
+  margin-top: 3px;
+  font-size: .76rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.log-ai-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.log-ai-result {
+  grid-column: 1 / -1;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-default);
+  font-size: .8rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+.log-ai-result strong { color: var(--text-primary); }
+.log-ai-result ul { margin: 6px 0 0 18px; padding: 0; }
+.log-ai-result li { margin-bottom: 3px; }
+
+@media (max-width: 760px) {
+  .log-ai-panel { grid-template-columns: 1fr; }
+  .log-ai-actions { justify-content: flex-start; }
+}
+
 /* ══════════════════════════════════════════════════════
    SHIELD / SECURITY DASHBOARD
    ══════════════════════════════════════════════════════ */

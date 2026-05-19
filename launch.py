@@ -222,7 +222,7 @@ def _app_port() -> int:
 
 
 def _dashboard_url() -> str:
-    return f"http://localhost:{_app_port()}"
+    return f"http://127.0.0.1:{_app_port()}"
 
 
 def _open_dashboard(icon=None, item=None):

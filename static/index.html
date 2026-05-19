@@ -1313,6 +1313,17 @@
             </div>
 
             <div id="log-stats" class="log-stats"></div>
+            <div class="log-ai-panel">
+              <div class="log-ai-main">
+                <div class="log-ai-title">AI history synthesis</div>
+                <div class="log-ai-sub">Summarizes logs, alerts, health checks, reports, and DNS noise without taking network actions.</div>
+              </div>
+              <div class="log-ai-actions">
+                <button class="btn-sm" id="log-ai-synthesize-btn">Analyze last 7 days</button>
+                <button class="btn-sm" id="log-ai-noise-btn">Learn DNS noise</button>
+              </div>
+              <div id="log-ai-result" class="log-ai-result" style="display:none"></div>
+            </div>
             <div id="log-list" class="log-list">
               <div class="log-empty">Loading…</div>
             </div>
