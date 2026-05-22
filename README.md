@@ -34,7 +34,7 @@ The app is designed to run from a tray icon with a browser dashboard at
 ## Quick Start
 
 ```powershell
-git clone https://github.com/YOUR-USER/netmon.git
+git clone https://github.com/landonlockhart15-rgb/netmon.git
 cd netmon
 powershell -ExecutionPolicy Bypass -File .\tools\setup.ps1
 .\start.bat
