@@ -194,9 +194,28 @@ def run_analysis(capture_dir: Path = CAPTURE_DIR) -> Dict:
         else:
             top_destinations.append(entry)
 
+    # Build a compact conversations list (src↔dst pairs) for Phase 2/5 — the
+    # geo-anomaly sweep needs to know which LAN device talked to which
+    # external IP, and the redesigned Traffic tab surfaces this directly.
+    # We sort by bytes and cap at 30 to keep the JSON small.
+    conv_compact = []
+    for row in sorted(conv_rows, key=lambda r: r.get("total_bytes", 0), reverse=True)[:30]:
+        a, b = row["ip_a"], row["ip_b"]
+        # Normalize so the LAN-side IP is always 'src' when one exists.
+        a_priv, b_priv = _is_private(a), _is_private(b)
+        if b_priv and not a_priv:
+            a, b = b, a
+        conv_compact.append({
+            "src":     a,
+            "dst":     b,
+            "bytes":   row.get("total_bytes", 0),
+            "packets": row.get("total_packets", 0),
+        })
+
     return {
         "top_talkers":      top_talkers[:10],
         "top_destinations": top_destinations[:10],
+        "conversations":    conv_compact,
         "protocol_mix":     proto_counts,
         "dns_count":        dns_count,
         "top_domains":      [{"domain": d, "count": n} for d, n in top_domains],
@@ -274,6 +293,144 @@ def get_dns_per_device(
             key=lambda x: x["count"], reverse=True
         )[:30]
         for ip, domains in per_device.items()
+    }
+
+
+def get_device_activity(
+    device_ip: str,
+    capture_dir: Path = CAPTURE_DIR,
+    max_files: int = 5,
+) -> dict:
+    """
+    Extract detailed activity for a specific device IP from pcap files.
+
+    Returns:
+      http_requests:  [{time, host, uri, method, full_url, protocol: "http"}]
+      tls_sessions:   [{time, sni, dst_ip, protocol: "https"}]
+      dns_queries:    [{time, domain}]
+      summary:        {total_http, total_tls, total_dns, top_domains}
+    """
+    tshark = find_tool("tshark")
+    if not tshark:
+        return {"error": "tshark not found", "http_requests": [], "tls_sessions": [], "dns_queries": []}
+
+    files = get_readable_files(capture_dir, max_files=max_files)
+    if not files:
+        return {"error": "no capture files", "http_requests": [], "tls_sessions": [], "dns_queries": []}
+
+    http_requests: list[dict] = []
+    tls_sessions:  list[dict] = []
+    dns_queries:   list[dict] = []
+
+    for pcap in files:
+        try:
+            # HTTP requests — full URLs visible for unencrypted traffic
+            r = subprocess.run(
+                [tshark, "-r", str(pcap),
+                 "-Y", f"http.request and ip.src == {device_ip}",
+                 "-T", "fields",
+                 "-e", "frame.time_epoch",
+                 "-e", "http.request.method",
+                 "-e", "http.host",
+                 "-e", "http.request.uri",
+                 "-e", "http.user_agent"],
+                capture_output=True, text=True, timeout=30,
+                creationflags=_no_window(),
+            )
+            for ln in r.stdout.splitlines():
+                parts = ln.strip().split("\t")
+                if len(parts) >= 3 and parts[2].strip():
+                    host = parts[2].strip()
+                    uri  = parts[3].strip() if len(parts) > 3 else "/"
+                    http_requests.append({
+                        "time":     parts[0].strip(),
+                        "method":   parts[1].strip() or "GET",
+                        "host":     host,
+                        "uri":      uri,
+                        "full_url": f"http://{host}{uri}",
+                        "ua":       parts[4].strip() if len(parts) > 4 else "",
+                        "protocol": "http",
+                        "encrypted": False,
+                    })
+        except Exception:
+            pass
+
+        try:
+            # TLS SNI — domain visible from handshake even for HTTPS
+            r = subprocess.run(
+                [tshark, "-r", str(pcap),
+                 "-Y", f"tls.handshake.type == 1 and ip.src == {device_ip}",
+                 "-T", "fields",
+                 "-e", "frame.time_epoch",
+                 "-e", "tls.handshake.extensions_server_name",
+                 "-e", "ip.dst"],
+                capture_output=True, text=True, timeout=30,
+                creationflags=_no_window(),
+            )
+            seen_sni: set[str] = set()
+            for ln in r.stdout.splitlines():
+                parts = ln.strip().split("\t")
+                if len(parts) >= 2 and parts[1].strip():
+                    sni = parts[1].strip().lower()
+                    key = sni
+                    if key not in seen_sni:
+                        seen_sni.add(key)
+                        tls_sessions.append({
+                            "time":     parts[0].strip(),
+                            "sni":      sni,
+                            "dst_ip":   parts[2].strip() if len(parts) > 2 else "",
+                            "full_url": f"https://{sni}",
+                            "protocol": "https",
+                            "encrypted": True,
+                        })
+        except Exception:
+            pass
+
+        try:
+            # DNS queries with timestamps
+            r = subprocess.run(
+                [tshark, "-r", str(pcap),
+                 "-Y", f"dns.flags.response == 0 and ip.src == {device_ip}",
+                 "-T", "fields",
+                 "-e", "frame.time_epoch",
+                 "-e", "dns.qry.name"],
+                capture_output=True, text=True, timeout=30,
+                creationflags=_no_window(),
+            )
+            for ln in r.stdout.splitlines():
+                parts = ln.strip().split("\t")
+                if len(parts) >= 2 and parts[1].strip():
+                    dns_queries.append({
+                        "time":   parts[0].strip(),
+                        "domain": parts[1].strip().lower().rstrip("."),
+                    })
+        except Exception:
+            pass
+
+    # Deduplicate TLS by SNI keeping most recent, sort all by time desc
+    http_requests.sort(key=lambda x: x["time"], reverse=True)
+    tls_sessions.sort(key=lambda x:  x["time"], reverse=True)
+    dns_queries.sort(key=lambda x:   x["time"], reverse=True)
+
+    # Build combined activity feed (most recent first, deduplicated)
+    all_domains: dict[str, int] = {}
+    for item in http_requests:
+        all_domains[item["host"]] = all_domains.get(item["host"], 0) + 1
+    for item in tls_sessions:
+        all_domains[item["sni"]] = all_domains.get(item["sni"], 0) + 1
+    top = sorted(all_domains.items(), key=lambda x: x[1], reverse=True)[:20]
+
+    return {
+        "device_ip":    device_ip,
+        "http_requests": http_requests[:50],
+        "tls_sessions":  tls_sessions[:100],
+        "dns_queries":   dns_queries[:100],
+        "summary": {
+            "total_http": len(http_requests),
+            "total_tls":  len(tls_sessions),
+            "total_dns":  len(dns_queries),
+            "top_domains": [{"domain": d, "count": c} for d, c in top],
+        },
     }
 
 

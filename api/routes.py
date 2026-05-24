@@ -53,6 +53,7 @@ from models.tables import (
 from fastapi import UploadFile, File, Form
 import hashlib
 from monitoring.activity import write_log
+from network.protection import explain_protected_target, filter_blockable_ips, validate_block_target
 from scanner.runner import run_scan
 from scanner.parser import parse_nmap_xml
 from scanner.diff import compute_diff, build_snapshot
@@ -97,13 +98,22 @@ def _resolve_device(db: Session, d: dict):
         if prev_sd:
             existing = prev_sd.device
 
+    # Vendor enrichment via offline OUI database — fills in the gap when nmap
+    # didn't return a manufacturer (very common when the device is more than
+    # one hop away or has randomized MACs disabled).
+    from network.oui import enrich_vendor
+    enriched_vendor = enrich_vendor(d.get("mac") or "", d.get("vendor"))
+
     if existing:
         existing.last_seen = datetime.now(timezone.utc)
         if d["hostname"]: existing.hostname = d["hostname"]
-        if d["vendor"]:   existing.vendor   = d["vendor"]
+        if enriched_vendor and not existing.vendor:
+            existing.vendor = enriched_vendor
+        elif d["vendor"]:
+            existing.vendor = d["vendor"]
         return existing, False
     else:
-        device = Device(mac=d["mac"], vendor=d["vendor"], hostname=d["hostname"])
+        device = Device(mac=d["mac"], vendor=enriched_vendor or d["vendor"], hostname=d["hostname"])
         db.add(device)
         db.flush()
         return device, True
@@ -148,7 +158,9 @@ def get_runtime_status():
 
 
 @router.post("/api/scan")
-def trigger_scan(db: Session = Depends(get_db)):
+def trigger_scan(body: dict = None, db: Session = Depends(get_db)):
+    body = body or {}
+    quick = bool(body.get("quick", False))
     from monitoring.state import scan_begin, scan_end
 
     try:
@@ -169,7 +181,7 @@ def trigger_scan(db: Session = Depends(get_db)):
     db.refresh(scan)
 
     try:
-        xml_output     = run_scan(target)
+        xml_output     = run_scan(target, quick=quick)
         parsed_devices = parse_nmap_xml(xml_output)
 
         new_device_count = 0
@@ -266,11 +278,30 @@ def get_devices(db: Session = Depends(get_db)):
     devices = []
     for sd in scan_devices:
         dev = sd.device
+        # Hourly auto-scan uses -sn (no ports), so sd.ports_list is empty for
+        # most rows. Fall back to the most recent ScanDevice that actually has
+        # port data — same approach as /api/devices/all. Without this, every
+        # device shows 0 open ports between deep scans.
+        ports = sd.ports_list
+        if not ports:
+            last_with_ports = (
+                db.query(ScanDevice)
+                .filter(
+                    ScanDevice.device_id == dev.id,
+                    ScanDevice.open_ports.notin_(["[]", ""]),
+                    ScanDevice.open_ports.isnot(None),
+                )
+                .order_by(desc(ScanDevice.id))
+                .first()
+            )
+            if last_with_ports:
+                ports = last_with_ports.ports_list
         devices.append({
             "ip": sd.ip, "mac": dev.mac or "unknown",
             "vendor": dev.vendor or "unknown",
             "hostname": sd.hostname or dev.hostname or "",
-            "label": dev.label or "", "open_ports": sd.ports_list,
+            "label": dev.label or "", "open_ports": ports,
+            "os_guess": dev.os_guess or "",
             "first_seen": _iso(dev.first_seen),
             "last_seen":  _iso(dev.last_seen)  if dev.last_seen  else None,
             "is_known": dev.is_known, "device_id": dev.id,
@@ -370,7 +401,8 @@ def get_all_devices(current_only: bool = False, db: Session = Depends(get_db)):
             db.query(ScanDevice)
             .filter(
                 ScanDevice.device_id == dev.id,
-                ScanDevice.open_ports.notin_(["[]", "", None]),
+                ScanDevice.open_ports.notin_(["[]", ""]),
+                ScanDevice.open_ports.isnot(None),
             )
             .order_by(desc(ScanDevice.id))
             .first()
@@ -391,6 +423,7 @@ def get_all_devices(current_only: bool = False, db: Session = Depends(get_db)):
             "last_seen":  _iso(dev.last_seen)  if dev.last_seen  else None,
             "latest_ip":  latest_sd.ip if latest_sd else None,
             "open_ports": latest_sd_ports.ports_list if latest_sd_ports else [],
+            "os_guess":   dev.os_guess or "",
             "scan_count": scan_count,
         })
     return result
@@ -398,7 +431,7 @@ def get_all_devices(current_only: bool = False, db: Session = Depends(get_db)):
 
 @router.patch("/api/device/{device_id}")
 def update_device(device_id: int, updates: dict, db: Session = Depends(get_db)):
-    """Update a device's label and/or trust (is_known) status."""
+    """Update a device's label, trust (is_known), or allow-list."""
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -406,8 +439,62 @@ def update_device(device_id: int, updates: dict, db: Session = Depends(get_db)):
         device.label = (updates["label"] or "").strip() or None
     if "is_known" in updates:
         device.is_known = bool(updates["is_known"])
+    # Per-device allow-list (Phase 1.5): suppress anomaly alerts when the
+    # device's behavior matches what the user has explicitly approved.
+    # Body: {"allow": {"allowed_ports":[22,80], "allowed_countries":["US"],
+    #                  "allowed_destinations":["1.2.3.4"], "allowed_high_bandwidth":true}}
+    if "allow" in updates and isinstance(updates["allow"], dict):
+        try:
+            existing = json.loads(device.allow_json or "{}")
+        except Exception:
+            existing = {}
+        existing.update(updates["allow"])
+        device.allow_json = json.dumps(existing)
     db.commit()
-    return {"id": device.id, "label": device.label, "is_known": device.is_known}
+    return {
+        "id": device.id,
+        "label": device.label,
+        "is_known": device.is_known,
+        "allow": json.loads(device.allow_json) if device.allow_json else {},
+    }
+
+
+@router.post("/api/devices/trust-all")
+def trust_all_devices(db: Session = Depends(get_db)):
+    """Mark every known device as trusted (is_known=True)."""
+    updated = db.query(Device).filter(Device.is_known == False).update({"is_known": True})  # noqa: E712
+    db.commit()
+    return {"updated": updated}
+
+
+@router.post("/api/device/{device_id}/allow")
+def add_device_allow_entry(device_id: int, entry: dict, db: Session = Depends(get_db)):
+    """
+    Append a single allow-list entry. Body forms supported:
+      {"port": 22}                 -> append to allowed_ports
+      {"country": "US"}            -> append to allowed_countries
+      {"destination": "1.2.3.4"}   -> append to allowed_destinations
+      {"high_bandwidth": true}     -> set allowed_high_bandwidth flag
+    """
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    try:
+        allow = json.loads(device.allow_json or "{}")
+    except Exception:
+        allow = {}
+    for key, list_name in (("port", "allowed_ports"),
+                           ("country", "allowed_countries"),
+                           ("destination", "allowed_destinations")):
+        if key in entry and entry[key] is not None:
+            arr = allow.setdefault(list_name, [])
+            if entry[key] not in arr:
+                arr.append(entry[key])
+    if "high_bandwidth" in entry:
+        allow["allowed_high_bandwidth"] = bool(entry["high_bandwidth"])
+    device.allow_json = json.dumps(allow)
+    db.commit()
+    return {"id": device.id, "allow": allow}
 
 
 @router.get("/api/device/{device_id}/history")
@@ -672,6 +759,67 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
 
     db.commit()
     return {"updated": updated, "ignored_env_backed": ignored}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Notification diagnostics — used by the Settings UI to verify ntfy delivery.
+# Reads the current ntfy config, masks the password, optionally sends a real
+# test notification. Helps users debug why they're not getting alerts.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/api/diagnostics/notifications")
+def get_notification_diagnostics(db: Session = Depends(get_db)):
+    """Report current ntfy/email config + reachability — never returns the password."""
+    import os as _os
+    def _g(k, d=""):
+        row = db.query(Setting).filter(Setting.key == k).first()
+        return row.value if (row and row.value is not None) else d
+    cfg = {
+        "ntfy_enabled":     _g("ntfy_enabled", "false"),
+        "ntfy_server":      _g("ntfy_server", "https://ntfy.sh"),
+        "ntfy_topic":       _g("ntfy_topic", ""),
+        "ntfy_user":        _g("ntfy_user", ""),
+        "ntfy_pass_set":    bool(_os.getenv("NTFY_PASS") or _g("ntfy_pass", "")),
+        "ntfy_pass_source": "env" if _os.getenv("NTFY_PASS") else ("db" if _g("ntfy_pass") else "none"),
+        "ntfy_min_level":   _g("ntfy_min_level", "critical"),
+        "email_enabled":    _g("email_enabled", "false"),
+        "email_to":         _g("email_to", ""),
+    }
+    # Quick missing-config checklist for the UI.
+    issues: list[str] = []
+    if cfg["ntfy_enabled"] != "true":
+        issues.append("ntfy_enabled is false — set it to 'true' in Settings.")
+    if not cfg["ntfy_topic"]:
+        issues.append("ntfy_topic is empty — set a unique topic string.")
+    if cfg["ntfy_server"].startswith("http://") and "localhost" not in cfg["ntfy_server"]:
+        issues.append("ntfy_server is HTTP and not localhost — phone may refuse.")
+    if cfg["ntfy_user"] and not cfg["ntfy_pass_set"]:
+        issues.append("ntfy_user is set but no NTFY_PASS env or DB password — auth will 401.")
+    if cfg["ntfy_min_level"] == "critical":
+        issues.append(
+            "ntfy_min_level is 'critical' — only critical+ pushes get through. "
+            "Truly-new device alerts now bypass this via force_push, but other "
+            "warnings (degraded health, traffic spikes) won't push until you "
+            "lower the threshold."
+        )
+    return {**cfg, "issues": issues}
+
+
+@router.post("/api/diagnostics/notifications/test")
+def send_notification_test():
+    """Send a real test notification through ntfy and report what happened."""
+    from monitoring.notifier import alert as _notify
+    try:
+        _notify(
+            title="NetMon test notification",
+            body="If you can read this on your phone, ntfy delivery is working.",
+            level="warning",
+            tags=["white_check_mark"],
+            force_push=True,
+        )
+        return {"status": "sent", "message": "Test notification fired. Check your phone."}
+    except Exception as exc:
+        return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1359,6 +1507,102 @@ def ai_investigate(body: dict, db: Session = Depends(get_db)):
             )
             progress_append("  No fingerprint found\n")
 
+        # ── Persist investigate findings to the device record ──────────────────
+        # Surfaces OS + open ports in the devices tab without waiting for the
+        # next deep scan. Idempotent: re-running investigate refreshes the OS
+        # string and unions newly-seen ports with whatever's already stored.
+        try:
+            from models.tables import Device as _Device, ScanDevice as _ScanDevice
+            from datetime import datetime as _dt
+
+            # Parse open ports from nmap -sV output (lines like "80/tcp open http nginx").
+            _learned_ports: set[int] = set()
+            _port_line_re = _re.compile(r'^\s*(\d{1,5})/tcp\s+open\b', _re.M)
+            for _ml in (_nmap_lines if _nmap else []):
+                m = _port_line_re.match(_ml)
+                if m:
+                    try: _learned_ports.add(int(m.group(1)))
+                    except ValueError: pass
+            # Fold in banner-grab confirmations (these only fire if the port answered).
+            for _fpl in _fp_lines:
+                mm = _re.search(r'(?:HTTP|SSH)\s*(?:port|banner.*port)?\s*[: (]\s*(\d{1,5})', _fpl, _re.I)
+                if mm:
+                    try: _learned_ports.add(int(mm.group(1)))
+                    except ValueError: pass
+
+            # Build a short OS string from whatever fingerprint hits we got.
+            _os_str = ""
+            for _fpl in _fp_lines:
+                if _fpl.startswith("OS detection (nmap -O):"):
+                    # Pick the most useful chunk after "OS details:" or "Running:"
+                    for _seg in _fpl.split("|"):
+                        _seg = _seg.strip()
+                        for _kw in ("OS details:", "Running:", "Aggressive OS guesses:"):
+                            if _kw in _seg:
+                                _os_str = _seg.split(_kw, 1)[1].strip()[:120]
+                                break
+                        if _os_str: break
+                    if _os_str: break
+            if not _os_str:
+                # Fall back to SMB OS discovery line ("OS: Windows 10 ...")
+                for _fpl in _fp_lines:
+                    if _fpl.startswith("NetBIOS/SMB:"):
+                        mm = _re.search(r'OS:\s*([^|]+)', _fpl)
+                        if mm:
+                            _os_str = mm.group(1).strip()[:120]
+                            break
+            if not _os_str:
+                # UPnP device description often names the platform (e.g. "Linux/3.14 UPnP/1.0").
+                for _fpl in _fp_lines:
+                    if _fpl.startswith("UPnP"):
+                        mm = _re.search(r'Server:\s*([^|]+)', _fpl)
+                        if mm:
+                            _os_str = mm.group(1).strip()[:120]
+                            break
+
+            _dev_row = (
+                db.query(_ScanDevice)
+                  .filter(_ScanDevice.ip == item)
+                  .order_by(desc(_ScanDevice.id))
+                  .first()
+            )
+            _dev = _dev_row.device if _dev_row else None
+
+            _wrote = []
+            if _dev:
+                if _os_str:
+                    _dev.os_guess = _os_str
+                    _dev.os_guess_at = _dt.utcnow()
+                    _wrote.append(f"OS: {_os_str}")
+                if _learned_ports:
+                    # Union with the most recent ScanDevice that has port data,
+                    # so quick scans + investigate stack instead of overwrite.
+                    _existing_ports: set[int] = set()
+                    _latest_with_ports = (
+                        db.query(_ScanDevice)
+                          .filter(
+                              _ScanDevice.device_id == _dev.id,
+                              _ScanDevice.open_ports.notin_(["[]", ""]),
+                              _ScanDevice.open_ports.isnot(None),
+                          )
+                          .order_by(desc(_ScanDevice.id))
+                          .first()
+                    )
+                    if _latest_with_ports:
+                        try: _existing_ports = set(int(p) for p in _latest_with_ports.ports_list)
+                        except Exception: pass
+                    _merged = sorted(_existing_ports | _learned_ports)
+                    # Stamp the most-recent ScanDevice row for this IP so /api/devices
+                    # picks it up immediately (it queries latest scan and falls back
+                    # to the most-recent row with port data).
+                    _dev_row.open_ports = json.dumps(_merged)
+                    _wrote.append(f"ports: {len(_merged)} ({len(_learned_ports)} new)")
+                if _wrote:
+                    db.commit()
+                    progress_append("  Saved to device record: " + ", ".join(_wrote) + "\n")
+        except Exception as _persist_ex:
+            progress_append(f"  (could not persist findings: {_persist_ex})\n")
+
         # ── Tshark deep traffic analysis ──────────────────────────────────────
         progress_append("Analyzing traffic captures...\n")
         try:
@@ -1660,12 +1904,55 @@ def ai_investigate(body: dict, db: Session = Depends(get_db)):
             "error": f"auto_execute blocked: '{auto_action_type}' requires explicit user approval — not auto-fired.",
         }
         auto_action_type = "no_action"
+    elif auto_action_type in {"block_ip_firewall", "block_device"} and auto_res:
+        _target_ip = (auto_res.get("params") or {}).get("ip", "")
+        _protected_reason = explain_protected_target(_target_ip)
+        if _protected_reason:
+            auto_executed = {
+                "action_type": auto_action_type,
+                "error": f"auto_execute blocked: {_protected_reason}",
+            }
+            auto_action_type = "no_action"
 
     if auto_action_type and auto_action_type != "no_action" and auto_res:
         try:
             exec_body   = {"action_type": auto_action_type, "params": auto_res.get("params", {})}
             exec_result = ai_resolve(exec_body, db)
-            if isinstance(exec_result, dict) and exec_result.get("success"):
+            _exec_ok = isinstance(exec_result, dict) and bool(exec_result.get("success"))
+            try:
+                from ai.knowledge_bridge import record_remediation_outcome
+                _lesson_service_map = {
+                    "block_ip_firewall": "security",
+                    "block_device": "security",
+                    "block_domain_outbound": "dns",
+                    "whitelist_domain": "dns",
+                    "remove_from_whitelist": "dns",
+                    "unblock_ip_firewall": "security",
+                    "unblock_domain_outbound": "dns",
+                    "unblock_by_rule_names": "security",
+                    "mark_untrusted": "device",
+                    "mark_trusted": "device",
+                    "label_device": "device",
+                    "create_alert": "device",
+                }
+                record_remediation_outcome(
+                    service=_lesson_service_map.get(auto_action_type, "netmon"),
+                    evidence={
+                        "item": item,
+                        "context": (context or "")[:500],
+                        "verdict": parsed.get("verdict"),
+                        "what": (parsed.get("what") or "")[:200],
+                    },
+                    action=auto_action_type,
+                    params=auto_res.get("params", {}),
+                    success=_exec_ok,
+                    summary=f"AI auto-executed {auto_action_type} on {item}: "
+                            f"{(parsed.get('what') or '')[:160]}",
+                    severity=("high" if parsed.get("verdict") == "malicious" else "medium"),
+                )
+            except Exception:
+                pass  # never let learning break the action path
+            if _exec_ok:
                 auto_executed = {
                     "action_type":  auto_action_type,
                     "description":  auto_res.get("description", ""),
@@ -1865,6 +2152,10 @@ def ai_resolve(body: dict, db: Session = Depends(get_db)):
         ip = params.get("ip", "")
         if not ip:
             raise HTTPException(status_code=400, detail="ip required")
+        try:
+            ip = validate_block_target(ip)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail=f"refusing firewall block: {exc}")
         rule_in  = f"NetMon-Block-{ip}-IN"
         rule_out = f"NetMon-Block-{ip}-OUT"
         errors = []
@@ -1928,6 +2219,10 @@ def ai_resolve(body: dict, db: Session = Depends(get_db)):
         message = params.get("message", f"Device {ip} flagged as potentially hostile by AI investigation.")
         if not ip:
             raise HTTPException(status_code=400, detail="ip required")
+        try:
+            ip = validate_block_target(ip)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail=f"refusing device block: {exc}")
         sd  = db.query(ScanDevice).filter(ScanDevice.ip == ip).order_by(desc(ScanDevice.id)).first()
         dev = sd.device if sd else None
         if not dev:
@@ -1984,9 +2279,10 @@ def ai_resolve(body: dict, db: Session = Depends(get_db)):
                 _off += _rl
         except Exception:
             pass
+        resolved_ips, skipped_ips = filter_blockable_ips(resolved_ips)
 
         rule_names: list[str] = []
-        errors:     list[str] = []
+        errors:     list[str] = skipped_ips[:]
 
         for ip4 in resolved_ips:
             rule = f"NetMon-DomainBlock-{domain}-{ip4}"
@@ -2768,8 +3064,28 @@ def traffic_start(body: dict, db: Session = Depends(get_db)):
     file_size_mb = int(body.get("file_size_mb", 10))
     file_count   = int(body.get("file_count",   5))
 
+    # Auto-detect interface if not provided
     if not interface:
-        raise HTTPException(status_code=400, detail="interface is required")
+        try:
+            from traffic.interfaces import list_interfaces
+            iface_info = list_interfaces()
+            ifaces = iface_info.get("interfaces", [])
+            _skip = {"loopback", "wsl", "hyper-v", "bluetooth", "tailscale", "virtual", "vethernet"}
+            for ifc in ifaces:
+                desc = (ifc.get("description") or ifc.get("display") or "").lower()
+                if "wi-fi" in desc or "wifi" in desc or "wireless" in desc:
+                    interface = ifc.get("name", ""); break
+            if not interface:
+                for ifc in ifaces:
+                    desc = (ifc.get("description") or ifc.get("display") or "").lower()
+                    if "ethernet" in desc and not any(s in desc for s in _skip):
+                        interface = ifc.get("name", ""); break
+            if not interface and ifaces:
+                interface = ifaces[0].get("name", "")
+        except Exception:
+            pass
+    if not interface:
+        raise HTTPException(status_code=400, detail="No capture interface found. Install Wireshark/Npcap.")
 
     # Persist settings so capture can auto-resume after server restart
     for key, val in [
@@ -2873,6 +3189,347 @@ def traffic_summary(db: Session = Depends(get_db)):
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 5 — Traffic dashboard endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/api/traffic/dashboard")
+def traffic_dashboard(db: Session = Depends(get_db)):
+    """
+    Bundles everything the redesigned Traffic tab needs:
+      • capture state + packet rate + active devices count
+      • last summary's conversations + top talkers + protocols
+      • recent incident captures
+    Cheap — all from existing tables.
+    """
+    from traffic.capture import capture_engine
+    status = capture_engine.get_status()
+    summary_row = db.query(TrafficSummary).order_by(desc(TrafficSummary.id)).first()
+
+    pps = 0.0
+    bps = 0.0
+    devices_active = 0
+    top_protocol = "—"
+    if summary_row:
+        prev = (
+            db.query(TrafficSummary)
+            .filter(TrafficSummary.id < summary_row.id)
+            .order_by(desc(TrafficSummary.id)).first()
+        )
+        if prev and summary_row.created_at and prev.created_at:
+            try:
+                dur = (summary_row.created_at - prev.created_at).total_seconds() or 1
+                pps = round(max(0, (summary_row.total_packets or 0) - (prev.total_packets or 0)) / dur, 1)
+                bps = round(max(0, (summary_row.total_bytes or 0) - (prev.total_bytes or 0)) / dur, 0)
+            except Exception:
+                pass
+        try:
+            devices_active = len(json.loads(summary_row.top_talkers or "[]"))
+        except Exception:
+            pass
+        try:
+            mix = json.loads(summary_row.protocol_mix or "{}")
+            if mix:
+                top_protocol = max(mix.items(), key=lambda kv: kv[1])[0]
+        except Exception:
+            pass
+
+    # Conversations — analyzer now emits these alongside the summary. They're
+    # not persisted as a separate column, so we reconstruct from top_talkers
+    # + top_destinations when raw conversations aren't available.
+    conversations: list[dict] = []
+    if summary_row:
+        try:
+            talkers = json.loads(summary_row.top_talkers or "[]")
+            dests = json.loads(summary_row.top_destinations or "[]")
+            # Naive pairing: present each (talker, destination) row scaled by bytes share.
+            for t in talkers[:6]:
+                for d in dests[:6]:
+                    conversations.append({
+                        "src":      t.get("ip"),
+                        "dst":      d.get("ip"),
+                        "bytes":    min(t.get("bytes", 0), d.get("bytes", 0)),
+                        "packets":  min(t.get("packets", 0), d.get("packets", 0)),
+                        "country":  None,
+                    })
+        except Exception:
+            pass
+
+    # Enrich destinations with country from geo
+    try:
+        from network.geo import country_for_ip
+        for c in conversations:
+            if c.get("dst"):
+                c["country"] = country_for_ip(c["dst"])
+    except Exception:
+        pass
+
+    # Recent incident captures
+    try:
+        from models.tables import IncidentCapture
+        incident_rows = (
+            db.query(IncidentCapture)
+            .order_by(desc(IncidentCapture.id)).limit(20).all()
+        )
+        incidents = [{
+            "id":            r.id,
+            "created_at":    _iso(r.created_at),
+            "anomaly_type":  r.anomaly_type,
+            "device_ip":     r.device_ip,
+            "file_path":     r.file_path,
+            "size_bytes":    r.file_size_bytes,
+        } for r in incident_rows]
+    except Exception:
+        incidents = []
+
+    return {
+        "capture": {
+            "running":   bool(status.get("running")),
+            "interface": status.get("interface"),
+            "started_at": _iso(status.get("started_at")) if status.get("started_at") else None,
+        },
+        "stats": {
+            "pps":          pps,
+            "bps":          bps,
+            "devices":      devices_active,
+            "top_protocol": top_protocol,
+        },
+        "conversations": conversations[:30],
+        "incidents":     incidents,
+    }
+
+
+@router.get("/api/traffic/device/{device_id}")
+def traffic_for_device(device_id: int, db: Session = Depends(get_db)):
+    """Top destinations + DNS hints + country mix for one device."""
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    summary_row = db.query(TrafficSummary).order_by(desc(TrafficSummary.id)).first()
+    talkers = []
+    dests   = []
+    domains = []
+    if summary_row:
+        try:
+            for t in json.loads(summary_row.top_talkers or "[]"):
+                talkers.append(t)
+            for d in json.loads(summary_row.top_destinations or "[]"):
+                dests.append(d)
+            for d in json.loads(summary_row.top_domains or "[]"):
+                domains.append(d)
+        except Exception:
+            pass
+
+    try:
+        from models.tables import DeviceCountryHistory
+        country_rows = (
+            db.query(DeviceCountryHistory)
+            .filter(DeviceCountryHistory.device_id == device_id)
+            .order_by(desc(DeviceCountryHistory.last_seen)).all()
+        )
+        countries = [{
+            "country":     c.country,
+            "first_seen":  _iso(c.first_seen),
+            "last_seen":   _iso(c.last_seen),
+            "total_bytes": c.total_bytes or 0,
+        } for c in country_rows]
+    except Exception:
+        countries = []
+
+    return {
+        "device_id":         device.id,
+        "label":             device.label,
+        "hostname":          device.hostname,
+        "vendor":            device.vendor,
+        "top_destinations":  dests,
+        "top_talkers":       talkers,
+        "top_domains":       domains,
+        "countries":         countries,
+    }
+
+
+@router.get("/api/traffic/device/{device_ip}/activity")
+def device_activity(device_ip: str, db: Session = Depends(get_db)):
+    """
+    Deep activity extraction for a specific device IP.
+    Extracts HTTP URLs, TLS SNI (HTTPS domains), and DNS queries
+    from recent pcap files using tshark. Returns clickable URLs.
+    Also saves learned fingerprint data (device type, vendor) back to the device record.
+    """
+    from traffic.analyzer import get_device_activity, CAPTURE_DIR
+    result = get_device_activity(device_ip, CAPTURE_DIR, max_files=10)
+
+    # Save what we learn back to the device record
+    _learn_from_activity(device_ip, result, db)
+
+    return result
+
+
+def _learn_from_activity(device_ip: str, activity: dict, db) -> None:
+    """Fingerprint device from captured traffic and update its record."""
+    try:
+        device = (db.query(Device)
+                  .join(ScanDevice, ScanDevice.device_id == Device.id)
+                  .filter(ScanDevice.ip == device_ip)
+                  .order_by(desc(ScanDevice.id)).first())
+        if not device:
+            return
+
+        ua_strings = [r.get("ua", "") for r in activity.get("http_requests", []) if r.get("ua")]
+        domains    = [d["domain"] for d in activity.get("summary", {}).get("top_domains", [])]
+        changed    = False
+
+        # Infer device type from User-Agent
+        inferred_vendor = _infer_vendor_from_ua(ua_strings)
+        if inferred_vendor and not device.vendor:
+            device.vendor = inferred_vendor
+            changed = True
+
+        # Infer OS/device type from DNS patterns
+        inferred_type = _infer_type_from_domains(domains)
+        if inferred_type and not device.label:
+            device.label = inferred_type
+            changed = True
+
+        # Store top domains in allow_json as 'learned_domains' for future use
+        if domains:
+            try:
+                existing = json.loads(device.allow_json or "{}")
+            except Exception:
+                existing = {}
+            existing["learned_domains"] = domains[:20]
+            existing["last_activity_ip"] = device_ip
+            device.allow_json = json.dumps(existing)
+            changed = True
+
+        if changed:
+            db.commit()
+            write_log("info", "system", "device_learned",
+                      f"Learned from traffic: {device_ip} → vendor={device.vendor} label={device.label}",
+                      device_ip=device_ip)
+    except Exception as _e:
+        db.rollback()
+
+
+def _infer_vendor_from_ua(ua_strings: list[str]) -> str:
+    """Extract vendor/manufacturer from HTTP User-Agent strings."""
+    for ua in ua_strings:
+        ua_l = ua.lower()
+        if "iphone" in ua_l or "ipad" in ua_l:   return "Apple (iPhone/iPad)"
+        if "android" in ua_l and "samsung" in ua_l: return "Samsung Android"
+        if "android" in ua_l:                       return "Android Device"
+        if "roku" in ua_l:                          return "Roku"
+        if "kindle" in ua_l or "silk" in ua_l:      return "Amazon Kindle"
+        if "windows nt" in ua_l:                    return "Windows PC"
+        if "macintosh" in ua_l or "mac os" in ua_l: return "Apple Mac"
+        if "linux" in ua_l and "x86" in ua_l:       return "Linux PC"
+        if "playstation" in ua_l:                   return "PlayStation"
+        if "xbox" in ua_l:                          return "Xbox"
+    return ""
+
+
+def _infer_type_from_domains(domains: list[str]) -> str:
+    """Infer device type from DNS query patterns."""
+    dom = " ".join(domains).lower()
+    if any(x in dom for x in ["apple.com","icloud.com","apple-dns","courier.push.apple"]):
+        return "Apple Device"
+    if any(x in dom for x in ["android","googleapis","gstatic","play.google"]):
+        return "Android Device"
+    if any(x in dom for x in ["roku","rbxd.com"]):
+        return "Roku Streaming"
+    if any(x in dom for x in ["amazon","kindle","alexa","echo"]):
+        return "Amazon Device"
+    if any(x in dom for x in ["xbox","microsoft.com","xboxlive"]):
+        return "Xbox"
+    if any(x in dom for x in ["playstation","sony"]):
+        return "PlayStation"
+    if any(x in dom for x in ["ring.com","ring-door","blink"]):
+        return "Ring/Security Camera"
+    if any(x in dom for x in ["tuya","smartlife","tp-link","tplink-smarthome","kasa"]):
+        return "Smart Home Device"
+    if any(x in dom for x in ["netgear","routerlogin","192.168.1.1"]):
+        return "Router/Gateway"
+    if any(x in dom for x in ["philips","hue","meethue"]):
+        return "Philips Hue"
+    if any(x in dom for x in ["nest","google-nest"]):
+        return "Google Nest"
+    return ""
+
+
+@router.get("/api/incidents")
+def list_incidents(limit: int = 50, db: Session = Depends(get_db)):
+    from models.tables import IncidentCapture
+    rows = (
+        db.query(IncidentCapture)
+        .order_by(desc(IncidentCapture.id)).limit(limit).all()
+    )
+    return [{
+        "id":              r.id,
+        "created_at":      _iso(r.created_at),
+        "anomaly_log_id":  r.anomaly_log_id,
+        "anomaly_type":    r.anomaly_type,
+        "device_ip":       r.device_ip,
+        "file_path":       r.file_path,
+        "size_bytes":      r.file_size_bytes,
+        "window_start":    _iso(r.window_start) if r.window_start else None,
+        "window_end":      _iso(r.window_end)   if r.window_end   else None,
+    } for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 8 — Hunt rule management
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/api/hunt/rules")
+def list_hunt_rules(db: Session = Depends(get_db)):
+    from models.tables import HuntRule
+    rows = db.query(HuntRule).order_by(HuntRule.id).all()
+    return [{
+        "id":            r.id,
+        "name":          r.name,
+        "description":   r.description,
+        "yaml_body":     r.yaml_body,
+        "enabled":       r.enabled,
+        "severity":      r.severity,
+        "last_fired_at": _iso(r.last_fired_at) if r.last_fired_at else None,
+        "fire_count":    r.fire_count or 0,
+    } for r in rows]
+
+
+@router.post("/api/hunt/rules")
+def create_or_update_hunt_rule(body: dict, db: Session = Depends(get_db)):
+    from models.tables import HuntRule
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    yaml_body = body.get("yaml_body") or body.get("body") or ""
+    if not yaml_body.strip():
+        raise HTTPException(status_code=400, detail="yaml_body is required")
+    row = db.query(HuntRule).filter(HuntRule.name == name).first()
+    if not row:
+        row = HuntRule(name=name)
+        db.add(row)
+    row.description = body.get("description")
+    row.yaml_body   = yaml_body
+    row.enabled     = bool(body.get("enabled", True))
+    row.severity    = body.get("severity") or "warning"
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "name": row.name, "enabled": row.enabled}
+
+
+@router.delete("/api/hunt/rules/{rule_id}")
+def delete_hunt_rule(rule_id: int, db: Session = Depends(get_db)):
+    from models.tables import HuntRule
+    row = db.query(HuntRule).filter(HuntRule.id == rule_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/api/traffic/mitm/status")
 def traffic_mitm_status():
     """Return current ARP MitM engine state."""
@@ -2891,24 +3548,59 @@ def traffic_mitm_start(body: dict, db: Session = Depends(get_db)):
 
     interface  = (body.get("interface") or "").strip()
     gateway_ip = (body.get("gateway_ip") or "").strip() or None
+    target_ips = body.get("target_ips")  # optional: list of specific IPs
 
+    # Auto-detect interface if not provided — prefer Wi-Fi/Ethernet over virtual adapters
     if not interface:
-        raise HTTPException(status_code=400, detail="interface is required")
+        try:
+            from traffic.interfaces import list_interfaces
+            iface_info = list_interfaces()
+            ifaces = iface_info.get("interfaces", [])
+            # Priority: Wi-Fi first, then Ethernet, then any non-virtual
+            _skip = {"loopback", "wsl", "hyper-v", "bluetooth", "tailscale",
+                     "local area connection", "virtual", "vethernet"}
+            preferred = None
+            for ifc in ifaces:
+                desc = (ifc.get("description") or ifc.get("display") or "").lower()
+                name = ifc.get("name", "")
+                if "wi-fi" in desc or "wifi" in desc or "wireless" in desc:
+                    preferred = name
+                    break
+            if not preferred:
+                for ifc in ifaces:
+                    desc = (ifc.get("description") or ifc.get("display") or "").lower()
+                    if "ethernet" in desc and not any(s in desc for s in _skip):
+                        preferred = ifc.get("name", "")
+                        break
+            if not preferred:
+                for ifc in ifaces:
+                    desc = (ifc.get("description") or ifc.get("display") or "").lower()
+                    if not any(s in desc for s in _skip):
+                        preferred = ifc.get("name", "")
+                        break
+            interface = preferred or (ifaces[0].get("name", "") if ifaces else "")
+        except Exception:
+            pass
+    if not interface:
+        raise HTTPException(status_code=400, detail="Could not auto-detect network interface. Please specify one in the Traffic tab.")
 
-    # Pull target IPs from latest scan
-    latest_scan = (
-        db.query(Scan).filter(Scan.status == "complete")
-        .order_by(desc(Scan.id)).first()
-    )
-    if not latest_scan:
-        raise HTTPException(status_code=400,
-                            detail="Run a network scan first so targets are known")
-
-    targets = [
-        sd.ip for sd in
-        db.query(ScanDevice).filter(ScanDevice.scan_id == latest_scan.id).all()
-        if sd.ip
-    ]
+    if target_ips and isinstance(target_ips, list):
+        # Caller specified exact targets
+        targets = [ip.strip() for ip in target_ips if ip and ip.strip()]
+    else:
+        # Default: all devices from latest scan
+        latest_scan = (
+            db.query(Scan).filter(Scan.status == "complete")
+            .order_by(desc(Scan.id)).first()
+        )
+        if not latest_scan:
+            raise HTTPException(status_code=400,
+                                detail="Run a network scan first so targets are known")
+        targets = [
+            sd.ip for sd in
+            db.query(ScanDevice).filter(ScanDevice.scan_id == latest_scan.id).all()
+            if sd.ip
+        ]
 
     result = mitm_engine.start(
         interface=interface,
@@ -2921,10 +3613,33 @@ def traffic_mitm_start(body: dict, db: Session = Depends(get_db)):
 
 
 @router.post("/api/traffic/mitm/stop")
-def traffic_mitm_stop():
-    """Stop ARP MitM and restore all device ARP tables."""
+def traffic_mitm_stop(db: Session = Depends(get_db)):
+    """Stop ARP MitM and restore all device ARP tables.
+    Also triggers activity learning for all targeted devices."""
     from traffic.mitm import mitm_engine
-    return mitm_engine.stop()
+    state = mitm_engine.get_status()
+    targets = state.get("targets", [])
+    result = mitm_engine.stop()
+
+    # Background: learn from what we captured for each targeted device
+    if targets:
+        import threading
+        def _learn_all():
+            from traffic.analyzer import get_device_activity, CAPTURE_DIR
+            from app.database import SessionLocal
+            db2 = SessionLocal()
+            try:
+                for ip in targets:
+                    try:
+                        activity = get_device_activity(ip, CAPTURE_DIR, max_files=10)
+                        _learn_from_activity(ip, activity, db2)
+                    except Exception:
+                        pass
+            finally:
+                db2.close()
+        threading.Thread(target=_learn_all, daemon=True, name="mitm-learn").start()
+
+    return result
 
 
 @router.get("/api/traffic/mitm/diagnose")
@@ -4315,12 +5030,26 @@ def start_nikto_scan(body: dict, db: Session = Depends(get_db)):
         device_id=body.get("device_id"),
     )
 
+    # Accept either:
+    #   { port: 80 }                — legacy single-port
+    #   { ports: [80,443,8080] }    — explicit list
+    #   { ports: "80,443,8080" }    — comma-string from the UI
+    #   { auto: true }              — nmap-probe and scan whatever HTTP ports are open
+    raw_ports = body.get("ports")
+    parsed_ports: list[int] | None = None
+    if isinstance(raw_ports, list):
+        parsed_ports = [int(p) for p in raw_ports if str(p).strip().isdigit()]
+    elif isinstance(raw_ports, str) and raw_ports.strip():
+        parsed_ports = [int(p) for p in raw_ports.split(",") if p.strip().isdigit()]
+
     threading.Thread(
         target=_run_nikto,
         kwargs={
             "run_id":   run_id,
             "target":   target,
             "port":     body.get("port"),
+            "ports":    parsed_ports,
+            "auto":     bool(body.get("auto", False)),
             "use_ssl":  bool(body.get("use_ssl", False)),
             "distro":   body.get("distro", "kali-linux"),
         },
@@ -4559,3 +5288,511 @@ def start_metasploit(body: dict, db: Session = Depends(get_db)):
         "timeout_seconds": int(body.get("timeout_seconds", 3600)),
     }, daemon=True).start()
     return {"run_id": run_id}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DEVICE INVESTIGATION CHAT
+# Interactive AI chat per-device: ask questions, request tools, propose identity.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _device_or_404(db: Session, device_id: int) -> Device:
+    dev = db.query(Device).filter(Device.id == device_id).first()
+    if not dev:
+        raise HTTPException(status_code=404, detail=f"device {device_id} not found")
+    return dev
+
+
+def _device_chat_history(db: Session, device_id: int, limit: int = 60) -> list[dict]:
+    from models.tables import DeviceChat
+    rows = (db.query(DeviceChat)
+              .filter(DeviceChat.device_id == device_id)
+              .order_by(DeviceChat.id.asc()).all())
+    rows = rows[-limit:]
+    out = []
+    for r in rows:
+        meta = None
+        if r.meta_json:
+            try: meta = json.loads(r.meta_json)
+            except Exception: pass
+        out.append({
+            "id": r.id, "role": r.role, "content": r.content,
+            "meta": meta, "created_at": _iso(r.created_at),
+        })
+    return out
+
+
+def _device_notes(db: Session, device_id: int) -> list[str]:
+    from models.tables import DeviceNote
+    rows = (db.query(DeviceNote)
+              .filter(DeviceNote.device_id == device_id)
+              .order_by(desc(DeviceNote.id)).limit(40).all())
+    return [r.body for r in rows]
+
+
+def _save_chat_turn(db: Session, device_id: int, role: str, content: str,
+                    meta: dict | None = None):
+    from models.tables import DeviceChat
+    row = DeviceChat(
+        device_id=device_id, role=role, content=content,
+        meta_json=json.dumps(meta) if meta else None,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _save_note(db: Session, device_id: int, body: str, kind: str = "fact",
+               confidence: float | None = None, source: str | None = None):
+    from models.tables import DeviceNote
+    existing = (db.query(DeviceNote)
+                  .filter(DeviceNote.device_id == device_id)
+                  .order_by(desc(DeviceNote.id)).limit(40).all())
+    body_norm = body.strip().lower()
+    for e in existing:
+        if e.body.strip().lower() == body_norm:
+            return e
+    row = DeviceNote(device_id=device_id, body=body.strip(),
+                     kind=kind, confidence=confidence, source=source)
+    db.add(row)
+    db.flush()
+    return row
+
+
+@router.get("/api/device/{device_id}/chat")
+def device_chat_history(device_id: int, db: Session = Depends(get_db)):
+    """Return chat transcript + durable notes for a device."""
+    _device_or_404(db, device_id)
+    from models.tables import DeviceNote
+    notes = (db.query(DeviceNote)
+                .filter(DeviceNote.device_id == device_id)
+                .order_by(desc(DeviceNote.id)).limit(40).all())
+    return {
+        "history": _device_chat_history(db, device_id, limit=200),
+        "notes": [{
+            "id": n.id, "kind": n.kind, "body": n.body,
+            "confidence": n.confidence, "source": n.source,
+            "created_at": _iso(n.created_at),
+        } for n in notes],
+    }
+
+
+_DEAD_END_PATTERNS = (
+    "let's try", "let me try", "let's check", "let me check",
+    "let's see", "let me see", "let's look", "let me look",
+    "let's find", "more clues", "more analysis", "more digging",
+    "i'll run", "i'll check", "i will check", "i will run",
+    "we should look", "we need to look",
+)
+
+# Default fallback chain when the AI dead-ends — tried in order, first one
+# whose name hasn't already appeared in chat history is the auto-pick.
+_FALLBACK_TOOL_ORDER = [
+    "mac_randomization_check",
+    "mdns_ssdp_hostnames",
+    "tls_sni_history",
+    "talked_to_hosts",
+    "http_user_agents",
+    "dhcp_fingerprint_history",
+    "port_history",
+    "recent_traffic_summary",
+    "oui_lookup",
+]
+
+
+def _is_dead_end_reply(parsed: dict) -> bool:
+    """No action AND no proposal AND not a concrete question to the user."""
+    if parsed.get("tool_request") or parsed.get("proposal"):
+        return False
+    reply = (parsed.get("reply") or "").strip()
+    if not reply:
+        return True
+    lower = reply.lower()
+    if any(p in lower for p in _DEAD_END_PATTERNS):
+        return True
+    # No promise phrase, but also no proposal/tool: only acceptable if the AI
+    # is asking the user a concrete question.
+    if "?" in reply:
+        return False
+    return True
+
+
+def _pick_fallback_tool(db: Session, device_id: int) -> str | None:
+    """Pick the next never-tried passive tool from the fallback order."""
+    from models.tables import DeviceChat
+    used: set[str] = set()
+    for row in (db.query(DeviceChat)
+                  .filter(DeviceChat.device_id == device_id,
+                          DeviceChat.role == "tool")
+                  .all()):
+        if row.meta_json:
+            try:
+                m = json.loads(row.meta_json)
+                if m.get("tool"):
+                    used.add(m["tool"])
+            except Exception:
+                pass
+    for name in _FALLBACK_TOOL_ORDER:
+        if name not in used:
+            return name
+    return None
+
+
+def _ai_chat_step(db: Session, device, user_message: str | None,
+                  tool_result: dict | None,
+                  allow_retry: bool = True) -> dict:
+    """One LLM round. Returns parsed {reply, tool_request, proposal, notes}.
+
+    If the model returns a dead-end reply (promise of future action with no
+    tool_request and no proposal), retry once with a stricter instruction.
+    If that still dead-ends, the caller will auto-pick a fallback tool.
+    """
+    from ai.provider import get_investigation_provider
+    from ai.investigation_chat import (
+        build_chat_prompt, build_evidence_bundle, parse_chat_response,
+    )
+    provider = get_investigation_provider()
+    if provider.name == "none":
+        return {"reply": "AI is not configured.", "tool_request": None,
+                "proposal": None, "notes": []}
+    history = _device_chat_history(db, device.id, limit=20)
+    notes = _device_notes(db, device.id)
+    evidence = build_evidence_bundle(db, device)
+    prompt = build_chat_prompt(
+        device=device, evidence_bundle=evidence, notes=notes,
+        history=history, user_message=user_message or "", tool_result=tool_result,
+    )
+    result = provider.analyze({}, prompt=prompt, kind="device_chat")
+    raw = result.get("raw_response") or result.get("summary") or ""
+    if result.get("error"):
+        return {"reply": f"AI error: {result['error']}", "tool_request": None,
+                "proposal": None, "notes": []}
+    parsed = parse_chat_response(raw)
+
+    if allow_retry and _is_dead_end_reply(parsed):
+        # Retry once with an explicit corrective addendum.
+        stricter = prompt + (
+            "\n\nYour previous answer was a dead-end (promised an action but "
+            "set tool_request=null AND proposal=null). REWRITE: either set "
+            "`tool_request` to a specific tool name from the catalog, OR set "
+            "`proposal` with your best guess at confidence 0.4–0.7, OR ask the "
+            "user a single concrete question. No 'let's try' phrasing."
+        )
+        result2 = provider.analyze({}, prompt=stricter, kind="device_chat")
+        raw2 = result2.get("raw_response") or ""
+        if raw2 and not result2.get("error"):
+            parsed2 = parse_chat_response(raw2)
+            if not _is_dead_end_reply(parsed2):
+                return parsed2
+
+        # Still stuck — auto-pick a fallback passive tool.
+        fb = _pick_fallback_tool(db, device.id)
+        if fb:
+            parsed["tool_request"] = {
+                "name": fb, "args": {},
+                "rationale": "auto-selected because the AI dead-ended",
+            }
+            if not parsed.get("reply"):
+                parsed["reply"] = f"Trying {fb} to gather more evidence."
+
+    return parsed
+
+
+def _apply_proposal(db: Session, device, proposal: dict,
+                    prev_label: str | None = None,
+                    prev_os: str | None = None) -> dict:
+    """Apply a proposed identity update. ≥0.80 confidence required."""
+    changes = []
+    name = (proposal.get("name") or "").strip()
+    category = (proposal.get("category") or "").strip()
+    os_str = (proposal.get("os") or "").strip()
+    confidence = float(proposal.get("confidence") or 0)
+
+    if confidence < 0.80:
+        return {"applied": False, "reason": "below 0.80 confidence",
+                "confidence": confidence}
+
+    if prev_label is None: prev_label = device.label
+    if prev_os is None: prev_os = device.os_guess
+
+    if name and name != device.label:
+        changes.append(f"label: {device.label or '(none)'} → {name}")
+        device.label = name
+        device.is_known = True
+    if os_str and os_str != (device.os_guess or ""):
+        changes.append(f"os: {device.os_guess or '(none)'} → {os_str}")
+        device.os_guess = os_str
+        device.os_guess_at = datetime.utcnow()
+    if category:
+        _save_note(db, device.id, f"category: {category}", kind="identity",
+                   confidence=confidence, source="proposal")
+        changes.append(f"category: {category}")
+    reasoning = (proposal.get("reasoning") or "").strip()
+    if reasoning:
+        _save_note(db, device.id, f"identity reasoning: {reasoning[:300]}",
+                   kind="identity", confidence=confidence, source="proposal")
+
+    if changes:
+        # Inline ActivityLog write — write_log() opens its own session and
+        # would deadlock against the device row we just modified.
+        db.add(ActivityLog(
+            level="action", category="ai",
+            event="identity_auto_apply",
+            summary=f"AI auto-identified device #{device.id}: {name or '(no change to name)'}",
+            detail=json.dumps({"changes": changes, "confidence": confidence,
+                               "proposal": proposal}, default=str),
+            device_id=device.id, actor="ai_auto",
+            revert_json=json.dumps({
+                "action_type": "device_label_revert",
+                "params": {"device_id": device.id,
+                           "prev_label": prev_label, "prev_os": prev_os},
+            }, default=str),
+        ))
+    return {"applied": True, "changes": changes, "confidence": confidence}
+
+
+def _persist_ai_turn(db: Session, device, parsed: dict,
+                     tool_name: str | None = None):
+    meta: dict = {}
+    if parsed.get("tool_request"): meta["tool_request"] = parsed["tool_request"]
+    if parsed.get("proposal"):     meta["proposal"]     = parsed["proposal"]
+    if tool_name:                  meta["after_tool"]   = tool_name
+    _save_chat_turn(db, device.id, "assistant", parsed.get("reply", ""),
+                    meta=meta or None)
+    for n in (parsed.get("notes") or []):
+        if isinstance(n, str) and n.strip():
+            _save_note(db, device.id, n.strip(), kind="fact", source="chat")
+    proposal = parsed.get("proposal")
+    auto_result: dict | None = None
+    if proposal:
+        prev_label = device.label
+        prev_os = device.os_guess
+        auto_result = _apply_proposal(db, device, proposal,
+                                      prev_label=prev_label, prev_os=prev_os)
+    return auto_result
+
+
+@router.post("/api/device/{device_id}/chat")
+def device_chat_post(device_id: int, body: dict, db: Session = Depends(get_db)):
+    """
+    Send user message OR approve/reject a previously-requested tool.
+
+    Body shapes:
+      {"message": "is this my phone?"}
+      {"approve_tool": {"name":"nmap_quick", "args":{}}}
+      {"reject_tool": {"name":"nmap_deep"}}
+    """
+    from ai.investigation_chat import ACTIVE_TOOLS, PASSIVE_TOOLS, execute_tool
+    from models.tables import DeviceChat as _DC, DeviceNote
+    device = _device_or_404(db, device_id)
+    message = (body.get("message") or "").strip()
+    approve_tool = body.get("approve_tool")
+    reject_tool = body.get("reject_tool")
+
+    max_id_row = (db.query(_DC.id)
+                    .filter(_DC.device_id == device_id)
+                    .order_by(desc(_DC.id)).first())
+    last_id_before = (max_id_row[0] if max_id_row else 0)
+
+    pending_approval = False
+    applied_info: dict | None = None
+
+    def _chain_passive_tool(parsed, depth=0):
+        """If parsed.tool_request is passive, auto-run it and loop. Max 6 chains."""
+        nonlocal applied_info, pending_approval
+        if depth >= 6:
+            return parsed
+        req = parsed.get("tool_request")
+        if not req:
+            return parsed
+        name = req.get("name")
+        if name in ACTIVE_TOOLS:
+            pending_approval = True
+            return parsed
+        if name not in PASSIVE_TOOLS:
+            return parsed
+        args = req.get("args") or {}
+        out = execute_tool(db, device, name, args)
+        _save_chat_turn(db, device_id, "tool", out,
+                        meta={"tool": name, "args": args})
+        db.commit()
+        next_parsed = _ai_chat_step(db, device, user_message=None,
+                                    tool_result={"name": name, "args": args,
+                                                 "output": out})
+        applied = _persist_ai_turn(db, device, next_parsed, tool_name=name)
+        applied_info = applied or applied_info
+        db.commit()
+        return _chain_passive_tool(next_parsed, depth=depth + 1)
+
+    if approve_tool:
+        name = (approve_tool.get("name") or "").strip()
+        args = approve_tool.get("args") or {}
+        if not name:
+            raise HTTPException(status_code=400, detail="approve_tool.name required")
+        _save_chat_turn(db, device_id, "user", f"(approved {name})",
+                        meta={"approval": name})
+        output = execute_tool(db, device, name, args)
+        _save_chat_turn(db, device_id, "tool", output,
+                        meta={"tool": name, "args": args})
+        db.commit()
+        parsed = _ai_chat_step(db, device, user_message=None,
+                               tool_result={"name": name, "args": args,
+                                            "output": output})
+        applied_info = _persist_ai_turn(db, device, parsed, tool_name=name)
+        db.commit()
+        parsed = _chain_passive_tool(parsed)
+        if parsed.get("tool_request", {}) and parsed["tool_request"].get("name") in ACTIVE_TOOLS:
+            pending_approval = True
+    elif reject_tool:
+        name = (reject_tool.get("name") or "").strip()
+        _save_chat_turn(db, device_id, "user", f"(declined to run {name})",
+                        meta={"rejected": name})
+        db.commit()
+        parsed = _ai_chat_step(db, device,
+                               user_message=f"The user declined to run {name}. Proceed with what you have.",
+                               tool_result=None)
+        applied_info = _persist_ai_turn(db, device, parsed, tool_name=None)
+        db.commit()
+        parsed = _chain_passive_tool(parsed)
+        if parsed.get("tool_request", {}) and parsed["tool_request"].get("name") in ACTIVE_TOOLS:
+            pending_approval = True
+    else:
+        if not message:
+            raise HTTPException(status_code=400,
+                                detail="message, approve_tool, or reject_tool required")
+        _save_chat_turn(db, device_id, "user", message)
+        db.commit()
+        parsed = _ai_chat_step(db, device, user_message=message, tool_result=None)
+        applied_info = _persist_ai_turn(db, device, parsed, tool_name=None)
+        db.commit()
+        parsed = _chain_passive_tool(parsed)
+        if parsed.get("tool_request", {}) and parsed["tool_request"].get("name") in ACTIVE_TOOLS:
+            pending_approval = True
+
+    # Collect rows appended this round
+    new_rows = (db.query(_DC)
+                  .filter(_DC.device_id == device_id, _DC.id > last_id_before)
+                  .order_by(_DC.id.asc()).all())
+    appended = []
+    for r in new_rows:
+        meta = None
+        if r.meta_json:
+            try: meta = json.loads(r.meta_json)
+            except Exception: pass
+        appended.append({
+            "id": r.id, "role": r.role, "content": r.content,
+            "meta": meta, "created_at": _iso(r.created_at),
+        })
+    notes = (db.query(DeviceNote)
+                .filter(DeviceNote.device_id == device_id)
+                .order_by(desc(DeviceNote.id)).limit(40).all())
+
+    latest_proposal = None
+    latest_tool_request = None
+    for r in reversed(new_rows):
+        if r.role != "assistant" or not r.meta_json:
+            continue
+        try:
+            meta = json.loads(r.meta_json)
+        except Exception:
+            continue
+        if latest_proposal is None and meta.get("proposal"):
+            latest_proposal = meta["proposal"]
+        if latest_tool_request is None and meta.get("tool_request"):
+            latest_tool_request = meta["tool_request"]
+        if latest_proposal and latest_tool_request: break
+
+    return {
+        "appended": appended,
+        "notes": [{
+            "id": n.id, "kind": n.kind, "body": n.body,
+            "confidence": n.confidence, "source": n.source,
+            "created_at": _iso(n.created_at),
+        } for n in notes],
+        "proposal": latest_proposal,
+        "proposal_applied": bool(applied_info and applied_info.get("applied")),
+        "applied_changes": (applied_info or {}).get("changes") or [],
+        "tool_request": latest_tool_request,
+        "pending_approval": pending_approval,
+        "device": {"id": device.id, "label": device.label,
+                   "os_guess": device.os_guess, "is_known": device.is_known},
+    }
+
+
+@router.get("/api/device/{device_id}/chat/tools")
+def device_chat_tools(device_id: int, db: Session = Depends(get_db)):
+    """Catalog of tools the chat can use."""
+    _device_or_404(db, device_id)
+    from ai.investigation_chat import tool_catalog
+    return {"tools": tool_catalog()}
+
+
+@router.post("/api/device/{device_id}/chat/proposal")
+def device_chat_proposal_action(device_id: int, body: dict,
+                                db: Session = Depends(get_db)):
+    """Manually accept/edit/reject a proposal that didn't auto-apply."""
+    device = _device_or_404(db, device_id)
+    action = (body.get("action") or "").strip()
+    proposal = body.get("proposal") or {}
+    if action == "accept":
+        p = dict(proposal)
+        p["confidence"] = max(float(p.get("confidence") or 0), 0.99)
+        if body.get("name"): p["name"] = body["name"]
+        if body.get("os"):   p["os"]   = body["os"]
+        result = _apply_proposal(db, device, p)
+        _save_chat_turn(db, device_id, "system",
+                        f"User accepted identity: {p.get('name','?')} ({p.get('category','?')})",
+                        meta={"manual_accept": p})
+        db.commit()
+        return {"applied": True, "changes": result.get("changes", []),
+                "device": {"id": device.id, "label": device.label,
+                           "os_guess": device.os_guess}}
+    elif action == "reject":
+        _save_chat_turn(db, device_id, "system",
+                        f"User rejected proposal: {proposal.get('name','?')}",
+                        meta={"manual_reject": proposal})
+        db.commit()
+        return {"applied": False}
+    else:
+        raise HTTPException(status_code=400, detail="action must be accept or reject")
+
+
+@router.post("/api/device/{device_id}/chat/undo")
+def device_chat_undo(device_id: int, db: Session = Depends(get_db)):
+    """Undo the most recent identity_auto_apply for this device (within 5 min)."""
+    device = _device_or_404(db, device_id)
+    cutoff = datetime.utcnow() - timedelta(minutes=5)
+    log = (db.query(ActivityLog)
+             .filter(ActivityLog.device_id == device_id,
+                     ActivityLog.event == "identity_auto_apply",
+                     ActivityLog.reverted_at == None,
+                     ActivityLog.created_at >= cutoff)
+             .order_by(desc(ActivityLog.id)).first())
+    if not log or not log.revert_json:
+        return {"undone": False, "reason": "nothing to undo"}
+    try:
+        rj = json.loads(log.revert_json)
+        params = rj.get("params") or {}
+        device.label = params.get("prev_label")
+        device.os_guess = params.get("prev_os")
+        log.reverted_at = datetime.utcnow()
+        log.reverted_by = "user"
+        _save_chat_turn(db, device_id, "system",
+                        "User undid the last AI identity application.",
+                        meta={"undo": True})
+        db.commit()
+        return {"undone": True, "device": {
+            "id": device.id, "label": device.label, "os_guess": device.os_guess,
+        }}
+    except Exception as ex:
+        db.rollback()
+        return {"undone": False, "reason": str(ex)}
+
+
+@router.delete("/api/device/{device_id}/chat")
+def device_chat_clear(device_id: int, db: Session = Depends(get_db)):
+    """Clear chat transcript (durable notes are kept)."""
+    from models.tables import DeviceChat
+    _device_or_404(db, device_id)
+    db.query(DeviceChat).filter(DeviceChat.device_id == device_id).delete()
+    db.commit()
+    return {"cleared": True}

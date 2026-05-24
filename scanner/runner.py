@@ -71,16 +71,29 @@ def run_scan(target: str, quick: bool = False) -> str:
         )
 
     if quick:
-        # Ping scan — just discover which hosts are alive, no port data
-        command = [nmap_path, "-sn", "-oX", "-", target]
-    else:
-        # Full scan — service/version detection on open ports
+        # Fast ping sweep — T5 aggressive timing, no DNS, 1s host timeout, 1 retry
         command = [
             nmap_path,
-            "-sV",            # Detect service versions on open ports
-            "--open",         # Only show open ports
-            "--host-timeout", "30s",  # Skip hosts that take too long
-            "-oX", "-",       # Output XML to stdout
+            "-sn",               # Ping only, no port scan
+            "-T5",               # Aggressive timing (fastest)
+            "-n",                # No DNS resolution
+            "--host-timeout", "1s",
+            "--max-retries", "1",
+            "-oX", "-", target,
+        ]
+    else:
+        # Full scan — service/version detection on open ports.
+        # --top-ports 200 covers all common home-device ports (HTTP, HTTPS, SSH,
+        # RTSP cameras, SMB, RDP, IoT APIs, etc.) without scanning all 1000 defaults.
+        # This keeps each host scan fast enough to beat the host-timeout, whereas
+        # scanning all 1000 ports with -sV always caused hosts to time out at 30s.
+        command = [
+            nmap_path,
+            "-sV",               # Detect service versions on open ports
+            "--open",            # Only report open ports
+            "--top-ports", "200",  # Scan top 200 common ports (not all 1000)
+            "--host-timeout", "120s",  # 4× the old limit — enough for -sV on 200 ports
+            "-oX", "-",          # Output XML to stdout
             target,
         ]
 
@@ -91,7 +104,7 @@ def run_scan(target: str, quick: bool = False) -> str:
             command,
             capture_output=True,             # Capture both stdout and stderr
             text=True,                       # Decode bytes to str automatically
-            timeout=300,                     # Kill the process if it runs > 5 minutes
+            timeout=600,                     # Kill the process if it runs > 10 minutes
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except subprocess.TimeoutExpired:

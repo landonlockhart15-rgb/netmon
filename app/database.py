@@ -116,6 +116,30 @@ def run_migrations():
             conn.commit()
             print("[db] Migration: activity_log.reverted_by added.")
 
+        # ── devices: per-device baseline + allow-list (Phase 0/1) ────────
+        result = conn.execute(text("PRAGMA table_info(devices)"))
+        existing = [row[1] for row in result]
+        if "known_ports_json" not in existing:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN known_ports_json TEXT"))
+            conn.commit()
+            print("[db] Migration: devices.known_ports_json added.")
+        if "allow_json" not in existing:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN allow_json TEXT"))
+            conn.commit()
+            print("[db] Migration: devices.allow_json added.")
+        if "baseline_set_at" not in existing:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN baseline_set_at DATETIME"))
+            conn.commit()
+            print("[db] Migration: devices.baseline_set_at added.")
+        if "os_guess" not in existing:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN os_guess TEXT"))
+            conn.commit()
+            print("[db] Migration: devices.os_guess added.")
+        if "os_guess_at" not in existing:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN os_guess_at DATETIME"))
+            conn.commit()
+            print("[db] Migration: devices.os_guess_at added.")
+
         # ── Env-backed secret migration ───────────────────────────────────
         # If NTFY_PASS or SMTP_PASS is now set in the environment but the
         # old plain-text DB value is still hanging around, blank the DB row
@@ -189,13 +213,20 @@ def seed_default_settings():
         # AI settings — off by default; user must explicitly enable
         "ai_enabled":              "false",
         "ai_auto_analyze":         "false",
-        # Traffic capture settings — off by default
+        # Traffic capture settings
+        # capture_auto_start (Phase 4): when true and no explicit interface is
+        # configured, NetMon picks the active adapter at startup and begins
+        # capture automatically. Set to "false" to keep the old opt-in behavior.
+        "capture_auto_start":      "false",
         "capture_enabled":         "false",
         "capture_interface":       "",
-        "capture_file_size_mb":    "10",
-        "capture_file_count":      "5",
+        "capture_file_size_mb":    "50",   # bumped from 10 for better incident windows
+        "capture_file_count":      "10",   # bumped from 5 (~1GB ring at 100MB each)
         "capture_retention_days":  "3",
         "traffic_summary_interval_s": "20",
+        # Incident pcap retention (Phase 4) — tagged snippets kept longer than ring.
+        "incident_capture_enabled":   "true",
+        "incident_retention_days":    "30",
         "health_local_target":        "",
         # Auto-scan settings
         "auto_scan_enabled":          "true",

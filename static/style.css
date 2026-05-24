@@ -5001,3 +5001,214 @@ body {
 }
 
 .netinfo-dns-badge.netmon { border-color: var(--accent); color: var(--accent); }
+
+/* ============================================================
+   17. MOBILE-FIRST OVERRIDES (Pixel 10 et al)
+   Pinned to the end so they take precedence over earlier
+   media queries. Additive only — never re-declares :root.
+   ============================================================ */
+
+@media (max-width: 768px) {
+  html, body {
+    overflow-x: hidden;
+    max-width: 100vw;
+  }
+
+  body {
+    --content-padding: 14px;
+    --panel-gap: 14px;
+    --topbar-height: 48px;
+    font-size: 16px;
+    line-height: 1.55;
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "topbar"
+      "content";
+    padding-bottom: 60px;
+  }
+
+  h1 { font-size: 24px; }
+  h2 { font-size: 18px; }
+  h3 { font-size: 16px; }
+  .panel-title, .section-title { font-size: 16px; font-weight: 600; }
+
+  /* ── Sidebar → bottom nav ── */
+  #sidebar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 60px;
+    z-index: 90;
+    background: var(--bg-raised);
+    border-top: 1px solid var(--border-default);
+    border-right: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    grid-area: unset;
+    padding-bottom: 6px;
+  }
+
+  #sidebar::after {
+    content: '';
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    width: 28px;
+    pointer-events: none;
+    background: linear-gradient(to left, var(--bg-raised), transparent);
+  }
+
+  #sidebar .nav-list,
+  #sidebar .nav-list--bottom {
+    display: flex;
+    flex-direction: row;
+    gap: 4px;
+    padding: 6px 8px;
+    height: 100%;
+    list-style: none;
+    margin: 0;
+    flex-shrink: 0;
+    border-top: none;
+  }
+
+  #sidebar .nav-list--bottom::before { display: none; }
+
+  .nav-item {
+    min-width: 64px;
+    height: 48px;
+    padding: 4px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    border-radius: 10px;
+    flex-shrink: 0;
+    border-left: none !important;
+  }
+  .nav-item .nav-icon { font-size: 18px; }
+  .nav-item .nav-label {
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    opacity: 0.85;
+  }
+  .nav-item.active {
+    background: var(--bg-active);
+    color: var(--accent);
+  }
+  .nav-item.active .nav-icon { color: var(--accent); }
+
+  /* ── Topbar squeeze ── */
+  .topbar-brand {
+    width: auto;
+    padding: 0 12px;
+    border-right: 1px solid var(--border-default);
+  }
+  .topbar-brand .brand-version { display: none; }
+  .topbar-btn {
+    min-width: 44px;
+    height: 40px;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+  }
+  .topbar-btn .btn-label { display: none; }
+
+  /* ── Stat strip wraps into cards ── */
+  #stat-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    height: auto;
+    gap: 8px;
+    padding: 12px var(--content-padding);
+    border-bottom: 1px solid var(--border-default);
+  }
+  .stat-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-right: 1px solid var(--border-default) !important;
+    border-radius: 8px;
+    padding: 10px 12px;
+    flex: unset;
+  }
+  .stat-label { font-size: 11px; }
+  .stat-value { font-size: 16px; font-weight: 600; }
+
+  /* ── Tables get horizontal scroll on mobile ── */
+  .panel table,
+  .section-card table,
+  .log-table,
+  .device-table,
+  table:not(.no-mobile-scroll) {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+  }
+  .panel table td, .panel table th,
+  .section-card table td, .section-card table th,
+  .log-table td, .log-table th,
+  .device-table td, .device-table th {
+    padding: 10px 12px;
+    font-size: 14px;
+  }
+
+  /* ── Larger tap targets ── */
+  .btn-primary,
+  .btn-sm,
+  .topbar-btn,
+  button:not(.icon-only):not(.activity-chip):not(.log-filter-tab) {
+    min-height: 40px;
+    border-radius: 8px;
+  }
+  .btn-sm { font-size: 14px; padding: 8px 14px; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* Prevent panels from blowing out their grid */
+  .panel, .section-card { min-width: 0; max-width: 100%; }
+}
+
+@media (max-width: 480px) {
+  #topbar-clock { display: none; }
+
+  .btn-primary,
+  .btn-sm,
+  .topbar-btn,
+  button:not(.icon-only):not(.activity-chip):not(.log-filter-tab) {
+    min-height: 44px;
+  }
+
+  .panel {
+    transition: none;
+    transform: none;
+    padding: 14px;
+  }
+
+  .panel-row { flex-direction: column; }
+
+  .empty-state { padding: 32px var(--content-padding); }
+  .empty-icon { font-size: 28px; }
+
+  .activity-chip { gap: 0; padding: 4px 6px; }
+  .activity-chip .chip-label { display: none; }
+}
+
+/* Pixel 10 / gesture-bar safe-area handling */
+@supports (padding: max(0px)) {
+  @media (max-width: 768px) {
+    #sidebar { padding-bottom: max(6px, env(safe-area-inset-bottom, 0px)); }
+    body { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
+  }
+}

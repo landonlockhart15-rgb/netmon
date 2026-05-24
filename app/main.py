@@ -107,7 +107,8 @@ async def lifespan(app: FastAPI):
     from monitoring.scheduler import (
         health_check_loop, traffic_analysis_loop, auto_scan_loop,
         anomaly_loop, command_poll_loop, autonomous_report_loop,
-        log_cleanup_loop,
+        log_cleanup_loop, dns_health_loop, port_refresh_loop,
+        ssl_cert_scan_loop, doh_leak_loop, deep_scan_ai_loop, hunt_loop,
     )
     health_task    = asyncio.create_task(health_check_loop())
     traffic_task   = asyncio.create_task(traffic_analysis_loop())
@@ -116,7 +117,13 @@ async def lifespan(app: FastAPI):
     command_task   = asyncio.create_task(command_poll_loop())
     report_task    = asyncio.create_task(autonomous_report_loop())
     cleanup_task   = asyncio.create_task(log_cleanup_loop())
-    print("[main] Health check, traffic, auto-scan, anomaly, command, report, and log-cleanup schedulers started.")
+    dns_health_task = asyncio.create_task(dns_health_loop())
+    port_refresh_task = asyncio.create_task(port_refresh_loop())
+    ssl_cert_task   = asyncio.create_task(ssl_cert_scan_loop())
+    doh_task        = asyncio.create_task(doh_leak_loop())
+    deep_ai_task    = asyncio.create_task(deep_scan_ai_loop())
+    hunt_task       = asyncio.create_task(hunt_loop())
+    print("[main] Schedulers started: health, traffic, auto-scan, anomaly, command, report, log-cleanup, dns-health, port-refresh, ssl-cert, doh-leak, deep-scan-ai, hunt.")
 
     # Auto-resume capture if it was enabled before the server restarted
     _maybe_resume_capture()
@@ -132,6 +139,35 @@ async def lifespan(app: FastAPI):
     from ai.threat_intel import warm_cache as _warm_threat_intel
     _warm_threat_intel()
     print("[main] Threat intel cache warming started in background.")
+
+    # Warm the offline OUI vendor database in a background thread so the first
+    # scan after install (or after monthly staleness) doesn't block. Silent on
+    # network failure — the rest of NetMon works fine without vendor labels.
+    def _warm_oui():
+        try:
+            from network.oui import init_oui_db
+            init_oui_db()
+        except Exception as _exc:
+            print(f"[oui] warm-up failed (non-fatal): {_exc}")
+    import threading as _thr
+    _thr.Thread(target=_warm_oui, daemon=True, name="oui-warmer").start()
+
+    # Warm the offline GeoIP database (Phase 2 geo-anomaly).
+    def _warm_geo():
+        try:
+            from network.geo import init_geo_db
+            init_geo_db()
+        except Exception as _exc:
+            print(f"[geo] warm-up failed (non-fatal): {_exc}")
+    _thr.Thread(target=_warm_geo, daemon=True, name="geo-warmer").start()
+
+    # Passive mDNS + SSDP discovery (Phase 4.6) — names IoT devices from
+    # their own broadcasts. No probing, just listening.
+    try:
+        from network.discovery import start_passive_discovery
+        start_passive_discovery()
+    except Exception as _exc:
+        print(f"[discovery] start failed (non-fatal): {_exc}")
 
     # Start DNS ad blocker if enabled
     _start_dns_blocker_if_enabled()
@@ -159,7 +195,10 @@ async def lifespan(app: FastAPI):
         capture_engine.stop(session_factory=_SL)
         print("[main] Capture engine stopped on shutdown.")
 
-    for task in (health_task, traffic_task, auto_scan_task, anomaly_task, command_task, report_task):
+    for task in (health_task, traffic_task, auto_scan_task, anomaly_task,
+                 command_task, report_task, cleanup_task, dns_health_task,
+                 port_refresh_task, ssl_cert_task, doh_task, deep_ai_task,
+                 hunt_task):
         task.cancel()
         try:
             await task
@@ -186,7 +225,27 @@ app.include_router(router)
 
 @app.get("/")
 def serve_dashboard():
-    return FileResponse("static/index.html")
+    return FileResponse(
+        "static/index.html",
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
+
+
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str):
+    """Serve React SPA for all non-API browser routes (React Router handles them client-side)."""
+    import os
+    # Let static files and login pass through to the static mount / auth middleware
+    if full_path.startswith("api/") or full_path.startswith("auth/") or full_path == "login":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404)
+    static_file = os.path.join("static", full_path)
+    if os.path.isfile(static_file):
+        return FileResponse(static_file)
+    return FileResponse(
+        "static/index.html",
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 # ── Capture auto-resume ────────────────────────────────────────────────────────
@@ -219,6 +278,30 @@ def _maybe_resume_capture():
     finally:
         db.close()
 
+    # Phase 4: capture_auto_start defaults true on fresh installs. If
+    # capture_enabled is unset but capture_auto_start is true, infer the
+    # interface from autodetect and start anyway. "It just works."
+    db2 = _SL()
+    try:
+        def _g2(key, default=""):
+            row = db2.query(Setting).filter(Setting.key == key).first()
+            return row.value if (row and row.value) else default
+        auto_start = _g2("capture_auto_start", "false").lower() == "true"
+    finally:
+        db2.close()
+
+    if enabled != "true" and auto_start:
+        # Try to autodetect a sensible interface.
+        try:
+            from network.autodetect import get_network_info
+            info = get_network_info() or {}
+            interface = info.get("interface_name") or interface
+        except Exception:
+            pass
+        if interface:
+            enabled = "true"
+            print(f"[main] Auto-capture: starting on detected interface '{interface}'.")
+
     if enabled == "true" and interface:
         from traffic.capture import capture_engine
         result = capture_engine.start(
@@ -227,7 +310,20 @@ def _maybe_resume_capture():
             file_count=count,
             session_factory=_SL,
         )
-        print(f"[main] Auto-resumed capture: {result}")
+        # Persist enabled+interface so next restart resumes cleanly.
+        try:
+            db3 = _SL()
+            for k, v in [("capture_enabled", "true"), ("capture_interface", interface)]:
+                row = db3.query(Setting).filter(Setting.key == k).first()
+                if row:
+                    row.value = v
+                else:
+                    db3.add(Setting(key=k, value=v))
+            db3.commit()
+            db3.close()
+        except Exception:
+            pass
+        print(f"[main] Auto-resumed/auto-started capture: {result}")
     else:
         print("[main] Capture auto-resume skipped (disabled or no interface configured).")
 

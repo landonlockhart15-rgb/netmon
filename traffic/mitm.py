@@ -40,8 +40,22 @@ def _load_scapy():
     if _scapy_ok:
         return True
     try:
-        import logging
+        import logging, os
         logging.getLogger("scapy").setLevel(logging.CRITICAL)
+
+        # Redirect Scapy's cache to NetMon's data dir to avoid permission
+        # issues with the default ~/.cache/scapy location on Windows.
+        _data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "scapy_cache")
+        os.makedirs(_data_dir, exist_ok=True)
+        os.environ.setdefault("SCAPY_CACHE_DIR", os.path.abspath(_data_dir))
+
+        # Also pre-create the default cache path in case Scapy ignores the env var
+        _default_cache = os.path.expanduser(os.path.join("~", ".cache", "scapy"))
+        try:
+            os.makedirs(_default_cache, exist_ok=True)
+        except Exception:
+            pass
+
         from scapy.all import conf as _sc
         _sc.verb = 0       # suppress packet-level output
         _scapy_ok = True
@@ -221,7 +235,8 @@ class MitmEngine:
             "gateway_ip":   None,
             "interface":    None,
             "target_count": 0,
-            "active_count": 0,   # targets we actually resolved a MAC for
+            "targets":      [],
+            "active_count": 0,
             "started_at":   None,
             "error":        None,
         }
@@ -271,6 +286,7 @@ class MitmEngine:
                 "gateway_ip":   gateway_ip,
                 "interface":    interface,
                 "target_count": len(targets),
+                "targets":      list(targets),
                 "active_count": 0,
                 "started_at":   datetime.now(timezone.utc).isoformat(),
                 "error":        None,
