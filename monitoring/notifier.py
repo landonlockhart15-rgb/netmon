@@ -254,11 +254,18 @@ def alert(
     level: str = "info",
     tags: list[str] | None = None,
     actions: list[dict] | None = None,
+    force_push: bool = False,
 ) -> None:
     """
     Send a notification through all enabled channels.
-    ntfy only fires when level >= ntfy_min_level (default: critical).
-    Email only fires for warning+.
+
+    ntfy delivery rules:
+      - By default, ntfy only fires when level >= ntfy_min_level (default: critical).
+      - Setting `force_push=True` bypasses the threshold — used for events that
+        must always notify the user regardless of their min-level preference
+        (truly-new device first-seen-ever, confirmed threat-intel hits, etc.).
+
+    Email fires on level in (warning, critical, threat, action).
     """
     db = SessionLocal()
     try:
@@ -267,7 +274,8 @@ def alert(
     finally:
         db.close()
 
-    if _LEVEL_RANK.get(level, 0) >= _LEVEL_RANK.get(min_level, 3):
+    threshold_met = _LEVEL_RANK.get(level, 0) >= _LEVEL_RANK.get(min_level, 3)
+    if force_push or threshold_met:
         send_ntfy(title, body, level=level, tags=tags, actions=actions)
 
     if level in ("warning", "critical", "threat", "action"):

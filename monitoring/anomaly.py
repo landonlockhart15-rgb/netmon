@@ -27,15 +27,22 @@ from app.database import SessionLocal
 from models.tables import TrafficSummary, HealthCheck, Device, ActivityLog
 from monitoring.activity import write_log
 import monitoring.notifier as notifier
+from network.protection import explain_protected_target, validate_block_target
+try:
+    from ai import knowledge_bridge as _kb
+except Exception:
+    _kb = None
 
 # ── Cooldown registry (in-memory, resets on server restart) ──────────────────
 _COOLDOWNS: dict[str, datetime] = {}
 
 _COOLDOWN_MINUTES = {
-    "traffic_spike":   30,
-    "port_scan":       15,
-    "health_outage":   10,
-    "nighttime_device": 60 * 24,   # once per device per day
+    "traffic_spike":         30,
+    "port_scan":             15,
+    "health_outage":         10,
+    "nighttime_device":      60 * 24,   # once per device per day
+    "sustained_bandwidth":   45,        # don't nag about the same hog repeatedly
+    "degraded_health":       20,
 }
 
 # Night hours (local — Central Time). 22:00 – 05:59
@@ -195,6 +202,12 @@ def check_port_scans() -> list[dict]:
         HORIZ_THRESHOLD = 15   # distinct hosts scanned
 
         for src, targets in syn_map.items():
+            # Never alert on port scans originating from this machine — Security
+            # Lab tools (Nikto, nmap, Hydra) running here look identical to an
+            # attacker scan and would spam the user.
+            if _is_this_machine(src):
+                continue
+
             # Vertical scan
             for dst, ports in targets.items():
                 if len(ports) >= VERT_THRESHOLD:
@@ -287,6 +300,120 @@ def check_health_outage(db) -> list[dict]:
     return events
 
 
+# ── 5. Sustained-bandwidth check ──────────────────────────────────────────────
+
+def check_sustained_bandwidth(db) -> list[dict]:
+    """Flag a device that has stayed in the top-talkers list above an absolute
+    floor across the last N consecutive traffic summaries.
+
+    Different from check_traffic_spikes: that fires once on a sharp surge, then
+    cools down. This one fires on a persistent hog (stuck stream, runaway
+    backup, possible exfil) that the spike check has moved past.
+    """
+    events = []
+    N = 6  # ~3–6 minutes at 30–60 s intervals
+    rows = (
+        db.query(TrafficSummary)
+        .order_by(TrafficSummary.id.desc())
+        .limit(N)
+        .all()
+    )
+    if len(rows) < N:
+        return events
+
+    MIN_BYTES_PER_WINDOW = 8 * 1_048_576  # 8 MB per window
+
+    per_ip_windows: dict[str, list[int]] = {}
+    for r in rows:
+        try:
+            for t in json.loads(r.top_talkers or "[]"):
+                per_ip_windows.setdefault(t["ip"], []).append(int(t.get("bytes") or 0))
+        except Exception:
+            pass
+
+    for ip, vals in per_ip_windows.items():
+        if len(vals) < N:
+            continue  # device didn't show in every window — not sustained
+        if all(v >= MIN_BYTES_PER_WINDOW for v in vals):
+            key = f"sustained_bandwidth:{ip}"
+            if not _is_cooled_down(key, "sustained_bandwidth"):
+                continue
+            _stamp(key)
+            total_mb = round(sum(vals) / 1_048_576, 1)
+            avg_mb = round((sum(vals) / len(vals)) / 1_048_576, 1)
+            events.append({
+                "type":    "sustained_bandwidth",
+                "ip":      ip,
+                "level":   "warning",
+                "title":   f"Sustained bandwidth use — {ip}",
+                "body":    (
+                    f"{ip} has been a top talker for the last {N} windows "
+                    f"(≈{avg_mb} MB/window, {total_mb} MB total). "
+                    "Could be a stuck stream, runaway backup, or exfiltration."
+                ),
+                "actions": [notifier.investigate_action(ip), notifier.dismiss_action()],
+            })
+    return events
+
+
+# ── 6. Degraded-health (sub-outage) check ─────────────────────────────────────
+
+def check_degraded_health(db) -> list[dict]:
+    """Fire when recent health checks show meaningfully worse loss/latency than
+    a longer baseline, but not bad enough for check_health_outage to trigger.
+
+    Catches gradual ISP degradation, congestion, or a flaky router that doesn't
+    fall fully offline.
+    """
+    events = []
+    rows = (
+        db.query(HealthCheck)
+        .order_by(HealthCheck.id.desc())
+        .limit(30)
+        .all()
+    )
+    if len(rows) < 15:
+        return events
+
+    recent = rows[:5]
+    baseline = rows[5:]
+
+    def _avg(items, attr):
+        vals = [getattr(r, attr) for r in items if getattr(r, attr) is not None]
+        return (sum(vals) / len(vals)) if vals else 0.0
+
+    rec_loss = _avg(recent, "packet_loss")
+    base_loss = _avg(baseline, "packet_loss")
+    rec_lat = _avg(recent, "latency_ms")
+    base_lat = _avg(baseline, "latency_ms")
+
+    loss_jumped = rec_loss >= 8 and (base_loss < 2 or rec_loss >= 3 * max(base_loss, 1))
+    lat_jumped  = rec_lat  >= 80 and (base_lat < 30 or rec_lat  >= 2 * max(base_lat, 1))
+
+    # Skip if a full outage is already in progress — check_health_outage owns it
+    if all(r.status == "offline" for r in recent):
+        return events
+
+    if loss_jumped or lat_jumped:
+        key = "degraded_health"
+        if not _is_cooled_down(key, "degraded_health"):
+            return events
+        _stamp(key)
+        events.append({
+            "type":    "degraded_health",
+            "ip":      None,
+            "level":   "warning",
+            "title":   "Network performance degraded",
+            "body":    (
+                f"Recent loss {rec_loss:.1f}% (baseline {base_loss:.1f}%), "
+                f"latency {rec_lat:.0f} ms (baseline {base_lat:.0f} ms). "
+                "Not a full outage — likely ISP congestion or a flaky uplink."
+            ),
+            "actions": [notifier.dismiss_action()],
+        })
+    return events
+
+
 # ── 4. Nighttime device (injected from scheduler, not polled) ─────────────────
 
 def nighttime_device_alert(ip: str, mac: str, hostname: str, device_id: int) -> None:
@@ -324,35 +451,32 @@ def nighttime_device_alert(ip: str, mac: str, hostname: str, device_id: int) -> 
         device_ip  = ip,
         device_id  = device_id,
     )
+    if _kb is not None:
+        try:
+            _kb.record_netmon_incident({
+                "type": "nighttime_device", "ip": ip, "level": "critical",
+                "title": f"Unknown device {label}",
+                "body": f"MAC={mac} host={hostname} device_id={device_id}",
+            })
+        except Exception:
+            pass
 
 
 # ── Auto-block logic ──────────────────────────────────────────────────────────
 
 def _is_this_machine(ip: str) -> bool:
     """Return True if ip belongs to this PC — never auto-block ourselves."""
-    import socket
-    try:
-        # Get all IPs assigned to this machine
-        hostname = socket.gethostname()
-        local_ips = {addr[4][0] for addr in socket.getaddrinfo(hostname, None)}
-        local_ips.update({"127.0.0.1", "::1", "0.0.0.0"})
-        # Also add the primary outbound IP
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        local_ips.add(s.getsockname()[0])
-        s.close()
-        return ip in local_ips
-    except Exception:
-        return False
+    return explain_protected_target(ip) is not None
 
 
 def _auto_block(ip: str, reason: str) -> None:
     """Block an IP via Windows Firewall and log the action with a revert payload."""
     import subprocess
 
-    # Never block this machine's own IP
-    if _is_this_machine(ip):
-        print(f"[anomaly] Skipping auto-block of local machine IP {ip}")
+    try:
+        ip = validate_block_target(ip)
+    except ValueError as exc:
+        print(f"[anomaly] Skipping auto-block of protected target {ip}: {exc}")
         return
 
     rule_name = f"NetMon-AutoBlock-{ip}"
@@ -379,8 +503,34 @@ def _auto_block(ip: str, reason: str) -> None:
             body    = f"NetMon automatically blocked {ip}.\nReason: {reason}",
             level   = "action",
         )
+        try:
+            from ai.knowledge_bridge import record_remediation_outcome
+            record_remediation_outcome(
+                service="security",
+                evidence={"ip": ip, "reason": reason, "trigger": "anomaly_auto_block"},
+                action="block_ip_firewall",
+                params={"ip": ip, "rule": rule_name},
+                success=True,
+                summary=f"Auto-blocked {ip}: {reason}",
+                severity="high",
+            )
+        except Exception:
+            pass
     except Exception as exc:
         print(f"[anomaly] auto-block {ip} failed: {exc}")
+        try:
+            from ai.knowledge_bridge import record_remediation_outcome
+            record_remediation_outcome(
+                service="security",
+                evidence={"ip": ip, "reason": reason, "trigger": "anomaly_auto_block"},
+                action="block_ip_firewall",
+                params={"ip": ip},
+                success=False,
+                summary=f"Auto-block of {ip} failed: {exc}"[:200],
+                severity="high",
+            )
+        except Exception:
+            pass
 
 
 # ── Main orchestrator ─────────────────────────────────────────────────────────
@@ -396,6 +546,8 @@ def run_anomaly_checks() -> None:
         all_events: list[dict] = []
         all_events.extend(check_traffic_spikes(db))
         all_events.extend(check_health_outage(db))
+        all_events.extend(check_sustained_bandwidth(db))
+        all_events.extend(check_degraded_health(db))
     except Exception as exc:
         print(f"[anomaly] DB check error: {exc}")
     finally:
@@ -408,17 +560,50 @@ def run_anomaly_checks() -> None:
         print(f"[anomaly] port scan check error: {exc}")
 
     for ev in all_events:
-        write_log(
+        log_id = write_log(
             ev["level"], "alert", ev["type"],
             ev["body"],
             device_ip = ev.get("ip"),
         )
+        if _kb is not None:
+            try:
+                _kb.record_netmon_incident(ev)
+            except Exception:
+                pass
         notifier.alert(
             title   = ev["title"],
             body    = ev["body"],
             level   = ev["level"],
             actions = ev.get("actions"),
         )
+
+        # Phase 4: snapshot ~5 minutes of traffic around this anomaly so the
+        # user can replay it later. Best-effort; never blocks the notifier.
+        try:
+            from app.database import SessionLocal as _SL
+            from models.tables import Setting
+            _db = _SL()
+            try:
+                _row = _db.query(Setting).filter(Setting.key == "incident_capture_enabled").first()
+                _enabled = (_row.value if _row else "true").lower() == "true"
+            finally:
+                _db.close()
+            if _enabled:
+                import threading as _thr
+                from traffic.incident_capture import extract_incident_snippet
+                _thr.Thread(
+                    target=extract_incident_snippet,
+                    kwargs={
+                        "anomaly_log_id": log_id,
+                        "anomaly_type":   ev["type"],
+                        "device_ip":      ev.get("ip"),
+                        "minutes_back":   5,
+                    },
+                    daemon=True,
+                    name=f"incident-snap-{ev['type']}",
+                ).start()
+        except Exception as _ic_exc:
+            print(f"[anomaly] incident snippet trigger failed: {_ic_exc}")
         # Auto-block confirmed critical threats (port scans inside the network)
         # Never block our own IP — nmap scans from this machine look like port scans
         if ev["level"] == "critical" and ev["type"] == "port_scan" and ev.get("ip"):
@@ -430,8 +615,8 @@ def run_anomaly_checks() -> None:
             from monitoring.state import request_immediate_scan
             request_immediate_scan()
 
-        # Auto-investigate traffic spikes (fire-and-forget HTTP to running server)
-        if ev["type"] == "traffic_spike" and ev.get("ip"):
+        # Auto-investigate bandwidth anomalies (fire-and-forget HTTP to running server)
+        if ev["type"] in ("traffic_spike", "sustained_bandwidth") and ev.get("ip"):
             try:
                 import urllib.request as _ureq, json as _json
                 _payload = _json.dumps({"target": ev["ip"], "source": "anomaly_auto"}).encode()

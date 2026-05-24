@@ -23,6 +23,13 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 os.chdir(BASE_DIR)
 
+# Redirect Scapy's cache to our data dir before any import touches it.
+# Prevents [WinError 5] when the default ~/.cache/scapy is owned by a
+# different user account (e.g. after a prior admin run).
+_scapy_cache = BASE_DIR / "data" / "scapy_cache"
+_scapy_cache.mkdir(parents=True, exist_ok=True)
+os.environ["SCAPY_CACHE_DIR"] = str(_scapy_cache)
+
 try:
     from dotenv import load_dotenv
     load_dotenv()

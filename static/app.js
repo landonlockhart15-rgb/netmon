@@ -1849,6 +1849,7 @@ let _trafficPollTimer  = null;
 
 async function loadTrafficSection() {
   await Promise.all([
+    _loadTrafficDashboard(),            // Phase 5: new at-a-glance dashboard
     _loadTrafficInterfaces(),
     _loadTrafficStatus(),
     _loadTrafficSummary(),
@@ -1856,6 +1857,148 @@ async function loadTrafficSection() {
     _loadTrafficAi(),
     refreshDnsLive(),
   ]);
+  // Refresh the new dashboard every 10s while the tab is open.
+  if (window._trafficDashTimer) clearInterval(window._trafficDashTimer);
+  window._trafficDashTimer = setInterval(() => {
+    const sec = document.getElementById("section-traffic");
+    if (!sec || sec.style.display === "none") {
+      clearInterval(window._trafficDashTimer); window._trafficDashTimer = null; return;
+    }
+    _loadTrafficDashboard();
+  }, 10000);
+}
+
+async function _loadTrafficDashboard() {
+  try {
+    const data = await _apiFetch("/api/traffic/dashboard");
+    _renderTrafficBanner(data.capture);
+    _renderTrafficStats(data.stats);
+    _renderTrafficConversations(data.conversations || []);
+    _renderTrafficIncidents(data.incidents || []);
+    await _renderTrafficPerDeviceList();
+  } catch (err) {
+    console.error("[traffic] dashboard load:", err);
+  }
+}
+
+function _renderTrafficBanner(cap) {
+  const banner = document.getElementById("traffic-status-banner");
+  const label  = document.getElementById("traffic-status-label");
+  const sub    = document.getElementById("traffic-status-sub");
+  const icon   = document.getElementById("traffic-status-icon");
+  if (!banner || !label || !sub) return;
+  if (cap && cap.running) {
+    banner.className = "shield-banner shield-banner--secure";
+    icon && (icon.textContent = "◉");
+    label.textContent = "CAPTURE ACTIVE";
+    sub.textContent = `Listening on ${cap.interface || "(auto)"}` +
+      (cap.started_at ? ` — since ${formatRelativeTime(cap.started_at)}` : "");
+  } else {
+    banner.className = "shield-banner shield-banner--warning";
+    icon && (icon.textContent = "◬");
+    label.textContent = "CAPTURE IDLE";
+    sub.textContent = "Auto-capture is not running. Expand 'Advanced controls' below to start manually.";
+  }
+}
+
+function _renderTrafficStats(s) {
+  if (!s) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set("traffic-stat-pps", String(s.pps ?? "—"));
+  set("traffic-stat-bps", _humanBytes(s.bps ?? 0) + "/s");
+  set("traffic-stat-devices", String(s.devices ?? "—"));
+  set("traffic-stat-proto", s.top_protocol || "—");
+}
+
+function _humanBytes(n) {
+  if (!n) return "0 B";
+  const units = ["B","KB","MB","GB"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(1)} ${units[i]}`;
+}
+
+function _renderTrafficConversations(conv) {
+  const loading = document.getElementById("traffic-conversations-loading");
+  const table   = document.getElementById("traffic-conversations-table");
+  if (!table) return;
+  if (loading) loading.style.display = "none";
+  table.style.display = "";
+  const tbody = table.querySelector("tbody");
+  if (!tbody) return;
+  if (!conv.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No conversations yet — capture may still be warming up.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = conv.slice(0, 20).map(c => `
+    <tr>
+      <td>${escapeHtml(c.src || "—")}</td>
+      <td>${escapeHtml(c.dst || "—")}</td>
+      <td>${_humanBytes(c.bytes || 0)}</td>
+      <td>${c.packets || 0}</td>
+      <td>${escapeHtml(c.country || "—")}</td>
+      <td>—</td>
+    </tr>
+  `).join("");
+}
+
+function _renderTrafficIncidents(items) {
+  const el = document.getElementById("traffic-incident-timeline");
+  if (!el) return;
+  if (!items.length) {
+    el.innerHTML = `<div class="empty-state">No incidents captured yet. NetMon snaps a 5-minute pcap whenever anomaly detection fires.</div>`;
+    return;
+  }
+  el.innerHTML = items.map(i => `
+    <div class="log-item">
+      <div><strong>${escapeHtml(i.anomaly_type || "incident")}</strong> ${i.device_ip ? "— " + escapeHtml(i.device_ip) : ""}</div>
+      <div class="log-meta">${formatRelativeTime(i.created_at)} · ${_humanBytes(i.size_bytes || 0)}</div>
+      <div class="log-meta" style="font-family:monospace;font-size:.85em">${escapeHtml(i.file_path)}</div>
+    </div>
+  `).join("");
+}
+
+async function _renderTrafficPerDeviceList() {
+  const list = document.getElementById("traffic-per-device-list");
+  if (!list) return;
+  try {
+    const data = await _apiFetch("/api/devices/all?current_only=true");
+    if (!Array.isArray(data) || !data.length) {
+      list.innerHTML = `<div class="empty-state">No current devices.</div>`;
+      return;
+    }
+    list.innerHTML = data.slice(0, 20).map(d => `
+      <div class="log-item" data-device-id="${d.id}" style="cursor:pointer">
+        <strong>${escapeHtml(d.label || d.hostname || d.latest_ip || "device")}</strong>
+        <div class="log-meta">${escapeHtml(d.latest_ip || "")} · ${escapeHtml(d.vendor || "")}</div>
+      </div>
+    `).join("");
+    list.querySelectorAll("[data-device-id]").forEach(node => {
+      node.addEventListener("click", async () => {
+        const id = node.getAttribute("data-device-id");
+        try {
+          const detail = await _apiFetch(`/api/traffic/device/${id}`);
+          const panel = document.getElementById("traffic-per-device-detail");
+          if (panel) panel.innerHTML = `
+            <h3>${escapeHtml(detail.label || detail.hostname || "device")}</h3>
+            <div class="log-meta">${escapeHtml(detail.vendor || "")}</div>
+            <h4>Countries reached</h4>
+            ${detail.countries && detail.countries.length
+              ? `<ul>${detail.countries.map(c => `<li><strong>${escapeHtml(c.country)}</strong> — first seen ${formatRelativeTime(c.first_seen)}, ${_humanBytes(c.total_bytes)} total</li>`).join("")}</ul>`
+              : `<div class="empty-state">None recorded yet.</div>`}
+            <h4>Recent top domains (network-wide)</h4>
+            ${detail.top_domains && detail.top_domains.length
+              ? `<ul>${detail.top_domains.slice(0, 10).map(d => `<li>${escapeHtml(d.domain || "")} (${d.count || 0})</li>`).join("")}</ul>`
+              : `<div class="empty-state">No DNS yet.</div>`}
+          `;
+        } catch (err) {
+          console.error("[traffic] per-device:", err);
+        }
+      });
+    });
+  } catch (err) {
+    list.innerHTML = `<div class="empty-state">Failed to load devices.</div>`;
+  }
 }
 
 async function _loadTrafficInterfaces() {
@@ -3060,18 +3203,6 @@ function _renderLogAiResult(data, mode) {
     return;
   }
 
-  if (mode === "noise") {
-    const patterns = data.repeated_patterns || [];
-    el.innerHTML = `
-      <strong>Noise learning complete.</strong>
-      <div>${escapeHtml(data.safety || "No network behavior changed.")}</div>
-      ${patterns.length ? `<ul>${patterns.slice(0, 6).map(p =>
-        `<li>${escapeHtml(p.event)} × ${p.count}: ${escapeHtml(p.summary)}</li>`
-      ).join("")}</ul>` : `<div>No repeated DNS patterns met the threshold.</div>`}
-    `;
-    return;
-  }
-
   const steps = Array.isArray(data.next_steps) ? data.next_steps : [];
   const concerning = Array.isArray(data.concerning) ? data.concerning : [];
   el.innerHTML = `
@@ -3102,25 +3233,6 @@ async function runLogAiSynthesis() {
     _renderLogAiResult({ summary: "History synthesis failed.", error: err.message }, "synthesis");
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = "Analyze last 7 days"; }
-  }
-}
-
-async function runDnsNoiseLearning() {
-  const btn = document.getElementById("log-ai-noise-btn");
-  if (btn) { btn.disabled = true; btn.textContent = "Learning..."; }
-  try {
-    const data = await _apiFetch("/api/autonomy/learn-noise", {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ category: "dns", days: 7, apply: false }),
-    });
-    _renderLogAiResult(data, "noise");
-    _logsState.offset = 0;
-    _fetchLogs(false);
-  } catch (err) {
-    _renderLogAiResult({ repeated_patterns: [], safety: `Noise learning failed: ${err.message}` }, "noise");
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Learn DNS noise"; }
   }
 }
 
@@ -4160,10 +4272,6 @@ document.addEventListener("click", (e) => {
     return;
   }
 
-  if (e.target.id === "log-ai-noise-btn") {
-    runDnsNoiseLearning();
-    return;
-  }
 });
 
 // Search box — debounced
@@ -4591,3 +4699,229 @@ function dnsCopyIp() {
   if (!ip || ip === "Unknown") { showToast("IP address not available", "warning"); return; }
   navigator.clipboard.writeText(ip).then(() => showToast("IP copied: " + ip, "info"));
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Lessons tab — AI-Hub control-plane bridge (knowledge.db viewer)
+// ═══════════════════════════════════════════════════════════════════
+const AI_HUB_CP_DEFAULT = 'http://100.127.147.57:8091';
+
+function aiHubCpUrl() {
+  try {
+    return localStorage.getItem('ai_hub_cp_url') ||
+      ((location.hostname === '127.0.0.1' || location.hostname === 'localhost')
+        ? 'http://127.0.0.1:8091' : AI_HUB_CP_DEFAULT);
+  } catch (e) { return AI_HUB_CP_DEFAULT; }
+}
+
+function lessonsToast(msg, type) {
+  if (typeof showToast === 'function') showToast(msg, type || 'info');
+  else console.log('[lessons]', msg);
+}
+
+function lessonsEsc(s) {
+  if (typeof escapeHtml === 'function') return escapeHtml(s == null ? '' : String(s));
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function lessonsFmt(v) {
+  if (v == null || v === '') return '—';
+  if (typeof v === 'object') { try { return JSON.stringify(v); } catch (e) { return String(v); } }
+  return String(v);
+}
+
+function lessonsTime(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? lessonsEsc(v) : lessonsEsc(d.toLocaleString());
+}
+
+function lessonsSetHtml(id, html) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = html;
+}
+
+function lessonsEmpty(msg) { return '<div class="empty-state">' + lessonsEsc(msg) + '</div>'; }
+
+function updateAiHubCpNote() {
+  const el = document.getElementById('ai-hub-cp-url');
+  if (el) el.textContent = aiHubCpUrl();
+}
+
+function getAiHubToken() {
+  let token = null;
+  try { token = localStorage.getItem('ai_hub_cp_token'); } catch (e) {}
+  if (token) return token;
+  if (window.__aiHubTokenPrompted) return null;
+  window.__aiHubTokenPrompted = true;
+  token = prompt('Enter AI-Hub control-plane bearer token:');
+  if (token) {
+    token = token.trim();
+    try { localStorage.setItem('ai_hub_cp_token', token); } catch (e) {}
+    return token;
+  }
+  return null;
+}
+
+function resetAiHubToken() {
+  try { localStorage.removeItem('ai_hub_cp_token'); } catch (e) {}
+  window.__aiHubTokenPrompted = false;
+  lessonsToast('AI-Hub token cleared.', 'info');
+  loadLessons();
+}
+
+async function cpFetch(path, opts) {
+  opts = opts || {};
+  const token = getAiHubToken();
+  if (!token) return null;
+  const headers = Object.assign({}, opts.headers || {}, { Authorization: 'Bearer ' + token });
+  try {
+    const res = await fetch(aiHubCpUrl() + path, Object.assign({}, opts, { headers }));
+    let json = null;
+    try { json = await res.json(); } catch (e) {}
+    if (res.status === 401 || res.status === 403) {
+      lessonsToast('AI-Hub auth failed. Tap "change token" to update.', 'error');
+      return null;
+    }
+    if (!res.ok) {
+      lessonsToast((json && (json.reason || json.error)) || ('AI-Hub HTTP ' + res.status), 'error');
+      return null;
+    }
+    return json;
+  } catch (e) {
+    lessonsToast('AI-Hub unreachable: ' + e.message, 'error');
+    return null;
+  }
+}
+
+function renderLessonsPending(items) {
+  if (!items || !items.length) return lessonsEmpty('No pending remediations.');
+  const rows = items.map(p => (
+    '<tr>' +
+      '<td><span class="badge">' + lessonsEsc(p.severity || 'n/a') + '</span></td>' +
+      '<td>' + lessonsSourceBadge(p.source) + lessonsEsc(p.service || '—') + '</td>' +
+      '<td>' + lessonsEsc(p.action || '—') + '</td>' +
+      '<td><code>' + lessonsEsc(lessonsFmt(p.args)) + '</code></td>' +
+      '<td>' + lessonsEsc(p.proposed_by || '—') + '</td>' +
+      '<td>' + lessonsTime(p.started_at) + '</td>' +
+      '<td>' +
+        '<button class="btn-sm" data-id="' + lessonsEsc(p.id) + '" onclick="approveRemediation(this.dataset.id)">Approve</button> ' +
+        '<button class="btn-sm btn-danger" data-id="' + lessonsEsc(p.id) + '" onclick="rejectRemediation(this.dataset.id)">Reject</button>' +
+      '</td>' +
+    '</tr>'
+  )).join('');
+  return '<table class="log-table"><thead><tr><th title="Severity Sentinel assigned to the incident">Sev</th><th title="Which AI-Hub service is affected">Service</th><th title="What Sentinel wants to do (e.g. restart, kill_then_restart)">Action</th><th title="Arguments passed to the action">Args</th><th title="Which Sentinel module proposed this fix">Proposed by</th><th title="When the incident started">Started</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+function renderLessonsPredictions(items) {
+  if (!items || !items.length) return lessonsEmpty('No active predictions. Patterns need ≥3 incidents per fingerprint.');
+  const rows = items.map(p => (
+    '<tr>' +
+      '<td>' + lessonsSourceBadge(p.source) + lessonsEsc(p.service || '—') + '</td>' +
+      '<td>' + lessonsTime(p.predicted_at) + '</td>' +
+      '<td>' + lessonsEsc(p.predicted_failure_window || '—') + '</td>' +
+      '<td><code>' + lessonsEsc(lessonsFmt(p.basis)) + '</code></td>' +
+    '</tr>'
+  )).join('');
+  return '<table class="log-table"><thead><tr><th title="Which AI-Hub service is predicted to fail">Service</th><th title="When Sentinel made this prediction">Predicted at</th><th title="Time window in which the failure is expected">Window</th><th title="Past incidents/patterns this prediction is based on">Basis</th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+function renderLessonsTable(items) {
+  if (!items || !items.length) return lessonsEmpty('No lessons learned yet. Sentinel + NetMon will populate as incidents resolve.');
+  const SAFE = ['restart','kill_then_restart','clear_voyage_throttle','rotate_log'];
+  const rows = items.map(l => {
+    const s = +l.success_count || 0, f = +l.fail_count || 0;
+    const auto = (s >= 2 && l.last_outcome === 'success' && SAFE.includes(l.recommended_action));
+    return (
+      '<tr>' +
+        '<td>' + lessonsSourceBadge(l.source) + lessonsEsc(l.service || '—') + '</td>' +
+        '<td>' + lessonsEsc((l.pattern_summary || l.fingerprint || '—').slice(0,120)) + '</td>' +
+        '<td>' + (auto ? '<span class="badge" style="background:rgba(0,230,118,0.12); color:var(--status-online); border-color:rgba(0,230,118,0.4);">AUTO</span> ' : '') + lessonsEsc(l.recommended_action || '—') + '</td>' +
+        '<td>' + s + '✓ / ' + f + '✗</td>' +
+        '<td>' + lessonsEsc(l.last_outcome || '—') + '</td>' +
+        '<td>' + (l.avg_time_to_failure_sec == null ? '—' : Math.round(l.avg_time_to_failure_sec/60) + 'm') + '</td>' +
+        '<td>' + lessonsTime(l.last_used_at || l.updated_at || l.created_at) + '</td>' +
+      '</tr>'
+    );
+  }).join('');
+  return '<table class="log-table"><thead><tr><th title="Which AI-Hub service this lesson is about">Service</th><th title="Summary of the failure pattern Sentinel recognized (or its fingerprint hash if no summary yet)">Pattern</th><th title="The remediation action that resolved it. AUTO = safe to run unattended next time.">Fix</th><th title="Success / failure counts for this fix">✓/✗</th><th title="Outcome the last time this fix was applied">Last</th><th title="Average time-to-failure: how long the service typically runs before this pattern recurs">Avg TTF</th><th title="When this lesson was last used or updated">Updated</th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+function getLessonsSourceFilter() {
+  try {
+    const sel = document.getElementById('lessons-source-filter');
+    const stored = localStorage.getItem('lessons_source_filter');
+    if (sel && stored && sel.value !== stored) sel.value = stored;
+    return (sel && sel.value) || stored || 'all';
+  } catch (e) { return 'all'; }
+}
+
+function onLessonsSourceChange() {
+  try {
+    const sel = document.getElementById('lessons-source-filter');
+    if (sel) localStorage.setItem('lessons_source_filter', sel.value);
+  } catch (e) {}
+  loadLessons();
+}
+
+function lessonsSourceBadge(src) {
+  if (!src) return '';
+  const bg = src === 'netmon'
+    ? 'rgba(0,176,255,0.12); color:#4cc3ff; border-color:rgba(0,176,255,0.4);'
+    : 'rgba(255,160,0,0.12); color:#ffb74d; border-color:rgba(255,160,0,0.4);';
+  return '<span class="badge" style="background:' + bg + ' margin-right:6px; font-size:10px;">' + lessonsEsc(src) + '</span>';
+}
+
+async function loadLessons() {
+  updateAiHubCpNote();
+  if (!getAiHubToken()) {
+    const msg = lessonsEmpty('Control-plane token required.');
+    lessonsSetHtml('lessons-pending', msg);
+    lessonsSetHtml('lessons-predictions', msg);
+    lessonsSetHtml('lessons-table', msg);
+    return;
+  }
+  lessonsSetHtml('lessons-pending', lessonsEmpty('Loading…'));
+  lessonsSetHtml('lessons-predictions', lessonsEmpty('Loading…'));
+  lessonsSetHtml('lessons-table', lessonsEmpty('Loading…'));
+  const src = getLessonsSourceFilter();
+  const qs = '?source=' + encodeURIComponent(src);
+  const [pen, pred, les] = await Promise.all([
+    cpFetch('/remediation/pending' + qs),
+    cpFetch('/predictions' + qs),
+    cpFetch('/lessons' + qs),
+  ]);
+  lessonsSetHtml('lessons-pending', renderLessonsPending(pen && pen.pending));
+  lessonsSetHtml('lessons-predictions', renderLessonsPredictions(pred && pred.predictions));
+  lessonsSetHtml('lessons-table', renderLessonsTable(les && les.lessons));
+}
+
+async function approveRemediation(id) {
+  if (!confirm('Approve remediation #' + id + '? This will execute the action.')) return;
+  const j = await cpFetch('/remediation/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
+  if (j) lessonsToast(j.ok ? ('Approved' + (j.recovered ? ' & recovered' : '')) : (j.reason || 'Failed'), j.ok ? 'success' : 'error');
+  loadLessons();
+}
+
+async function rejectRemediation(id) {
+  const j = await cpFetch('/remediation/' + encodeURIComponent(id) + '/reject', { method: 'POST' });
+  if (j) lessonsToast(j.ok ? 'Rejected.' : (j.reason || 'Reject failed'), j.ok ? 'success' : 'error');
+  loadLessons();
+}
+
+function lessonsSectionActive() {
+  const el = document.getElementById('section-lessons');
+  return !!el && el.style.display !== 'none';
+}
+
+// Hook switchSection to auto-load when the lessons tab opens
+if (typeof window.switchSection === 'function' && !window.__lessonsSwitchPatched) {
+  const __origSwitch = window.switchSection;
+  window.switchSection = function (n) {
+    __origSwitch.apply(this, arguments);
+    if (n === 'lessons') loadLessons();
+  };
+  window.__lessonsSwitchPatched = true;
+}
+
+window.addEventListener('DOMContentLoaded', updateAiHubCpNote);
+setInterval(() => { if (lessonsSectionActive()) loadLessons(); }, 30000);

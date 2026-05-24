@@ -57,6 +57,24 @@ class Device(Base):
     label      = Column(String, nullable=True)
     is_known   = Column(Boolean, default=False)
 
+    # ── Phase 0/1: per-device baseline + allow-list ─────────────────────────
+    # known_ports_json     — JSON list of int ports that are the device's
+    #                        accepted baseline. Set when (a) a deep scan
+    #                        confirms ports, or (b) the user accepts a
+    #                        port-change alert.
+    # allow_json           — JSON {"allowed_ports":[], "allowed_destinations":[],
+    #                        "allowed_high_bandwidth": bool}. Suppresses
+    #                        anomaly alerts when behavior matches.
+    # baseline_set_at      — when known_ports_json was last frozen/updated.
+    known_ports_json = Column(Text, nullable=True)
+    allow_json       = Column(Text, nullable=True)
+    baseline_set_at  = Column(DateTime, nullable=True)
+
+    # Best-known OS string + when it was learned. Populated by AI investigate
+    # (nmap -O / SSDP / SMB / banner-grab) and surfaced in the devices table.
+    os_guess    = Column(String, nullable=True)
+    os_guess_at = Column(DateTime, nullable=True)
+
     appearances = relationship("ScanDevice", back_populates="device")
 
 
@@ -321,6 +339,62 @@ class ActivityLog(Base):
     reverted_by = Column(String, nullable=True)
 
 
+class DeviceCountryHistory(Base):
+    """
+    Per-device record of countries each device has communicated with.
+    Used by Phase 2 geo-anomaly detection: a device suddenly reaching a
+    country it has never reached before is flagged as suspicious.
+    """
+    __tablename__ = "device_country_history"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    device_id   = Column(Integer, ForeignKey("devices.id"), nullable=False, index=True)
+    country     = Column(String, nullable=False, index=True)
+    first_seen  = Column(DateTime, default=utcnow)
+    last_seen   = Column(DateTime, default=utcnow)
+    total_bytes = Column(Integer, default=0)
+
+
+class IncidentCapture(Base):
+    """
+    Phase 4: A pcap snippet extracted from the rolling ring buffer around an
+    anomaly event. Survives ring-buffer rotation. Lets the user replay exactly
+    what was on the wire when an incident fired.
+    """
+    __tablename__ = "incident_captures"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    created_at      = Column(DateTime, default=utcnow, index=True)
+    anomaly_log_id  = Column(Integer, ForeignKey("activity_log.id"), nullable=True)
+    file_path       = Column(String, nullable=False)
+    file_size_bytes = Column(Integer, default=0)
+    packet_count    = Column(Integer, default=0)
+    window_start    = Column(DateTime, nullable=True)
+    window_end      = Column(DateTime, nullable=True)
+    summary_json    = Column(Text, default="{}")
+    anomaly_type    = Column(String, nullable=True)
+    device_ip       = Column(String, nullable=True, index=True)
+
+
+class HuntRule(Base):
+    """
+    Phase 8: User-defined hunt-mode rules. Stored as a name + YAML body that
+    the rule engine evaluates every minute against current network state.
+    """
+    __tablename__ = "hunt_rules"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    name        = Column(String, nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    yaml_body   = Column(Text, nullable=False)
+    enabled     = Column(Boolean, default=True)
+    severity    = Column(String, default="warning")   # info | warning | critical
+    created_at  = Column(DateTime, default=utcnow)
+    updated_at  = Column(DateTime, default=utcnow, onupdate=utcnow)
+    last_fired_at = Column(DateTime, nullable=True)
+    fire_count    = Column(Integer, default=0)
+
+
 # ── Security Lab ───────────────────────────────────────────────────────────────
 
 class SecurityToolRun(Base):
@@ -422,6 +496,44 @@ class WifiSecurityResult(Base):
     cracking_attempted  = Column(Boolean, default=False)
     cracked             = Column(Boolean, nullable=True)
     created_at          = Column(DateTime, default=utcnow)
+
+
+class DeviceChat(Base):
+    """
+    One row per turn in the interactive AI investigation chat for a device.
+    Roles: "user" | "assistant" | "tool" | "system"
+    Pruned at ~200 turns/device — oldest summarized into a DeviceNote and dropped.
+    """
+    __tablename__ = "device_chats"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    device_id  = Column(Integer, ForeignKey("devices.id"), nullable=False, index=True)
+    created_at = Column(DateTime, default=utcnow, index=True)
+    role       = Column(String, nullable=False)        # user | assistant | tool | system
+    content    = Column(Text,   nullable=False)
+    # Optional structured payload (tool call result, proposal, etc.)
+    meta_json  = Column(Text, nullable=True)
+
+
+class DeviceNote(Base):
+    """
+    Distilled, durable facts the AI has learned about a device across all
+    investigation chats. Survive chat-history pruning. Examples:
+      "WireGuard endpoint = mullvad.net"
+      "talks to push.apple.com daily — likely iPhone"
+      "MAC is randomized (locally administered bit set)"
+    """
+    __tablename__ = "device_notes"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    device_id  = Column(Integer, ForeignKey("devices.id"), nullable=False, index=True)
+    created_at = Column(DateTime, default=utcnow, index=True)
+    kind       = Column(String, default="fact")        # fact | identity | scan | summary
+    body       = Column(Text, nullable=False)
+    # Confidence 0.0–1.0 (for identity facts); null for plain facts.
+    confidence = Column(Float, nullable=True)
+    # Source: "chat" | "tool:nmap" | "tool:tshark" | "user" | "summary"
+    source     = Column(String, nullable=True)
 
 
 class PasswordCrackResult(Base):

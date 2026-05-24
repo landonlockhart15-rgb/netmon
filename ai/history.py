@@ -194,6 +194,15 @@ def build_history_context(db, days: int = 7, max_rows: int = 300) -> dict:
 def build_history_prompt(ctx: dict, question: str = "") -> str:
     data = json.dumps(ctx, default=str, separators=(",", ":"))
     question = (question or "").strip()[:1000]
+    known = ""
+    try:
+        from ai import knowledge_bridge as _kb
+        fixes = _kb.known_fixes_for(limit=5)
+        if fixes:
+            known = "KNOWN_FIXES (from prior successful remediations across NetMon+sentinel):\n" + \
+                    json.dumps(fixes, separators=(",", ":"), default=str) + "\n"
+    except Exception:
+        known = ""
     return (
         "You are NetMon's cautious home-network autonomy advisor. "
         "Analyze existing history only and return ONE JSON object exactly shaped as:\n"
@@ -208,7 +217,9 @@ def build_history_prompt(ctx: dict, question: str = "") -> str:
         "unless domains look malware-like.\n"
         "- Name repeated patterns and common issues from DATA. Never invent devices, IPs, domains, or attacks.\n"
         "- next_steps must be safe, limited, and reversible where possible.\n"
+        "- Prefer fixes from KNOWN_FIXES when their pattern matches the current data.\n"
         "- Keep every list item under 220 chars. Return only JSON.\n"
+        f"{known}"
         f"USER_QUESTION:{question}\n"
         f"DATA:{data}"
     )
@@ -245,6 +256,18 @@ def synthesize_history(db, days: int = 7, question: str = "") -> dict:
         detail=decision_detail,
         actor="ai_auto",
     )
+    try:
+        from ai import knowledge_bridge as _kb
+        if _kb.available():
+            iid = _kb.knowledge.open_incident(
+                "netmon", "history",
+                {"summary": result.get("summary"), "severity": result.get("severity")},
+                signature=f"history:{result.get('severity','')}"[:80],
+                severity=(result.get("severity") or "low"),
+            )
+            _kb.record_suggested_remediations(iid, result.get("next_steps", []))
+    except Exception:
+        pass
 
     return {
         "status": "error" if result.get("error") else "ok",
