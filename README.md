@@ -1,5 +1,9 @@
 # NetMon
 
+**Status:** Active personal project / usable local prototype  
+**Audience:** Windows users who want local network visibility, defensive security tooling, and AI-assisted explanations without sending routine network data to a cloud dashboard.  
+**Safety note:** NetMon is intended for networks you own or are explicitly authorized to test.
+
 NetMon is a local-first network security console for Windows. It discovers
 devices on your LAN, monitors connection health, summarizes traffic, runs a DNS
 ad blocker, provides a Security Lab for authorized testing, and can use local AI
@@ -7,6 +11,13 @@ models to explain what it sees.
 
 The app is designed to run from a tray icon with a browser dashboard at
 <http://localhost:8000>.
+
+## Why this exists
+
+Most home-network tools are either too shallow, too cloud-dependent, or aimed at
+professional SOC teams. NetMon is a practical middle ground: a local dashboard
+for understanding what is on your network, what changed, what looks suspicious,
+and what you can do next.
 
 ## Features
 
