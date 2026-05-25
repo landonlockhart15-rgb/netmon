@@ -23,6 +23,17 @@ def run_hydra(*, run_id, target, service, username=None, username_file_path=None
     from api.routes import _running_procs
     db = SessionLocal()
     try:
+        if service == "http":
+            service = "http-get"
+        elif service == "https":
+            service = "https-get"
+
+        if not password_file_path and not single_password:
+            from models.tables import SecurityFile
+            pf = db.query(SecurityFile).filter(SecurityFile.file_type == "wordlist").first()
+            if pf:
+                password_file_path = pf.storage_path
+
         argv = [_wsl_exe(), "-d", distro, "--", "hydra", "-t", str(max_parallel_tasks)]
         if username:
             argv += ["-l", username]
