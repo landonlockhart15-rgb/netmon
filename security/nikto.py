@@ -143,17 +143,22 @@ def run_nikto(*, run_id, target, port=None, ports=None, auto=False,
             )
             _running_procs[run_id] = proc
 
+            db_out = SessionLocal()
+            db_err = SessionLocal()
             stdout_lines: list[str] = []
             stderr_lines: list[str] = []
 
-            def _read(pipe, store, stream):
-                for line in iter(pipe.readline, ""):
-                    store.append(line)
-                    append_output_chunk(db, run_id, stream=stream, content=line)
-                pipe.close()
+            def _read(pipe, thread_db, store, stream):
+                try:
+                    for line in iter(pipe.readline, ""):
+                        store.append(line)
+                        append_output_chunk(thread_db, run_id, stream=stream, content=line)
+                finally:
+                    pipe.close()
+                    thread_db.close()
 
-            t_out = threading.Thread(target=_read, args=(proc.stdout, stdout_lines, "stdout"), daemon=True)
-            t_err = threading.Thread(target=_read, args=(proc.stderr, stderr_lines, "stderr"), daemon=True)
+            t_out = threading.Thread(target=_read, args=(proc.stdout, db_out, stdout_lines, "stdout"), daemon=True)
+            t_err = threading.Thread(target=_read, args=(proc.stderr, db_err, stderr_lines, "stderr"), daemon=True)
             t_out.start(); t_err.start()
 
             try:
