@@ -1,4 +1,5 @@
 import json
+import re
 import textwrap
 
 from models.tables import SecurityAIExplanation
@@ -8,6 +9,19 @@ _HEADER = (
     "You are NetMon Security Lab AI. Explain this result in plain English "
     "for a home network owner who is learning about security.\n\n"
 )
+
+
+def _hydra_creds(output: str) -> list[str]:
+    """Extract the actual credentials hydra recovered, verbatim, from its output.
+    Used to give the model authoritative ground truth so it cannot invent results."""
+    creds: list[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(r'login:\s*(\S+)\s+password:\s*(\S+)', output):
+        pair = f"{m.group(1)}:{m.group(2)}"
+        if pair not in seen:
+            seen.add(pair)
+            creds.append(pair)
+    return creds
 
 
 # ── Per-tool prompt builders ───────────────────────────────────────────────────
@@ -26,15 +40,28 @@ def _prompt_nikto(output, target):
 
 
 def _prompt_hydra(output, target):
+    creds = _hydra_creds(output)
+    verified = ("Credentials found: " + "; ".join(creds)) if creds else "Credentials found: NONE"
     return textwrap.dedent(f"""
         {_HEADER}
         Hydra tested logins on {target}.
-        1. Did any login succeed? If so, list the EXACT username(s) and password(s) hydra
-           found, verbatim and unredacted — the owner needs to know the real credential to
-           verify and change it. If hydra reported web-service (http-get/https-get) hits,
-           note that those can be FALSE POSITIVES unless a failure condition was set.
-        2. Is there account lockout risk?
-        3. Suggest fixes: strong passwords, disable default users, disable unused SSH.
+
+        VERIFIED RESULT (authoritative — computed directly from the tool output. Do NOT
+        contradict it, and do NOT add any credential that is not listed here):
+        {verified}
+
+        STRICT RULES:
+        - If "Credentials found: NONE", you MUST clearly state that NO weak or default
+          credentials were found. NEVER invent, guess, or give an example username or
+          password. Services that were skipped (e.g. web form logins) were NOT tested and
+          NOT cracked — do not imply otherwise.
+        - If credentials ARE listed, report them verbatim and unredacted (it's the owner's
+          own equipment). Web-service (http-get/https-get) hits can be false positives.
+
+        Now write the explanation:
+        1. State plainly whether any login was cracked, using only the VERIFIED RESULT.
+        2. Account-lockout risk.
+        3. Fixes: strong passwords, disable default users, disable unused SSH.
 
         Hydra output:
         {output}
@@ -58,6 +85,8 @@ def _prompt_john(output, target):
     return textwrap.dedent(f"""
         {_HEADER}
         John the Ripper attempted to crack password hashes.
+        Report ONLY what literally appears in the output below. If no password was cracked,
+        say so plainly. NEVER invent or give an example password.
         1. How many hashes were cracked? List the EXACT cracked passwords verbatim and
            unredacted — the owner needs to see them to know which accounts to fix.
         2. What does this say about password strength?
@@ -72,6 +101,8 @@ def _prompt_aircrack(output, target):
     return textwrap.dedent(f"""
         {_HEADER}
         Aircrack-ng tested Wi-Fi security for {target}.
+        Report ONLY what literally appears in the output. If no key/passphrase was
+        recovered, state it was NOT cracked. NEVER invent or give an example passphrase.
         1. Was a handshake captured? Was the password cracked? If so, show the EXACT
            passphrase verbatim and unredacted — it's the owner's own network and they
            need to know it.
