@@ -11,8 +11,7 @@ your own machine, with nothing sent to a cloud dashboard.
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![Local-first](https://img.shields.io/badge/local--first-no%20cloud-2ea44f)
 
-<!-- Add docs/screenshots/dashboard-overview.png here once captured — a dashboard
-     image at the top is the single biggest boost to a repo's first impression. -->
+![NetMon dashboard — network health view](docs/screenshots/network-health.png)
 
 It runs from a system-tray icon and opens a modern, mobile-friendly **React
 dashboard** at <http://localhost:8000> — with Overview, Devices, Alerts, and
@@ -46,6 +45,19 @@ and what you can do next — without handing your network data to anyone else.
   chain (Cerebras → Groq → SambaNova → OpenRouter → Gemini → Ollama)
 - Security Lab wrappers for authorized tests through WSL/Kali tools
 - Optional ntfy push notifications with action buttons
+
+## Screenshots
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/device-chat.png" alt="AI device chat"><br><sub><b>AI device chat</b> — ask what any device is; the assistant can run scans to find out.</sub></td>
+<td width="50%"><img src="docs/screenshots/security-lab.png" alt="Security Lab"><br><sub><b>Security Lab</b> — wrappers for authorized vulnerability, password, exploit, and Wi-Fi testing.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/speed-history.png" alt="Speed and latency history"><br><sub><b>Speed &amp; latency history</b> — download/upload trends over time.</sub></td>
+<td width="50%"></td>
+</tr>
+</table>
 
 ## Quick Start
 
