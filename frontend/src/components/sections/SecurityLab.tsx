@@ -44,6 +44,7 @@ export default function SecurityLab() {
   const [chatMsg, setChatMsg] = useState('')
   const [fixSuggestions, setFixSuggestions] = useState<any[]>([])
   const [fixResult, setFixResult] = useState<{ text?: string; url?: string } | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastSeqRef = useRef(0)
 
@@ -149,12 +150,33 @@ export default function SecurityLab() {
     setChatMsg('')
   }
 
+  // Run a tool action and surface any failure instead of silently doing nothing.
+  const runAction = async (fn: () => Promise<void>) => {
+    setActionError(null)
+    try {
+      await fn()
+    } catch (e: any) {
+      setActionError(e?.message ? String(e.message) : String(e))
+    }
+  }
+
   return (
     <div className="space-y-4">
       {w && !wslAvailable && (
         <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 flex items-center gap-2 text-sm text-yellow-300">
           <AlertTriangle size={16} />
           WSL not available. Security Lab tools require WSL 2 with Kali Linux.
+        </div>
+      )}
+
+      {actionError && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 flex items-start gap-2 text-sm text-red-300">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <div className="font-medium">Couldn't start the scan</div>
+            <div className="text-red-300/80 text-xs mt-0.5 break-words">{actionError}</div>
+          </div>
+          <button onClick={() => setActionError(null)} className="text-red-300/60 hover:text-red-300 text-xs">✕</button>
         </div>
       )}
 
@@ -169,36 +191,36 @@ export default function SecurityLab() {
         ))}
       </div>
 
-      {tab === 'vulnerability' && <NiktoPanel onStart={async (target, opts) => {
+      {tab === 'vulnerability' && <NiktoPanel onStart={(target, opts) => runAction(async () => {
         const r = await startNikto({ target, ...opts, authorization_confirmed: true })
         startPolling((r as any).run_id)
-      }} />}
+      })} />}
 
       {tab === 'password' && <PasswordPanel
-        onStartHydra={async (body) => {
+        onStartHydra={(body) => runAction(async () => {
           const r = await startHydra({ ...body, authorization_confirmed: true })
           startPolling((r as any).run_id)
-        }}
-        onStartJohn={async (body) => {
+        })}
+        onStartJohn={(body) => runAction(async () => {
           const r = await startJohn({ ...body, authorization_confirmed: true })
           startPolling((r as any).run_id)
-        }}
+        })}
       />}
 
-      {tab === 'exploit' && <ExploitPanel onStart={async (body) => {
+      {tab === 'exploit' && <ExploitPanel onStart={(body) => runAction(async () => {
         const r = await startMetasploit({ ...body, authorization_confirmed: true })
         startPolling((r as any).run_id)
-      }} />}
+      })} />}
 
       {tab === 'wifi' && <WifiPanel
-        onStartCapture={async (body) => {
+        onStartCapture={(body) => runAction(async () => {
           const r = await startWifiCapture({ ...body, authorization_confirmed: true })
           startPolling((r as any).run_id)
-        }}
-        onStartCrack={async (body) => {
+        })}
+        onStartCrack={(body) => runAction(async () => {
           const r = await startAircrack({ ...body, authorization_confirmed: true })
           startPolling((r as any).run_id)
-        }}
+        })}
       />}
 
       {tab === 'exposure' && <ShodanPanel />}
@@ -380,6 +402,7 @@ function PasswordPanel({ onStartHydra, onStartJohn }: {
 }) {
   const [hydraTarget, setHydraTarget] = useState('')
   const [hydraService, setHydraService] = useState('ssh')
+  const [hydraAuto, setHydraAuto] = useState(true)
   const [hydraUser, setHydraUser] = useState('')
   const [hydraPass, setHydraPass] = useState('')
   const [hydraLoading, setHydraLoading] = useState(false)
@@ -389,29 +412,40 @@ function PasswordPanel({ onStartHydra, onStartJohn }: {
   return (
     <div className="space-y-4">
       <Card title="Hydra — Online Password Test">
-        <p className="text-xs text-gray-500 mb-3">Test login credentials against a service on your own devices.</p>
+        <p className="text-xs text-gray-500 mb-3">Check whether a device on your network is using a weak or default login. Just enter the target — NetMon can auto-detect which login services are open and test them.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <input value={hydraTarget} onChange={e => setHydraTarget(e.target.value)} placeholder="Target IP"
             className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
-          <select value={hydraService} onChange={e => setHydraService(e.target.value)}
-            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-purple-500">
+          <select value={hydraService} onChange={e => setHydraService(e.target.value)} disabled={hydraAuto}
+            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-purple-500 disabled:opacity-40 disabled:cursor-not-allowed">
             {['ssh', 'ftp', 'http', 'https', 'smb', 'rdp', 'telnet'].map(s => <option key={s}>{s}</option>)}
           </select>
-          <input value={hydraUser} onChange={e => setHydraUser(e.target.value)} placeholder="Username"
+          <input value={hydraUser} onChange={e => setHydraUser(e.target.value)} placeholder="Username (blank = try common: admin, root…)"
             className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
-          <input value={hydraPass} onChange={e => setHydraPass(e.target.value)} placeholder="Password (or leave blank for wordlist)"
+          <input value={hydraPass} onChange={e => setHydraPass(e.target.value)} placeholder="Password (blank = common/default list)"
             className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
         </div>
-        <div className="mt-2">
+        <div className="mt-2 flex items-center gap-3 flex-wrap">
+          <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-gray-400">
+            <input type="checkbox" checked={hydraAuto} onChange={e => setHydraAuto(e.target.checked)} className="accent-purple-500" />
+            Auto-detect &amp; test open services
+          </label>
           <Btn variant="primary" size="sm" loading={hydraLoading} onClick={async () => {
             if (!hydraTarget) return
             setHydraLoading(true)
-            try { await onStartHydra({ target: hydraTarget, service: hydraService, username: hydraUser, single_password: hydraPass || undefined }) }
-            finally { setHydraLoading(false) }
+            try {
+              const base = { target: hydraTarget, username: hydraUser || undefined, single_password: hydraPass || undefined }
+              await onStartHydra(hydraAuto ? { ...base, auto: true } : { ...base, service: hydraService })
+            } finally { setHydraLoading(false) }
           }}>
             <Play size={13} /> Start
           </Btn>
         </div>
+        <p className="text-[11px] text-gray-600 mt-1.5">
+          {hydraAuto
+            ? 'Auto mode runs a quick nmap probe, then tests each open login service (ssh, ftp, telnet, rdp, smb, http/https) with a built-in list of common/default credentials.'
+            : 'Manual mode tests only the selected service.'}
+        </p>
       </Card>
 
       <Card title="John the Ripper — Offline Hash Cracker">

@@ -5205,6 +5205,21 @@ def start_hydra(body: dict, db: Session = Depends(get_db)):
     run_id = create_security_run(db, tool="hydra", tab="password_test",
         target=target, is_attack_tool=True, authorization_confirmed=True,
         device_id=body.get("device_id"))
+
+    # Auto mode: nmap-detect open login services, then test each one. The user
+    # only supplies the target — no need to know which service to pick.
+    if body.get("auto") or body.get("service") == "auto":
+        threading.Thread(target=_hydra_mod.run_hydra_auto, kwargs={
+            "run_id": run_id, "target": target,
+            "username": body.get("username"),
+            "username_file_path": un_path,
+            "password_file_path": pw_path,
+            "single_password": body.get("single_password"),
+            "max_parallel_tasks": int(body.get("max_parallel_tasks", 4)),
+            "distro": body.get("distro", "kali-linux"),
+        }, daemon=True).start()
+        return {"run_id": run_id}
+
     threading.Thread(target=_hydra_mod.run_hydra, kwargs={
         "run_id": run_id, "target": target,
         "service": body.get("service", "ssh"),

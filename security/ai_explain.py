@@ -29,7 +29,10 @@ def _prompt_hydra(output, target):
     return textwrap.dedent(f"""
         {_HEADER}
         Hydra tested logins on {target}.
-        1. Did any login succeed? Say "Credentials found: [redacted]" — do NOT show actual passwords.
+        1. Did any login succeed? If so, list the EXACT username(s) and password(s) hydra
+           found, verbatim and unredacted — the owner needs to know the real credential to
+           verify and change it. If hydra reported web-service (http-get/https-get) hits,
+           note that those can be FALSE POSITIVES unless a failure condition was set.
         2. Is there account lockout risk?
         3. Suggest fixes: strong passwords, disable default users, disable unused SSH.
 
@@ -55,7 +58,8 @@ def _prompt_john(output, target):
     return textwrap.dedent(f"""
         {_HEADER}
         John the Ripper attempted to crack password hashes.
-        1. How many hashes were cracked? Do NOT show the actual passwords.
+        1. How many hashes were cracked? List the EXACT cracked passwords verbatim and
+           unredacted — the owner needs to see them to know which accounts to fix.
         2. What does this say about password strength?
         3. How can passwords be improved?
 
@@ -68,7 +72,9 @@ def _prompt_aircrack(output, target):
     return textwrap.dedent(f"""
         {_HEADER}
         Aircrack-ng tested Wi-Fi security for {target}.
-        1. Was a handshake captured? Was the password cracked? Do NOT reveal the password.
+        1. Was a handshake captured? Was the password cracked? If so, show the EXACT
+           passphrase verbatim and unredacted — it's the owner's own network and they
+           need to know it.
         2. What does this mean for network security?
         3. Suggest fixes: long WPA2/WPA3 passphrase, disable WPS, update router firmware.
 
