@@ -82,6 +82,22 @@ If autodetection does not choose the right network, set a CIDR range manually:
 SCAN_TARGET=192.168.1.0/24
 ```
 
+## Notifications (ntfy)
+
+NetMon can start a local ntfy server from the tray app when `ntfy.exe` is
+available. Put ntfy on `PATH`, or set these in `.env`:
+
+```dotenv
+NTFY_EXE=C:\ntfy\ntfy.exe
+NTFY_CONFIG=C:\ntfy\server.yml
+NTFY_URL=http://localhost:2586
+```
+
+An example config lives at `config\ntfy\server.example.yml` — copy it to
+`config\ntfy\server.yml` or point `NTFY_CONFIG` at your own. For phone action
+buttons, the phone must reach the ntfy URL over your LAN, so use the NetMon PC's
+LAN IP (for example `http://192.168.1.64:2586`) instead of `localhost`.
+
 ## Troubleshooting
 
 ### `nmap not found`
