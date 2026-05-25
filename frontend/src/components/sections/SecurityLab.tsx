@@ -111,6 +111,48 @@ export default function SecurityLab() {
     }, 1500)
   }, [refetchHistory])
 
+  // Open a run from history. Live runs stream; finished runs load their saved output.
+  const showRun = useCallback(async (runId: number, status: string) => {
+    if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null }
+    setActiveRunId(runId)
+    setFixSuggestions([])
+    setFixResult(null)
+    if (status === 'running' || status === 'pending') {
+      startPolling(runId)
+      return
+    }
+    setStreamOutput('Loading…')
+    try {
+      const res = await fetch('/api/security/run/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ run_id: runId, after_sequence: 0 }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const text = (data.chunks ?? []).map((c: any) => c.content).join('')
+        setStreamOutput(text || '(no output was recorded for this run)')
+      } else {
+        setStreamOutput(`Could not load output (HTTP ${res.status}).`)
+      }
+      try {
+        const fixRes = await fetch('/api/security/fix/suggestions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ run_id: runId }),
+        })
+        if (fixRes.ok) {
+          const fixData = await fixRes.json()
+          setFixSuggestions(fixData.suggestions ?? [])
+        }
+      } catch {}
+    } catch (e: any) {
+      setStreamOutput(`Could not load output: ${e?.message ?? e}`)
+    }
+  }, [startPolling])
+
   const chatMutation = useMutation({
     mutationFn: (msg: string) => securityChat({ message: msg, run_id: activeRunId }),
     onSuccess: (data: any) => setChatHistory(h => [...h, { role: 'assistant', content: data.reply }]),
@@ -325,7 +367,7 @@ export default function SecurityLab() {
               </thead>
               <tbody>
                 {runs.map((r: any) => (
-                  <tr key={r.id} onClick={() => { setActiveRunId(r.id); if (r.status === 'running') startPolling(r.id) }}
+                  <tr key={r.id} onClick={() => showRun(r.id, r.status)}
                     className={cn('border-b border-white/5 cursor-pointer transition-colors',
                       r.id === activeRunId ? 'bg-purple-500/5' : 'hover:bg-white/[0.02]')}>
                     <td className="px-4 py-2 text-gray-500">#{r.id}</td>
