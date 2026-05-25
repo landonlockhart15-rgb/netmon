@@ -3,6 +3,8 @@ import re
 import shutil
 import subprocess
 import threading
+from html.parser import HTMLParser
+from urllib.parse import urlparse, quote
 
 from security.wsl import _wsl_exe
 from security.common import mark_run_started, append_output_chunk, mark_run_completed
@@ -108,6 +110,157 @@ def _web_auth_is_basic(target: str, port: int, use_ssl: bool, timeout: int = 8) 
         return False
     except Exception:
         return None
+
+
+# ── Web form-login auto-testing (http-post-form) ───────────────────────────────
+# For form logins (not Basic Auth) we fetch the page, detect the form fields,
+# submit a deliberately-wrong credential to learn the failure response, then
+# build a hydra http-post-form spec. This lets auto mode test web logins
+# accurately instead of skipping them — and skip safely when it can't.
+
+def _hydra_escape(s: str) -> str:
+    # ':' separates fields in hydra's post-form spec, so literal ':' must be escaped.
+    return (s or "").replace("\\", "\\\\").replace(":", r"\:")
+
+
+class _FormParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.forms: list[dict] = []
+        self._cur: dict | None = None
+
+    def handle_starttag(self, tag, attrs):
+        a = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "form":
+            self._cur = {"action": a.get("action", ""), "inputs": []}
+        elif tag == "input" and self._cur is not None:
+            self._cur["inputs"].append({
+                "type": (a.get("type") or "text").lower(),
+                "name": a.get("name", ""),
+                "value": a.get("value", ""),
+            })
+
+    def handle_endtag(self, tag):
+        if tag == "form" and self._cur is not None:
+            self.forms.append(self._cur)
+            self._cur = None
+
+
+def _fetch(target, port, use_ssl, path="/", method="GET", data=None, timeout=8):
+    import urllib.request
+    import urllib.error
+    import ssl
+    scheme = "https" if use_ssl else "http"
+    if not path.startswith("/"):
+        path = "/" + path
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    headers = {"User-Agent": "NetMon-SecurityLab"}
+    body = data.encode() if isinstance(data, str) else data
+    if body is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(f"{scheme}://{target}:{port}{path}", data=body,
+                                 method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            return r.status, r.read(200_000).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, e.read(200_000).decode("utf-8", "replace")
+        except Exception:
+            return e.code, ""
+    except Exception:
+        return None, None
+
+
+def _detect_login_form(target, port, use_ssl) -> dict | None:
+    _status, body = _fetch(target, port, use_ssl, "/")
+    if not body:
+        return None
+    parser = _FormParser()
+    try:
+        parser.feed(body)
+    except Exception:
+        pass
+    for form in parser.forms:
+        pw = next((i for i in form["inputs"] if i["type"] == "password" and i["name"]), None)
+        if not pw:
+            continue
+        text_inputs = [i for i in form["inputs"] if i["type"] in ("text", "email") and i["name"]]
+        user_field = None
+        for i in text_inputs:
+            if re.search(r"user|login|email|name|account|admin", i["name"], re.I):
+                user_field = i["name"]
+                break
+        if not user_field and text_inputs:
+            user_field = text_inputs[0]["name"]
+        extra: dict[str, str] = {}
+        csrf = False
+        for i in form["inputs"]:
+            n = i["name"]
+            if not n or n == user_field or n == pw["name"]:
+                continue
+            if i["type"] in ("submit", "button", "image", "reset"):
+                continue
+            if re.search(r"csrf|token|nonce|authenticity|_wpnonce", n, re.I):
+                csrf = True
+            extra[n] = i["value"]
+        action = form["action"].strip()
+        if not action:
+            path = "/"
+        else:
+            parsed = urlparse(action)
+            path = parsed.path or "/"
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+        return {"path": path, "user_field": user_field, "pass_field": pw["name"],
+                "extra": extra, "csrf": csrf}
+    return None
+
+
+def _failure_marker(body: str, pass_field: str) -> str | None:
+    low = body.lower()
+    for phrase in ("incorrect", "invalid", "failed", "denied", "not match", "try again",
+                   "unauthorized", "wrong", "bad credentials", "authentication failed", "error"):
+        if phrase in low:
+            return phrase
+    # Fallback: a failed login usually re-renders the form (password field still present).
+    if pass_field and re.search(rf'name=["\']?{re.escape(pass_field)}["\']?', body, re.I):
+        return f'name="{pass_field}"'
+    return None
+
+
+def _build_web_form_test(target, port, use_ssl) -> tuple[str | None, str]:
+    """Returns (hydra http-post-form spec, human note). spec is None when the form
+    can't be auto-tested reliably."""
+    form = _detect_login_form(target, port, use_ssl)
+    if not form:
+        return None, (f"[auto] Skipping web login on {port}: no HTML login form with a password "
+                      "field found (it may be JavaScript-rendered).")
+    if form["csrf"]:
+        return None, (f"[auto] Skipping web login on {port}: the form uses a CSRF token that changes "
+                      "each request — hydra can't replay it, so it can't be auto-tested safely.")
+    if not form["user_field"] or not form["pass_field"]:
+        return None, f"[auto] Skipping web login on {port}: couldn't identify the username/password fields."
+
+    spec_parts, real_parts = [], []
+    for name, val in form["extra"].items():
+        spec_parts.append(f"{name}={_hydra_escape(val)}")
+        real_parts.append(f"{quote(name, safe='')}={quote(val, safe='')}")
+    spec_parts.append(f"{form['user_field']}=^USER^")
+    spec_parts.append(f"{form['pass_field']}=^PASS^")
+    real_parts.append(f"{quote(form['user_field'], safe='')}=nmprobe_x")
+    real_parts.append(f"{quote(form['pass_field'], safe='')}=nmprobe_wrong_zzz")
+
+    _status, body = _fetch(target, port, use_ssl, form["path"], "POST", "&".join(real_parts))
+    marker = _failure_marker(body, form["pass_field"]) if body else None
+    if not marker:
+        return None, (f"[auto] Skipping web login on {port}: couldn't determine a reliable failure "
+                      "response from a bad-credential probe, so testing would risk false positives.")
+    spec = f"{form['path']}:{'&'.join(spec_parts)}:F={_hydra_escape(marker)}"
+    return spec, (f"[auto] Login form detected on {port} (fields {form['user_field']}/"
+                  f"{form['pass_field']}, failure marker '{marker[:30]}') — testing it as a form login.")
 
 
 def _resolve_creds(db, username, username_file_path, password_file_path, single_password):
@@ -276,27 +429,32 @@ def run_hydra_auto(*, run_id, target, username=None, username_file_path=None,
         for port, service in services:
             append_output_chunk(db, run_id, stream="stdout",
                                 content=f"\n=== Testing {service} on port {port} ===\n")
-            # Web services: only brute-force HTTP Basic Auth. Form logins return 200
-            # for everything and would produce false positives, so skip them.
+            run_service = service
+            form_spec = None
+            # Web services: HTTP Basic Auth -> http-get (reliable). Form login -> auto-build
+            # an http-post-form test (detect fields + failure marker), or skip with a reason.
             if service in ("http-get", "https-get"):
-                basic = _web_auth_is_basic(target, port, service == "https-get")
+                use_ssl = service == "https-get"
+                basic = _web_auth_is_basic(target, port, use_ssl)
                 if basic is None:
                     append_output_chunk(db, run_id, stream="stdout",
                         content=f"[auto] Skipping {service}:{port} — web port not reachable for an auth probe.\n")
                     continue
                 if basic is False:
+                    spec, note = _build_web_form_test(target, port, use_ssl)
+                    append_output_chunk(db, run_id, stream="stdout", content=note + "\n")
+                    if not spec:
+                        continue
+                    run_service = "https-post-form" if use_ssl else "http-post-form"
+                    form_spec = spec
+                else:
                     append_output_chunk(db, run_id, stream="stdout",
-                        content=(f"[auto] Skipping {service}:{port} — this is a web *form* login, not HTTP "
-                                 "Basic Auth. Auto mode can't brute-force form logins without false "
-                                 "positives; use the manual http-post-form option if you need to test it.\n"))
-                    continue
-                append_output_chunk(db, run_id, stream="stdout",
-                    content=f"[auto] {service}:{port} uses HTTP Basic Auth — safe to test.\n")
+                        content=f"[auto] {service}:{port} uses HTTP Basic Auth — safe to test.\n")
             argv, svc = _build_argv(
-                target=target, service=service, username=username,
+                target=target, service=run_service, username=username,
                 username_file_path=username_file_path, password_file_path=password_file_path,
                 single_password=single_password, port=port, login_path=None,
-                form_spec=None, max_parallel_tasks=max_parallel_tasks, distro=distro)
+                form_spec=form_spec, max_parallel_tasks=max_parallel_tasks, distro=distro)
             try:
                 _exit, combined = _stream_proc(argv, run_id, per_service_timeout)
             except Exception as e:
