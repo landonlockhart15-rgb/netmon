@@ -1,18 +1,24 @@
+import { lazy } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import Shell from '@/components/layout/Shell'
-import Overview from '@/components/sections/Overview'
-import Health from '@/components/sections/Health'
-import Devices from '@/components/sections/Devices'
-import Alerts from '@/components/sections/Alerts'
-import Traffic from '@/components/sections/Traffic'
-import Shield from '@/components/sections/Shield'
-import Reports from '@/components/sections/Reports'
-import DNS from '@/components/sections/DNS'
-import Logs from '@/components/sections/Logs'
-import Lessons from '@/components/sections/Lessons'
-import SecurityLab from '@/components/sections/SecurityLab'
-import Settings from '@/components/sections/Settings'
+
+// Sections are lazy-loaded so each becomes its own chunk and only downloads
+// when its route is visited. This keeps heavy, page-specific deps (notably
+// echarts in Health) out of the initial bundle. The Suspense boundary lives in
+// Shell, so the sidebar/topbar stay put while a section chunk loads.
+const Overview = lazy(() => import('@/components/sections/Overview'))
+const Health = lazy(() => import('@/components/sections/Health'))
+const Devices = lazy(() => import('@/components/sections/Devices'))
+const Alerts = lazy(() => import('@/components/sections/Alerts'))
+const Traffic = lazy(() => import('@/components/sections/Traffic'))
+const Shield = lazy(() => import('@/components/sections/Shield'))
+const Reports = lazy(() => import('@/components/sections/Reports'))
+const DNS = lazy(() => import('@/components/sections/DNS'))
+const Logs = lazy(() => import('@/components/sections/Logs'))
+const Lessons = lazy(() => import('@/components/sections/Lessons'))
+const SecurityLab = lazy(() => import('@/components/sections/SecurityLab'))
+const Settings = lazy(() => import('@/components/sections/Settings'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
