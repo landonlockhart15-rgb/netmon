@@ -109,6 +109,8 @@ def _run_and_save() -> None:
             local_target=local_target,
             error=result["error"],
         )
+        from monitoring.uptime_stats import record_health_check
+        record_health_check(db, result["status"])
         db.add(hc)
         db.commit()
 

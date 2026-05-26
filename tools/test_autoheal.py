@@ -122,6 +122,13 @@ def test_run_cycle_dryrun():
                               ActivityLog.created_at >= test_start).count())
         check("exactly one dry-run reboot logged (no loop)", n_attempts == 1)
 
+        reset = ah.reset_reboot_counter(db)
+        stats_after_reset = ah.attempt_stats(db)
+        check("reset clears counted reboot budget", reset["cleared_reboots_today"] == 1 and stats_after_reset["reboots_today"] == 0)
+
+        a4b = ah.run_cycle(probe_fn=offline)
+        check("after reset, outage can use budget again", a4b["action"] == "reboot" and a4b.get("executed") == "dry_run")
+
         a5 = ah.run_cycle(probe_fn=online)    # recovery
         check("recovery detected after reboot", a5["action"] == "online" and a5.get("recovered"))
         n_recovered = (db.query(ActivityLog)

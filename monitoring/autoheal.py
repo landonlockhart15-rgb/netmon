@@ -35,6 +35,7 @@ EV_DRYRUN      = "router_reboot_dryrun"   # dry-run "would have rebooted"
 EV_RECOVERED   = "recovered"
 EV_GIVEUP      = "giveup"
 EV_OUTAGE      = "outage_detected"
+EV_RESET       = "reboot_counter_reset"
 # Attempts that count against caps/cooldown (real + dry-run, so dry-run behaves identically)
 _ATTEMPT_EVENTS = (EV_REBOOT, EV_DRYRUN)
 
@@ -224,6 +225,9 @@ def _ai_diagnose(probe_result: dict, mins: str) -> Optional[str]:
 # ── Persisted reboot history (caps survive restarts) ──────────────────────────
 
 def _attempts_since(db, since: datetime) -> list:
+    reset_at = _last_reset_at(db)
+    if reset_at and reset_at > since:
+        since = reset_at
     rows = (db.query(ActivityLog)
             .filter(ActivityLog.category == "autoheal",
                     ActivityLog.event.in_(_ATTEMPT_EVENTS),
@@ -236,6 +240,42 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
     if dt is None:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _last_reset_at(db) -> Optional[datetime]:
+    row = (db.query(ActivityLog)
+           .filter(ActivityLog.category == "autoheal",
+                   ActivityLog.event == EV_RESET)
+           .order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc())
+           .first())
+    return _aware(row.created_at) if row else None
+
+
+def attempt_stats(db, now: Optional[datetime] = None) -> dict:
+    """Return reboot attempt stats after the most recent counter reset."""
+    now = now or datetime.now(timezone.utc)
+    reset_at = _last_reset_at(db)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = max(midnight, reset_at) if reset_at else midnight
+
+    reboots_today = (db.query(ActivityLog)
+                     .filter(ActivityLog.category == "autoheal",
+                             ActivityLog.event.in_(_ATTEMPT_EVENTS),
+                             ActivityLog.created_at >= today_start)
+                     .count())
+
+    last_q = (db.query(ActivityLog)
+              .filter(ActivityLog.category == "autoheal",
+                      ActivityLog.event.in_(_ATTEMPT_EVENTS)))
+    if reset_at:
+        last_q = last_q.filter(ActivityLog.created_at >= reset_at)
+    last_reboot = last_q.order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc()).first()
+
+    return {
+        "reboots_today": reboots_today,
+        "last_reboot_at": _aware(last_reboot.created_at) if last_reboot else None,
+        "counter_reset_at": reset_at,
+    }
 
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
@@ -370,6 +410,30 @@ def manual_reboot(db=None, force: bool = False) -> dict:
         _emit(EV_REBOOT, level, summary, {"trigger": "manual", "result": res}, notify=True)
         res["dry_run"] = False
         return res
+    finally:
+        if own:
+            db.close()
+
+
+def reset_reboot_counter(db=None) -> dict:
+    """
+    Reset the counted reboot/dry-run budget without deleting audit history.
+    Prior attempt rows remain visible; future caps count from this reset marker.
+    """
+    own = db is None
+    if own:
+        db = SessionLocal()
+    try:
+        before = attempt_stats(db)
+        _STATE["rebooted_this_outage"] = False
+        _STATE["gave_up"] = False
+        _emit(EV_RESET, "action", "Uptime Guardian reboot counter reset by user.",
+              {"cleared_reboots_today": before["reboots_today"]}, notify=False)
+        return {
+            "status": "ok",
+            "cleared_reboots_today": before["reboots_today"],
+            "counter_reset_at": datetime.now(timezone.utc).isoformat(),
+        }
     finally:
         if own:
             db.close()

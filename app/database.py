@@ -210,6 +210,12 @@ def seed_default_settings():
         "packet_loss_warn_pct":    "10",
         "health_alerts_enabled":   "true",
         "speed_test_url":          "https://speed.cloudflare.com/__down?bytes=50000000",
+        "uptime_stats_started_at": "",
+        "uptime_total_checks":     "0",
+        "uptime_online_checks":    "0",
+        "uptime_degraded_checks":  "0",
+        "uptime_offline_checks":   "0",
+        "uptime_last_checked_at":  "",
         # AI settings — off by default; user must explicitly enable
         "ai_enabled":              "false",
         "ai_auto_analyze":         "false",

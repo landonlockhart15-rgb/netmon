@@ -229,6 +229,8 @@ export const saveAutoHealConfig = (body: Record<string, unknown>) =>
   apiFetch<{ saved: string[]; password_set: boolean }>('/api/autoheal/config', { method: 'POST', body: JSON.stringify(body) })
 export const autoHealRebootNow = (force = false) =>
   apiFetch<any>('/api/autoheal/reboot-now', { method: 'POST', body: JSON.stringify({ force }) })
+export const autoHealResetCounter = () =>
+  apiFetch<{ status: string; cleared_reboots_today: number; counter_reset_at: string }>('/api/autoheal/reset-counter', { method: 'POST' })
 export const autoHealSimulate = () =>
   apiFetch<{ dry_run: boolean; enabled: boolean; scenarios: { scenario: string; decision: { action: string; reason?: string } }[] }>(
     '/api/autoheal/simulate', { method: 'POST', body: JSON.stringify({}) })

@@ -634,6 +634,8 @@ def run_health_check_now(db: Session = Depends(get_db)):
         target=result["target"],
         error=result["error"],
     )
+    from monitoring.uptime_stats import record_health_check
+    record_health_check(db, result["status"])
     db.add(hc)
     db.commit()
 
@@ -4697,7 +4699,8 @@ _AUTOHEAL_KEYS = {
 def autoheal_status(db: Session = Depends(get_db)):
     """Uptime Guardian status — config (password redacted), live outage state,
     recent events, and reboot stats."""
-    from monitoring.autoheal import get_config, _STATE, _ATTEMPT_EVENTS, EV_REBOOT, EV_DRYRUN
+    from monitoring.autoheal import get_config, _STATE, attempt_stats
+    from monitoring.uptime_stats import get_uptime_stats
 
     cfg = get_config(db)
     safe_cfg = {k: v for k, v in cfg.items() if k != "router_pass"}
@@ -4717,16 +4720,8 @@ def autoheal_status(db: Session = Depends(get_db)):
     events = [{"id": r.id, "event": r.event, "level": r.level, "summary": r.summary,
                "detail": _detail(r), "created_at": _iso(r.created_at)} for r in rows]
 
-    now = datetime.now(timezone.utc)
-    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    reboots_today = (db.query(ActivityLog)
-                     .filter(ActivityLog.category == "autoheal",
-                             ActivityLog.event.in_(list(_ATTEMPT_EVENTS)),
-                             ActivityLog.created_at >= midnight).count())
-    last_reboot = (db.query(ActivityLog)
-                   .filter(ActivityLog.category == "autoheal",
-                           ActivityLog.event.in_([EV_REBOOT, EV_DRYRUN]))
-                   .order_by(desc(ActivityLog.id)).first())
+    stats = attempt_stats(db)
+    uptime = get_uptime_stats(db)
 
     return {
         "config": safe_cfg,
@@ -4736,8 +4731,10 @@ def autoheal_status(db: Session = Depends(get_db)):
             "consecutive_offline": _STATE["consecutive_offline"],
             "rebooted_this_outage": _STATE["rebooted_this_outage"],
         },
-        "stats": {"reboots_today": reboots_today,
-                  "last_reboot": _iso(last_reboot.created_at) if last_reboot else None},
+        "stats": {"reboots_today": stats["reboots_today"],
+                  "last_reboot": _iso(stats["last_reboot_at"]) if stats["last_reboot_at"] else None,
+                  "counter_reset_at": _iso(stats["counter_reset_at"]) if stats["counter_reset_at"] else None,
+                  "uptime": uptime},
         "events": events,
     }
 
@@ -4771,6 +4768,13 @@ def autoheal_reboot_now(body: dict = None, db: Session = Depends(get_db)):
     from monitoring.autoheal import manual_reboot
     force = bool((body or {}).get("force", False))
     return manual_reboot(db, force=force)
+
+
+@router.post("/api/autoheal/reset-counter")
+def autoheal_reset_counter(db: Session = Depends(get_db)):
+    """Reset counted reboot attempts while preserving the ActivityLog audit trail."""
+    from monitoring.autoheal import reset_reboot_counter
+    return reset_reboot_counter(db)
 
 
 @router.post("/api/autoheal/simulate")
