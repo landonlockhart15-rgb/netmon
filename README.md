@@ -36,7 +36,8 @@ and what you can do next — without handing your network data to anyone else.
 - Device discovery with nmap — device history, change detection, and open ports
 - **AI device chat** — ask the assistant to identify or investigate any device,
   with conversation history synthesized from past observations
-- Health checks for internet and router latency
+- Health checks for internet and router latency, plus **Uptime Guardian**
+  auto-heal for sustained outages
 - Traffic capture summaries with Wireshark `dumpcap` / `tshark`
 - DNS ad blocking with StevenBlack, OISD, and AdGuard blocklists
 - Anomaly detection, threat-intel + IP geolocation, and reversible firewall
@@ -45,6 +46,18 @@ and what you can do next — without handing your network data to anyone else.
   chain (Cerebras → Groq → SambaNova → OpenRouter → Gemini → Ollama)
 - Security Lab wrappers for authorized tests through WSL/Kali tools
 - Optional ntfy push notifications with action buttons
+
+## Uptime Guardian
+
+Uptime Guardian watches internet reachability and router reachability in the
+background. With the default 30-second interval and 3 confirmation checks, it
+treats an outage as sustained after about 90 seconds. When enabled, it can reboot
+supported Netgear/Orbi routers through the local router admin API to restore
+connectivity.
+
+It is off by default and starts in dry-run mode, so it logs what it would have
+done before sending any real reboot command. Reboot attempts are capped per
+outage and per day, with cooldown and recovery windows to avoid reboot loops.
 
 ## Screenshots
 
