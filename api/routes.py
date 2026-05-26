@@ -57,6 +57,7 @@ from network.protection import explain_protected_target, filter_blockable_ips, v
 from scanner.runner import run_scan
 from scanner.parser import parse_nmap_xml
 from scanner.diff import compute_diff, build_snapshot
+from scanner.presence import current_scan_ids, window_scan_ids, window_snapshot
 
 router = APIRouter()
 
@@ -217,8 +218,14 @@ def trigger_scan(body: dict = None, db: Session = Depends(get_db)):
         )
         change_count = 0
         if prev_scan:
-            curr_sds = db.query(ScanDevice).filter(ScanDevice.scan_id == scan.id).all()
-            changes  = compute_diff(build_snapshot(prev_scan.devices), build_snapshot(curr_sds))
+            # Diff merged windows, not single scans, so quick/full alternation
+            # doesn't fire spurious "appeared / no longer responding" events.
+            # The current window includes this scan; the previous window is
+            # anchored at prev_scan, so the new scan can't leak into it.
+            changes = compute_diff(
+                window_snapshot(db, window_scan_ids(db, prev_scan)),
+                window_snapshot(db, window_scan_ids(db, scan)),
+            )
             change_count = len(changes)
             for ch in changes:
                 db.add(ChangeEvent(scan_id=scan.id, prev_scan_id=prev_scan.id, **ch))
@@ -267,16 +274,26 @@ def trigger_scan(body: dict = None, db: Session = Depends(get_db)):
 
 @router.get("/api/devices")
 def get_devices(db: Session = Depends(get_db)):
-    latest_scan = (
-        db.query(Scan).filter(Scan.status == "complete")
-        .order_by(desc(Scan.id)).first()
-    )
+    latest_scan, scan_ids = current_scan_ids(db)
     if not latest_scan:
         return {"scan": None, "devices": []}
 
-    scan_devices = db.query(ScanDevice).filter(ScanDevice.scan_id == latest_scan.id).all()
+    # Union ScanDevice rows across every scan in the merge window, keeping only
+    # the freshest row per device (highest id wins). This is what stops a full
+    # scan from "forgetting" devices a quick scan just found — and vice-versa —
+    # when the two run back-to-back. See scanner.presence for the windowing.
+    scan_devices = (
+        db.query(ScanDevice)
+        .filter(ScanDevice.scan_id.in_(scan_ids))
+        .order_by(desc(ScanDevice.id))
+        .all()
+    )
+    seen_device_ids = set()
     devices = []
     for sd in scan_devices:
+        if sd.device_id in seen_device_ids:
+            continue
+        seen_device_ids.add(sd.device_id)
         dev = sd.device
         # Hourly auto-scan uses -sn (no ports), so sd.ports_list is empty for
         # most rows. Fall back to the most recent ScanDevice that actually has
@@ -311,7 +328,9 @@ def get_devices(db: Session = Depends(get_db)):
             "id": latest_scan.id,
             "started_at": _iso(latest_scan.started_at),
             "duration_s": latest_scan.duration_s,
-            "host_count": latest_scan.host_count,
+            # Merged count across the window, not just the latest scan, so the
+            # number matches the device list we actually return.
+            "host_count": len(devices),
         },
         "devices": sorted(devices, key=lambda d: d["ip"] or ""),
     }
@@ -367,13 +386,14 @@ def get_all_devices(current_only: bool = False, db: Session = Depends(get_db)):
     from sqlalchemy import func
 
     if current_only:
-        # Find the most recent completed scan
-        last_scan = db.query(Scan).filter(Scan.status == "complete").order_by(desc(Scan.id)).first()
+        # "Current" = devices seen in any completed scan within the merge window
+        # (not just the single latest scan), so a quick scan and a full scan run
+        # back-to-back don't drop each other's devices. See scanner.presence.
+        last_scan, scan_ids = current_scan_ids(db)
         if last_scan:
-            # Only devices that have a ScanDevice record in that scan
             current_device_ids = (
                 db.query(ScanDevice.device_id)
-                .filter(ScanDevice.scan_id == last_scan.id)
+                .filter(ScanDevice.scan_id.in_(scan_ids))
                 .subquery()
             )
             devices = (

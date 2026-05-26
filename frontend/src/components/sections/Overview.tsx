@@ -1,16 +1,17 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ScanLine, Wifi, Network, History, BrainCircuit } from 'lucide-react'
+import { ScanLine, Wifi, Network, History, BrainCircuit, Radar, MonitorSmartphone, Clock, Timer, Router } from 'lucide-react'
 import {
   getDevices, getScans, getDiffLatest, getAILatest, getAIProgress,
   getNetworkInfo, runScan, runAIScanAnalysis,
-  type Device, type Scan, type DiffResult, type AISummary
+  type Device, type Scan, type DiffResult, type AISummary, type NetworkInfo
 } from '@/lib/api'
 import { fmtDateTime, formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge, { severityVariant } from '@/components/shared/Badge'
 import EmptyState from '@/components/shared/EmptyState'
+import StatTile from '@/components/shared/StatTile'
 import DeviceModal from '@/components/shared/DeviceModal'
 import Markdown from '@/components/shared/Markdown'
 
@@ -79,31 +80,13 @@ export default function Overview() {
 
   return (
     <div className="space-y-4">
-      {/* Scan control */}
-      <Card
-        title="Network Scan"
-        action={
-          <Btn
-            variant="primary"
-            size="sm"
-            loading={scanMutation.isPending}
-            onClick={() => scanMutation.mutate()}
-          >
-            <ScanLine size={14} />
-            {scanMutation.isPending ? 'Scanning…' : 'Scan Now'}
-          </Btn>
-        }
-      >
-        {latestScan ? (
-          <div className="grid grid-cols-3 gap-4">
-            <Stat label="Hosts Found" value={(latestScan as any).host_count ?? (latestScan as any).device_count ?? '—'} />
-            <Stat label="Last Scan" value={formatRelativeTime(latestScan.started_at)} />
-            <Stat label="Duration" value={(latestScan as any).duration_s != null ? `${Number((latestScan as any).duration_s).toFixed(1)}s` : `#${latestScan.id}`} />
-          </div>
-        ) : (
-          <EmptyState icon="◎" text="No scan data yet" hint="Press Scan Now to discover devices on your network" />
-        )}
-      </Card>
+      <OverviewHero
+        netinfo={netinfo as NetworkInfo | undefined}
+        latestScan={latestScan}
+        deviceCount={devices.length}
+        scanning={scanMutation.isPending}
+        onScan={() => scanMutation.mutate()}
+      />
 
       {/* Devices */}
       <Card
@@ -180,6 +163,64 @@ export default function Overview() {
       {selectedDevice !== null && (
         <DeviceModal deviceId={selectedDevice} onClose={() => setSelectedDevice(null)} />
       )}
+    </div>
+  )
+}
+
+function OverviewHero({ netinfo, latestScan, deviceCount, scanning, onScan }: {
+  netinfo?: NetworkInfo
+  latestScan?: Scan
+  deviceCount: number
+  scanning: boolean
+  onScan: () => void
+}) {
+  const hosts = (latestScan as any)?.host_count ?? (latestScan as any)?.device_count
+  const duration = (latestScan as any)?.duration_s
+  return (
+    <div className="relative overflow-hidden rounded-2xl border border-cyan-500/25 bg-[#0d0d18] shadow-[0_0_30px_-12px_rgba(34,211,238,0.4)]">
+      <div className="absolute inset-0 nm-grid-bg opacity-40" />
+      <div className="absolute inset-0 bg-gradient-to-br from-transparent to-black/40" />
+      <div className="relative flex flex-col lg:flex-row lg:items-center gap-5 p-5 md:p-6">
+        {/* Emblem + identity */}
+        <div className="flex items-center gap-5">
+          <div className="relative h-20 w-20 flex-shrink-0">
+            {scanning && <span className="absolute inset-0 rounded-full border border-cyan-500/40 nm-pulse-ring" />}
+            <span className="absolute inset-1 rounded-full nm-sweep"
+              style={{ background: 'conic-gradient(from 0deg, transparent 0deg, rgba(34,211,238,0.45) 60deg, transparent 120deg)' }} />
+            <div className="absolute inset-3 grid place-items-center rounded-full border border-cyan-500/30 bg-[#0a0a14]">
+              <Radar size={28} className={cn('text-cyan-400', scanning && 'nm-breathe')} />
+            </div>
+          </div>
+          <div>
+            <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-cyan-400">
+              <span className="h-2 w-2 rounded-full bg-cyan-400 text-cyan-400 nm-blip" />
+              {scanning ? 'Scanning network…' : 'Network Online'}
+            </div>
+            <h1 className="mt-1 text-2xl md:text-3xl font-bold text-white tracking-tight">Network Overview</h1>
+            <p className="mt-1 text-sm text-gray-400 font-mono">
+              {netinfo?.scan_target ?? '—'}{netinfo?.gateway ? ` · gw ${netinfo.gateway}` : ''}
+            </p>
+          </div>
+        </div>
+
+        {/* Metrics + action */}
+        <div className="lg:ml-auto w-full lg:w-auto">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <StatTile icon={<MonitorSmartphone size={11} />} label="Devices" accent="cyan" glow value={deviceCount || (hosts ?? 0)} sub="on network" />
+            <StatTile icon={<Clock size={11} />} label="Last Scan" accent="blue"
+              value={latestScan ? formatRelativeTime(latestScan.started_at) : '—'} sub={hosts != null ? `${hosts} hosts` : 'never run'} />
+            <StatTile icon={<Timer size={11} />} label="Duration" accent="purple"
+              value={duration != null ? `${Number(duration).toFixed(1)}s` : '—'} sub="last scan" />
+            <StatTile icon={<Router size={11} />} label="Local IP" accent="emerald"
+              value={<span className="text-sm font-mono">{netinfo?.local_ip ?? '—'}</span>} sub={netinfo?.interface ?? 'this host'} />
+          </div>
+          <div className="mt-3 flex justify-end">
+            <Btn variant="primary" size="sm" loading={scanning} onClick={onScan}>
+              <ScanLine size={14} />{scanning ? 'Scanning…' : 'Scan Now'}
+            </Btn>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

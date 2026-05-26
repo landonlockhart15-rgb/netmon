@@ -1,17 +1,17 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import ReactECharts from 'echarts-for-react'
-import { RefreshCw, Zap, Wifi, WifiOff, Timer, Activity } from 'lucide-react'
+import { RefreshCw, Zap, Wifi, WifiOff, Timer, Activity, Download, Upload, Gauge, Waves } from 'lucide-react'
 import {
   getHealthCurrent, getHealthHistory, runHealthCheck,
   getSpeedLatest, getSpeedHistory, runSpeedTest,
   getTelemetry,
   type HealthStatus, type HealthPoint, type SpeedResult, type Telemetry,
 } from '@/lib/api'
-import { fmtTime, fmtDate, formatRelativeTime } from '@/lib/utils'
+import { fmtTime, fmtDate, formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
-import Badge from '@/components/shared/Badge'
 import EmptyState from '@/components/shared/EmptyState'
+import StatTile, { ACCENT, type Accent } from '@/components/shared/StatTile'
 
 export default function Health() {
   const { data: health, refetch: refetchHealth } = useQuery({
@@ -71,48 +71,14 @@ export default function Health() {
 
   return (
     <div className="space-y-4">
-      {/* Big status cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <BigStat
-          icon={h?.online ? <Wifi size={20} className="text-emerald-400" /> : <WifiOff size={20} className="text-red-400" />}
-          label="Status"
-          value={h ? (h.online ? 'Online' : 'Offline') : '—'}
-          sub={h?.checked_at ? formatRelativeTime(h.checked_at) : ''}
-          color={h?.online ? 'emerald' : 'red'}
-        />
-        <BigStat
-          icon={<Timer size={20} className="text-blue-400" />}
-          label="Latency"
-          value={h?.latency_ms != null ? `${h.latency_ms}ms` : '—'}
-          sub="internet RTT"
-          color={h?.latency_ms != null ? (h.latency_ms < 50 ? 'emerald' : h.latency_ms < 150 ? 'yellow' : 'red') : 'gray'}
-        />
-        <BigStat
-          icon={<Zap size={20} className="text-cyan-400" />}
-          label="Download"
-          value={sl ? `${sl.download_mbps} Mbps` : '—'}
-          sub={sl ? formatRelativeTime(sl.tested_at) : 'no test yet'}
-          color="cyan"
-        />
-        <BigStat
-          icon={<Activity size={20} className="text-purple-400" />}
-          label="Upload"
-          value={sl ? `${sl.upload_mbps} Mbps` : '—'}
-          sub="last speed test"
-          color="purple"
-        />
-      </div>
-
-      {/* Action buttons */}
-      <div className="flex gap-2">
-        <Btn variant="secondary" size="sm" loading={checkMutation.isPending} onClick={() => checkMutation.mutate()}>
-          <RefreshCw size={13} /> Run Health Check
-        </Btn>
-        <Btn variant="secondary" size="sm" loading={speedMutation.isPending} onClick={() => speedMutation.mutate()}>
-          <Zap size={13} />
-          {speedMutation.isPending ? 'Testing… (~10s)' : 'Speed Test'}
-        </Btn>
-      </div>
+      <HealthHero
+        h={h}
+        sl={sl}
+        checking={checkMutation.isPending}
+        speeding={speedMutation.isPending}
+        onCheck={() => checkMutation.mutate()}
+        onSpeed={() => speedMutation.mutate()}
+      />
 
       {/* Latency chart */}
       <Card title="Latency History" badge={`${(history as HealthPoint[]).length} POINTS`}>
@@ -169,20 +135,69 @@ export default function Health() {
   )
 }
 
-function BigStat({ icon, label, value, sub, color }: {
-  icon: React.ReactNode; label: string; value: string; sub: string; color: string
+function HealthHero({ h, sl, checking, speeding, onCheck, onSpeed }: {
+  h?: HealthStatus
+  sl?: SpeedResult
+  checking: boolean
+  speeding: boolean
+  onCheck: () => void
+  onSpeed: () => void
 }) {
-  const textColors: Record<string, string> = {
-    emerald: 'text-emerald-400', red: 'text-red-400', blue: 'text-blue-400',
-    yellow: 'text-yellow-400', cyan: 'text-cyan-400', purple: 'text-purple-400', gray: 'text-gray-400',
-  }
+  const status = (h as any)?.status as string | undefined
+  const view = status === 'online'
+    ? { accent: 'emerald' as Accent, label: 'Connection Online', Icon: Wifi, sweep: 'rgba(16,185,129,0.5)', border: 'border-emerald-500/40', sub: 'Internet reachable — latency and loss within normal range.' }
+    : status === 'degraded'
+    ? { accent: 'amber' as Accent, label: 'Connection Degraded', Icon: Waves, sweep: 'rgba(245,158,11,0.5)', border: 'border-amber-500/40', sub: 'High latency or packet loss detected.' }
+    : status === 'offline'
+    ? { accent: 'red' as Accent, label: 'Connection Offline', Icon: WifiOff, sweep: 'rgba(239,68,68,0.55)', border: 'border-red-500/50', sub: 'No internet connectivity on the last check.' }
+    : { accent: 'gray' as Accent, label: 'Checking…', Icon: Wifi, sweep: 'rgba(148,163,184,0.4)', border: 'border-white/15', sub: 'Running connectivity check.' }
+  const a = ACCENT[view.accent]
+  const Emblem = view.Icon
+  const lat = h?.latency_ms
+  const latAccent: Accent = lat == null ? 'gray' : lat < 50 ? 'emerald' : lat < 150 ? 'amber' : 'red'
+
   return (
-    <div className="rounded-xl border border-white/8 bg-[#12121e] p-4 space-y-2">
-      {icon}
-      <div>
-        <p className={`text-xl font-bold ${textColors[color] ?? 'text-gray-200'}`}>{value}</p>
-        <p className="text-xs text-gray-500">{label}</p>
-        <p className="text-[10px] text-gray-600">{sub}</p>
+    <div className={cn('relative overflow-hidden rounded-2xl border bg-[#0d0d18]', view.border, a.glow)}>
+      <div className="absolute inset-0 nm-grid-bg opacity-50" />
+      <div className="absolute inset-0 bg-gradient-to-br from-transparent to-black/40" />
+      <div className="relative flex flex-col lg:flex-row lg:items-center gap-5 p-5 md:p-6">
+        <div className="flex items-center gap-5">
+          <div className="relative h-20 w-20 flex-shrink-0">
+            <span className={cn('absolute inset-0 rounded-full border nm-pulse-ring', view.border)} />
+            <span className="absolute inset-1 rounded-full nm-sweep"
+              style={{ background: `conic-gradient(from 0deg, transparent 0deg, ${view.sweep} 60deg, transparent 120deg)` }} />
+            <div className={cn('absolute inset-3 grid place-items-center rounded-full border bg-[#0a0a14]', view.border)}>
+              <Emblem size={28} className={cn(a.text, 'nm-breathe')} />
+            </div>
+          </div>
+          <div>
+            <div className={cn('flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em]', a.text)}>
+              <span className={cn('h-2 w-2 rounded-full nm-blip', a.dot, a.text)} />
+              {h?.checked_at ? formatRelativeTime(h.checked_at) : 'no check yet'}
+            </div>
+            <h1 className="mt-1 text-2xl md:text-3xl font-bold text-white tracking-tight">{view.label}</h1>
+            <p className="mt-1 text-sm text-gray-400 max-w-md">{view.sub}</p>
+          </div>
+        </div>
+
+        <div className="lg:ml-auto w-full lg:w-auto">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            <StatTile icon={<Timer size={11} />} label="Latency" accent={latAccent} glow value={lat != null ? `${lat}ms` : '—'} sub="internet RTT" />
+            <StatTile icon={<Gauge size={11} />} label="Packet Loss" accent={h?.packet_loss ? 'red' : 'emerald'} value={h?.packet_loss != null ? `${h.packet_loss}%` : '—'} sub="last check" />
+            <StatTile icon={<Activity size={11} />} label="Local RTT" accent="blue" value={h?.local_latency_ms != null ? `${h.local_latency_ms}ms` : '—'} sub="to gateway" />
+            <StatTile icon={<Download size={11} />} label="Download" accent="cyan" value={sl ? `${sl.download_mbps}` : '—'} sub="Mbps" />
+            <StatTile icon={<Upload size={11} />} label="Upload" accent="purple" value={sl ? `${sl.upload_mbps}` : '—'} sub="Mbps" />
+            <StatTile icon={<Zap size={11} />} label="Speed Test" accent="gray" value={sl ? formatRelativeTime(sl.tested_at) : '—'} sub="last run" />
+          </div>
+          <div className="mt-3 flex justify-end gap-2">
+            <Btn variant="secondary" size="sm" loading={checking} onClick={onCheck}>
+              <RefreshCw size={13} /> Health Check
+            </Btn>
+            <Btn variant="secondary" size="sm" loading={speeding} onClick={onSpeed}>
+              <Zap size={13} />{speeding ? 'Testing… (~10s)' : 'Speed Test'}
+            </Btn>
+          </div>
+        </div>
       </div>
     </div>
   )

@@ -387,6 +387,7 @@ def _run_auto_scan() -> dict:
     from scanner.runner import run_scan
     from scanner.parser import parse_nmap_xml
     from scanner.diff import compute_diff, build_snapshot
+    from scanner.presence import window_scan_ids, window_snapshot
     from models.tables import Scan, Device, ScanDevice, Alert, ChangeEvent
     from monitoring.activity import write_log
     from sqlalchemy import desc
@@ -548,7 +549,10 @@ def _run_auto_scan() -> dict:
         scan.status     = "complete"
         db.commit()
 
-        # Diff against previous scan
+        # Diff against the previous scan — but over merged windows, not single
+        # scans, so quick/full alternation doesn't spam spurious change events.
+        # The current window includes this scan; the previous window is anchored
+        # at prev_scan so the new scan can't leak into it.
         prev_scan = (
             db.query(Scan)
             .filter(Scan.status == "complete", Scan.id != scan.id)
@@ -556,8 +560,10 @@ def _run_auto_scan() -> dict:
         )
         change_count = 0
         if prev_scan:
-            curr_sds = db.query(ScanDevice).filter(ScanDevice.scan_id == scan.id).all()
-            changes  = compute_diff(build_snapshot(prev_scan.devices), build_snapshot(curr_sds))
+            changes = compute_diff(
+                window_snapshot(db, window_scan_ids(db, prev_scan)),
+                window_snapshot(db, window_scan_ids(db, scan)),
+            )
             change_count = len(changes)
             for ch in changes:
                 db.add(ChangeEvent(scan_id=scan.id, prev_scan_id=prev_scan.id, **ch))
