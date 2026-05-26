@@ -254,6 +254,22 @@ def seed_default_settings():
         # DNS Ad Blocker
         "dns_blocker_enabled":        "false",
         "dns_upstream":               "8.8.8.8",
+        # Uptime Guardian (auto-heal) — off by default; dry-run until proven.
+        # Router admin password should be set via the ROUTER_PASS env var or
+        # the autoheal_router_pass setting (never committed to git).
+        "autoheal_enabled":               "false",
+        "autoheal_dry_run":               "true",
+        "autoheal_interval_s":            "30",
+        "autoheal_confirm_checks":        "3",
+        "autoheal_reboot_method":         "netgear_soap",
+        "autoheal_router_host":           "",          # blank → autodetected gateway
+        "autoheal_router_user":           "admin",
+        "autoheal_router_pass":           "",
+        "autoheal_internet_targets":      "8.8.8.8,1.1.1.1",
+        "autoheal_max_reboots_per_outage": "1",
+        "autoheal_cooldown_min":          "10",
+        "autoheal_max_reboots_per_day":   "4",
+        "autoheal_recovery_window_s":     "240",
     }
 
     db = SessionLocal()

@@ -2,13 +2,14 @@ import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, HeartPulse, Cpu, Bell, Radio,
   Shield, FileText, Globe, ScrollText, BookOpen,
-  FlaskConical, Settings,
+  FlaskConical, Settings, PlugZap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV = [
   { to: '/',        icon: LayoutDashboard, label: 'Overview'  },
   { to: '/health',  icon: HeartPulse,      label: 'Health'    },
+  { to: '/uptime',  icon: PlugZap,         label: 'Uptime Guardian' },
   { to: '/devices', icon: Cpu,             label: 'Devices'   },
   { to: '/alerts',  icon: Bell,            label: 'Alerts'    },
   { to: '/traffic', icon: Radio,           label: 'Traffic'   },

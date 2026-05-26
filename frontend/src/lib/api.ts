@@ -222,6 +222,17 @@ export const getAutonomousActions = (status = 'active') =>
 export const revertAction = (id: number) =>
   apiFetch<void>(`/api/autonomous-actions/${id}/revert`, { method: 'POST' })
 
+// ── Uptime Guardian (auto-heal) ───────────────────────────────────────────────
+
+export const getAutoHeal = () => apiFetch<any>('/api/autoheal')
+export const saveAutoHealConfig = (body: Record<string, unknown>) =>
+  apiFetch<{ saved: string[]; password_set: boolean }>('/api/autoheal/config', { method: 'POST', body: JSON.stringify(body) })
+export const autoHealRebootNow = (force = false) =>
+  apiFetch<any>('/api/autoheal/reboot-now', { method: 'POST', body: JSON.stringify({ force }) })
+export const autoHealSimulate = () =>
+  apiFetch<{ dry_run: boolean; enabled: boolean; scenarios: { scenario: string; decision: { action: string; reason?: string } }[] }>(
+    '/api/autoheal/simulate', { method: 'POST', body: JSON.stringify({}) })
+
 // ── Reports ──────────────────────────────────────────────────────────────────
 
 export const getReports = (limit = 48) => apiFetch<Report[]>(`/api/reports?limit=${limit}`)

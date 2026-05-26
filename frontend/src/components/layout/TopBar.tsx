@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 const SECTION_LABELS: Record<string, string> = {
   '/':        'Overview',
   '/health':  'Network Health',
+  '/uptime':  'Uptime Guardian',
   '/devices': 'Devices',
   '/alerts':  'Alerts',
   '/traffic': 'Traffic Capture',

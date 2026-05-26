@@ -4681,6 +4681,121 @@ def _refresh_public_ip_bg():
         pass
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# UPTIME GUARDIAN  (auto-heal — detect outage, reboot router)
+# ═════════════════════════════════════════════════════════════════════════════
+
+_AUTOHEAL_KEYS = {
+    "autoheal_enabled", "autoheal_dry_run", "autoheal_interval_s", "autoheal_confirm_checks",
+    "autoheal_reboot_method", "autoheal_router_host", "autoheal_router_user", "autoheal_router_pass",
+    "autoheal_internet_targets", "autoheal_max_reboots_per_outage", "autoheal_cooldown_min",
+    "autoheal_max_reboots_per_day", "autoheal_recovery_window_s",
+}
+
+
+@router.get("/api/autoheal")
+def autoheal_status(db: Session = Depends(get_db)):
+    """Uptime Guardian status — config (password redacted), live outage state,
+    recent events, and reboot stats."""
+    from monitoring.autoheal import get_config, _STATE, _ATTEMPT_EVENTS, EV_REBOOT, EV_DRYRUN
+
+    cfg = get_config(db)
+    safe_cfg = {k: v for k, v in cfg.items() if k != "router_pass"}
+
+    rows = (db.query(ActivityLog)
+            .filter(ActivityLog.category == "autoheal")
+            .order_by(desc(ActivityLog.id)).limit(40).all())
+
+    def _detail(r):
+        if not r.detail:
+            return None
+        try:
+            return json.loads(r.detail)
+        except Exception:
+            return r.detail
+
+    events = [{"id": r.id, "event": r.event, "level": r.level, "summary": r.summary,
+               "detail": _detail(r), "created_at": _iso(r.created_at)} for r in rows]
+
+    now = datetime.now(timezone.utc)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    reboots_today = (db.query(ActivityLog)
+                     .filter(ActivityLog.category == "autoheal",
+                             ActivityLog.event.in_(list(_ATTEMPT_EVENTS)),
+                             ActivityLog.created_at >= midnight).count())
+    last_reboot = (db.query(ActivityLog)
+                   .filter(ActivityLog.category == "autoheal",
+                           ActivityLog.event.in_([EV_REBOOT, EV_DRYRUN]))
+                   .order_by(desc(ActivityLog.id)).first())
+
+    return {
+        "config": safe_cfg,
+        "state": {
+            "offline": _STATE["offline_since"] is not None,
+            "offline_since": _iso(_STATE["offline_since"]) if _STATE["offline_since"] else None,
+            "consecutive_offline": _STATE["consecutive_offline"],
+            "rebooted_this_outage": _STATE["rebooted_this_outage"],
+        },
+        "stats": {"reboots_today": reboots_today,
+                  "last_reboot": _iso(last_reboot.created_at) if last_reboot else None},
+        "events": events,
+    }
+
+
+@router.post("/api/autoheal/config")
+def autoheal_save_config(body: dict = None, db: Session = Depends(get_db)):
+    """Save Uptime Guardian settings (whitelisted keys only)."""
+    body = body or {}
+    saved = []
+    for k, v in body.items():
+        if k not in _AUTOHEAL_KEYS:
+            continue
+        val = "true" if v is True else "false" if v is False else str(v)
+        row = db.query(Setting).filter(Setting.key == k).first()
+        if row:
+            row.value = val
+        else:
+            db.add(Setting(key=k, value=val))
+        saved.append(k)
+    db.commit()
+    # Never log the password value itself.
+    write_log("action", "autoheal", "config_updated",
+              f"Uptime Guardian settings updated ({len(saved)} field(s))", actor="user")
+    return {"saved": [k for k in saved if k != "autoheal_router_pass"],
+            "password_set": "autoheal_router_pass" in saved}
+
+
+@router.post("/api/autoheal/reboot-now")
+def autoheal_reboot_now(body: dict = None, db: Session = Depends(get_db)):
+    """Trigger a reboot on demand. Honors dry-run unless {"force": true}."""
+    from monitoring.autoheal import manual_reboot
+    force = bool((body or {}).get("force", False))
+    return manual_reboot(db, force=force)
+
+
+@router.post("/api/autoheal/simulate")
+def autoheal_simulate(body: dict = None, db: Session = Depends(get_db)):
+    """Run the decision logic against synthetic scenarios — zero side effects.
+    Lets the UI verify the brain without waiting for a real outage."""
+    from monitoring.autoheal import decide, get_config
+    cfg = get_config(db)
+    now = datetime.now(timezone.utc)
+    recovered_at = now - timedelta(seconds=cfg["recovery_window_s"] + 10)
+    scenarios = [
+        ("Brief blip (not yet confirmed)", False, True, 1, 0, None),
+        ("Confirmed outage, gateway reachable", False, True, cfg["confirm_checks"], 0, None),
+        ("Confirmed outage, gateway also down", False, False, cfg["confirm_checks"], 0, None),
+        ("Rebooted once, still down past recovery window", False, True, cfg["confirm_checks"] + 5, 1, recovered_at),
+        ("Back online", True, True, 0, 0, None),
+    ]
+    out = []
+    for label, inet, gw, consec, reboots, last_at in scenarios:
+        d = decide(internet_up=inet, gateway_up=gw, consecutive_offline=consec, cfg=cfg,
+                   reboots_in_outage=reboots, reboots_today=reboots, last_attempt_at=last_at, now=now)
+        out.append({"scenario": label, "decision": d})
+    return {"dry_run": cfg["dry_run"], "enabled": cfg["enabled"], "scenarios": out}
+
+
 @router.get("/api/network/info")
 def get_network_info():
     """

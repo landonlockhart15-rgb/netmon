@@ -39,7 +39,7 @@ from models.tables import HealthCheck, Setting, TrafficSummary
 # without blocking any other loop. Loops: health, traffic, auto-scan, anomaly,
 # command-poll, autonomous-report, log-cleanup, dns-health, port-refresh,
 # ssl-cert, doh-leak, deep-scan-ai, hunt = 13 active loops.
-_executor = ThreadPoolExecutor(max_workers=14, thread_name_prefix="netmon")
+_executor = ThreadPoolExecutor(max_workers=15, thread_name_prefix="netmon")
 
 MAX_ROWS    = 2000   # prune when we exceed this
 KEEP_ROWS   = 1000   # keep this many after pruning
@@ -728,6 +728,45 @@ async def health_check_loop() -> None:
         except Exception as e:
             print(f"[health] Scheduled check failed: {e}")
             # Back off briefly on error to avoid hammering the system
+            await asyncio.sleep(30)
+
+
+# ── Uptime Guardian (auto-heal) loop ──────────────────────────────────────────
+
+def _run_autoheal_cycle() -> None:
+    """Synchronous wrapper — runs one auto-heal cycle in a worker thread."""
+    from monitoring.autoheal import run_cycle
+    run_cycle()
+
+
+async def autoheal_loop() -> None:
+    """
+    Background coroutine: detects sustained internet outages and (when enabled)
+    reboots the router to restore connectivity. Runs frequently so outages are
+    caught quickly; the cycle itself is a no-op cost when the feature is off.
+    """
+    loop = asyncio.get_running_loop()
+    await asyncio.sleep(STARTUP_DELAY_S + 4)   # settle after health loop's first run
+
+    while True:
+        db = SessionLocal()
+        try:
+            interval_s = _get_int(db, "autoheal_interval_s", 30)
+        finally:
+            db.close()
+
+        try:
+            await asyncio.sleep(interval_s)
+        except asyncio.CancelledError:
+            print("[autoheal] Scheduler cancelled — shutting down.")
+            break
+
+        try:
+            await loop.run_in_executor(_executor, _run_autoheal_cycle)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            print(f"[autoheal] Loop error: {exc}")
             await asyncio.sleep(30)
 
 

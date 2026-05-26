@@ -19,6 +19,7 @@ const Logs = lazy(() => import('@/components/sections/Logs'))
 const Lessons = lazy(() => import('@/components/sections/Lessons'))
 const SecurityLab = lazy(() => import('@/components/sections/SecurityLab'))
 const Settings = lazy(() => import('@/components/sections/Settings'))
+const UptimeGuardian = lazy(() => import('@/components/sections/UptimeGuardian'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -37,6 +38,7 @@ export default function App() {
           <Route path="/" element={<Shell />}>
             <Route index element={<Overview />} />
             <Route path="health" element={<Health />} />
+            <Route path="uptime" element={<UptimeGuardian />} />
             <Route path="devices" element={<Devices />} />
             <Route path="alerts" element={<Alerts />} />
             <Route path="traffic" element={<Traffic />} />

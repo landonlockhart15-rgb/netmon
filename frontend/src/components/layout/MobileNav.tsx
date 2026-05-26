@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, HeartPulse, Cpu, Bell, Shield,
   MoreHorizontal, Radio, FileText, Globe, ScrollText,
-  BookOpen, FlaskConical, Settings, X,
+  BookOpen, FlaskConical, Settings, X, PlugZap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -16,6 +16,7 @@ const PRIMARY = [
 
 const MORE = [
   { to: '/health',  icon: HeartPulse,   label: 'Health'       },
+  { to: '/uptime',  icon: PlugZap,      label: 'Uptime'       },
   { to: '/traffic', icon: Radio,        label: 'Traffic'      },
   { to: '/reports', icon: FileText,     label: 'Reports'      },
   { to: '/dns',     icon: Globe,        label: 'DNS'          },
