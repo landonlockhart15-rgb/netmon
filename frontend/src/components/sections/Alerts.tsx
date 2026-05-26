@@ -1,11 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCheck, Bell } from 'lucide-react'
+import { CheckCheck, Bell, BellRing, Inbox } from 'lucide-react'
 import { getAlerts, readAlert, readAllAlerts } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge, { severityVariant } from '@/components/shared/Badge'
 import EmptyState from '@/components/shared/EmptyState'
+import PageHero from '@/components/shared/PageHero'
+import StatTile from '@/components/shared/StatTile'
 
 // API shape: { unread_count: number, alerts: RawAlert[] }
 interface RawAlert {
@@ -43,6 +45,21 @@ export default function Alerts() {
 
   return (
     <div className="space-y-4">
+      <PageHero
+        icon={unread > 0 ? BellRing : Bell}
+        accent={unread > 0 ? 'amber' : 'emerald'}
+        pulse={unread > 0}
+        eyebrow={unread > 0 ? `${unread} need attention` : 'All caught up'}
+        title="Alerts"
+        subtitle="New devices, anomalies, and threats surface here the moment they're detected."
+        tiles={
+          <>
+            <StatTile icon={<BellRing size={11} />} label="Unread" accent={unread > 0 ? 'amber' : 'gray'} glow value={unread} sub="need review" />
+            <StatTile icon={<Inbox size={11} />} label="Total" accent="blue" value={list.length} sub="in history" />
+          </>
+        }
+      />
+
       <Card
         title="Alerts"
         badge={unread > 0 ? `${unread} UNREAD` : undefined}

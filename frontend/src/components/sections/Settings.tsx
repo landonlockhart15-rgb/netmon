@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Save, Send, RefreshCw } from 'lucide-react'
+import { Save, Send, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import { getSettings, saveSettings, testNotification, getDiagnostics, detectNetwork, type Settings } from '@/lib/api'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
+import PageHero from '@/components/shared/PageHero'
 
 export default function Settings() {
   const qc = useQueryClient()
@@ -22,6 +23,14 @@ export default function Settings() {
 
   return (
     <div className="space-y-4">
+      <PageHero
+        icon={SlidersHorizontal}
+        accent="purple"
+        eyebrow="Configuration"
+        title="Settings"
+        subtitle="Tune scanning, health checks, AI, notifications, and anomaly detection. Changes save instantly."
+      />
+
       {/* Scanning */}
       <CfgCard title="Scanning" icon="◉">
         <Toggle label="Auto-scan enabled" settingKey="auto_scan_enabled" settings={settings} onSave={saveMutation.mutate} />

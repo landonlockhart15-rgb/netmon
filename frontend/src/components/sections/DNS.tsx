@@ -1,11 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Power, RefreshCw, BarChart2 } from 'lucide-react'
+import { Power, RefreshCw, BarChart2, Globe, Ban, Search, Database, Clock } from 'lucide-react'
 import { getDNSStatus, enableDNS, disableDNS, refreshBlocklist, resetDNSStats } from '@/lib/api'
-import { formatRelativeTime } from '@/lib/utils'
+import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge from '@/components/shared/Badge'
 import EmptyState from '@/components/shared/EmptyState'
+import PageHero from '@/components/shared/PageHero'
+import StatTile from '@/components/shared/StatTile'
 
 // API shape: { enabled, running, upstream, local_ip, stats: { blocked_today, total_domains, last_updated, queries_today, top_blocked } }
 interface DNSResponse {
@@ -54,49 +56,48 @@ export default function DNS() {
   const d = data as DNSResponse | undefined
   const stats = d?.stats
 
+  const running = d?.running ?? false
+  const accent = running ? 'emerald' : d?.enabled ? 'amber' : 'gray'
+
   return (
     <div className="space-y-4">
-      <Card
+      <PageHero
+        icon={Globe}
+        accent={accent}
+        pulse={running}
+        eyebrow={running ? 'Filtering DNS' : d?.enabled ? 'Enabled · not running' : 'Disabled'}
         title="DNS Ad Blocker"
-        action={
-          <div className="flex items-center gap-2">
-            {d?.enabled ? (
-              <Btn variant="danger" size="sm" loading={disableMutation.isPending} onClick={() => disableMutation.mutate()}>
-                <Power size={13} /> Disable
-              </Btn>
-            ) : (
-              <Btn variant="primary" size="sm" loading={enableMutation.isPending} onClick={() => enableMutation.mutate()}>
-                <Power size={13} /> Enable
-              </Btn>
-            )}
-          </div>
+        subtitle="Network-wide ad and tracker blocking at the DNS layer — point your router here to cover every device."
+        tiles={
+          <>
+            <StatTile icon={<Ban size={11} />} label="Blocked Today" accent="red" glow value={(stats?.blocked_today ?? 0).toLocaleString()} sub="requests" />
+            <StatTile icon={<Search size={11} />} label="Queries Today" accent="blue" value={(stats?.queries_today ?? 0).toLocaleString()} sub="total lookups" />
+            <StatTile icon={<Database size={11} />} label="Blocklist" accent="purple" value={(stats?.total_domains ?? 0).toLocaleString()} sub="domains" />
+            <StatTile icon={<Clock size={11} />} label="Updated" accent="cyan" value={stats?.last_updated ? formatRelativeTime(stats.last_updated) : '—'} sub="blocklist" />
+          </>
+        }
+        actions={
+          d?.enabled ? (
+            <Btn variant="danger" size="sm" loading={disableMutation.isPending} onClick={() => disableMutation.mutate()}>
+              <Power size={13} /> Disable
+            </Btn>
+          ) : (
+            <Btn variant="primary" size="sm" loading={enableMutation.isPending} onClick={() => enableMutation.mutate()}>
+              <Power size={13} /> Enable
+            </Btn>
+          )
         }
       >
-        {d ? (
-          <div className="space-y-4">
-            <div className="flex items-center gap-3">
-              <div className={`w-2.5 h-2.5 rounded-full ${d.running ? 'bg-emerald-400' : d.enabled ? 'bg-yellow-400' : 'bg-gray-600'}`} />
-              <Badge variant={d.running ? 'ok' : d.enabled ? 'warn' : 'muted'}>
-                {d.running ? 'Running' : d.enabled ? 'Enabled (stopped)' : 'Disabled'}
-              </Badge>
-              {d.upstream && <span className="text-xs text-gray-500">→ {d.upstream}</span>}
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Stat label="Blocked Today" value={(stats?.blocked_today ?? 0).toLocaleString()} />
-              <Stat label="Queries Today" value={(stats?.queries_today ?? 0).toLocaleString()} />
-              <Stat label="Blocklist Size" value={(stats?.total_domains ?? 0).toLocaleString()} />
-              <Stat label="Last Updated" value={stats?.last_updated ? formatRelativeTime(stats.last_updated) : '—'} />
-            </div>
-
-            {d.local_ip && (
-              <p className="text-xs text-gray-600">Set your router's DNS to <span className="font-mono text-gray-400">{d.local_ip}</span> to enable network-wide blocking.</p>
-            )}
-          </div>
-        ) : (
-          <EmptyState icon="◎" text="Loading DNS status…" />
-        )}
-      </Card>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={running ? 'ok' : d?.enabled ? 'warn' : 'muted'}>
+            {running ? 'Running' : d?.enabled ? 'Enabled (stopped)' : 'Disabled'}
+          </Badge>
+          {d?.upstream && <span className="text-xs text-gray-500">→ {d.upstream}</span>}
+          {d?.local_ip && (
+            <span className="text-xs text-gray-600">Router DNS → <span className="font-mono text-gray-400">{d.local_ip}</span></span>
+          )}
+        </div>
+      </PageHero>
 
       {/* Top blocked domains */}
       {stats?.top_blocked && stats.top_blocked.length > 0 && (

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, Square, BrainCircuit, ShieldAlert, ShieldOff, ChevronDown, ChevronUp, Eye, Lock, Unlock, Globe } from 'lucide-react'
+import { Play, Square, BrainCircuit, ShieldAlert, ShieldOff, ChevronDown, ChevronUp, Eye, Lock, Unlock, Globe, Radio, Gauge, MonitorSmartphone, Layers } from 'lucide-react'
 import {
   getTrafficInterfaces, getTrafficStatus, getTrafficDashboard,
   startCapture, stopCapture, analyzeTraffic,
@@ -13,6 +13,8 @@ import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge from '@/components/shared/Badge'
 import EmptyState from '@/components/shared/EmptyState'
+import PageHero from '@/components/shared/PageHero'
+import StatTile from '@/components/shared/StatTile'
 
 interface TrafficStatusResponse { running: boolean; interface: string | null; started_at: string | null }
 interface TrafficDashboardResponse {
@@ -78,8 +80,27 @@ export default function Traffic() {
     setMitmTargets(prev => prev.includes(ip) ? prev.filter(t => t !== ip) : [...prev, ip])
   }
 
+  const trafficAccent = capturing ? 'red' : mitmActive ? 'amber' : 'gray'
+
   return (
     <div className="space-y-4">
+      <PageHero
+        icon={Radio}
+        accent={trafficAccent}
+        pulse={capturing || mitmActive}
+        eyebrow={capturing ? `Capturing on ${s?.interface ?? d?.capture?.interface ?? 'auto'}` : mitmActive ? 'MitM active' : 'Capture idle'}
+        title="Traffic Capture"
+        subtitle="Deep packet inspection — see which sites and services every device talks to in real time."
+        tiles={
+          <>
+            <StatTile icon={<Gauge size={11} />} label="Packets/s" accent="cyan" glow={capturing} value={d?.stats?.pps ?? 0} sub="live rate" />
+            <StatTile icon={<Radio size={11} />} label="Bytes/s" accent="blue" value={humanBytes(d?.stats?.bps ?? 0)} sub="throughput" />
+            <StatTile icon={<MonitorSmartphone size={11} />} label="Active" accent="purple" value={d?.stats?.devices ?? 0} sub="devices" />
+            <StatTile icon={<Layers size={11} />} label="Top Proto" accent="emerald" value={<span className="text-base">{d?.stats?.top_protocol ?? '—'}</span>} sub="most traffic" />
+          </>
+        }
+      />
+
       {/* ── Passive Capture ───────────────────────────────────────────── */}
       <Card
         title="Passive Capture"
@@ -232,16 +253,6 @@ export default function Traffic() {
           )}
         </div>
       </Card>
-
-      {/* ── Live stats ────────────────────────────────────────────────── */}
-      {d?.stats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard label="Packets/s" value={String(d.stats.pps ?? 0)} />
-          <StatCard label="Bytes/s" value={humanBytes(d.stats.bps ?? 0)} />
-          <StatCard label="Active Devices" value={String(d.stats.devices ?? 0)} />
-          <StatCard label="Top Protocol" value={d.stats.top_protocol ?? '—'} />
-        </div>
-      )}
 
       {/* ── Conversations ─────────────────────────────────────────────── */}
       {d?.conversations && d.conversations.length > 0 && (

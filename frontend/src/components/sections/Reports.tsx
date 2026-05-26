@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, Send } from 'lucide-react'
+import { Play, Send, ScrollText, Clock, ShieldAlert } from 'lucide-react'
 import { getReports, runReport, chatReport, type Report } from '@/lib/api'
 import { fmtDateTime, formatRelativeTime } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge, { severityVariant } from '@/components/shared/Badge'
 import EmptyState from '@/components/shared/EmptyState'
+import PageHero from '@/components/shared/PageHero'
+import StatTile from '@/components/shared/StatTile'
 import Markdown from '@/components/shared/Markdown'
 
 export default function Reports() {
@@ -42,17 +44,33 @@ export default function Reports() {
 
   const list = reports as Report[]
   const selected = list.find(r => r.id === selectedReport)
+  const elevated = list.filter(r => ['high', 'critical'].includes((r.severity ?? '').toLowerCase())).length
 
   return (
     <div className="space-y-4">
-      <Card
+      <PageHero
+        icon={ScrollText}
+        accent="purple"
+        eyebrow="Autonomous AI analysis"
         title="Security Reports"
-        badge={list.length ? String(list.length) : undefined}
-        action={
+        subtitle="Hourly plain-English reports on traffic, health, and anomalies — written by the local AI."
+        tiles={
+          <>
+            <StatTile icon={<ScrollText size={11} />} label="Reports" accent="purple" glow value={list.length} sub="on file" />
+            <StatTile icon={<Clock size={11} />} label="Latest" accent="blue" value={list[0] ? formatRelativeTime(list[0].created_at) : '—'} sub="most recent" />
+            <StatTile icon={<ShieldAlert size={11} />} label="Elevated" accent={elevated > 0 ? 'amber' : 'gray'} value={elevated} sub="high/critical" />
+          </>
+        }
+        actions={
           <Btn variant="primary" size="sm" loading={runMutation.isPending} onClick={() => runMutation.mutate()}>
             <Play size={13} /> Run Now
           </Btn>
         }
+      />
+
+      <Card
+        title="Security Reports"
+        badge={list.length ? String(list.length) : undefined}
       >
         {isLoading ? (
           <SkeletonRows />

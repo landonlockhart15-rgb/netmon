@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal } from 'lucide-react'
+import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal, FlaskConical, Wrench } from 'lucide-react'
 import {
   checkWSL, getSecLabHistory,
   startNikto, startHydra, startJohn, startMetasploit,
@@ -12,6 +12,8 @@ import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge, { severityVariant } from '@/components/shared/Badge'
 import EmptyState from '@/components/shared/EmptyState'
+import PageHero from '@/components/shared/PageHero'
+import StatTile from '@/components/shared/StatTile'
 import Markdown from '@/components/shared/Markdown'
 
 type Tab = 'vulnerability' | 'password' | 'exploit' | 'wifi' | 'exposure'
@@ -202,8 +204,26 @@ export default function SecurityLab() {
     }
   }
 
+  const activeRunning = !!activeRun && (activeRun.status === 'running' || activeRun.status === 'pending')
+
   return (
     <div className="space-y-4">
+      <PageHero
+        icon={FlaskConical}
+        accent={wslAvailable ? 'purple' : 'amber'}
+        pulse={activeRunning}
+        eyebrow={activeRunning ? 'Tool running…' : wslAvailable ? 'Kali toolkit ready' : 'Setup required'}
+        title="Security Lab"
+        subtitle="Authorized offensive testing against your own network — vulnerability, password, exploit, WiFi, and exposure tools."
+        tiles={
+          <>
+            <StatTile icon={<Terminal size={11} />} label="Engine" accent={wslAvailable ? 'emerald' : 'amber'} glow value={<span className="text-base">{wslAvailable ? 'Ready' : 'Setup'}</span>} sub="WSL · Kali" />
+            <StatTile icon={<Play size={11} />} label="Recent Runs" accent="blue" value={runs.length} sub="in history" />
+            <StatTile icon={<Wrench size={11} />} label="Tools" accent="purple" value={TABS.length} sub="available" />
+          </>
+        }
+      />
+
       {w && !wslAvailable && (
         <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 flex items-center gap-2 text-sm text-yellow-300">
           <AlertTriangle size={16} />

@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Trash2, BrainCircuit, Filter } from 'lucide-react'
+import { Trash2, BrainCircuit, Filter, ScrollText, Activity, Users, Tag } from 'lucide-react'
 import { getLogs, getLogFacets, clearLogs, runHistorySynthesis } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import EmptyState from '@/components/shared/EmptyState'
+import PageHero from '@/components/shared/PageHero'
+import StatTile from '@/components/shared/StatTile'
 
 // API shape: { total, offset, limit, entries: LogEntry[] }
 interface LogEntry {
@@ -73,6 +75,22 @@ export default function Logs() {
 
   return (
     <div className="space-y-4">
+      <PageHero
+        icon={ScrollText}
+        accent="blue"
+        eyebrow="Unified audit trail"
+        title="Activity Logs"
+        subtitle="Every scan, AI verdict, firewall change, and threat detection — one searchable timeline."
+        tiles={
+          <>
+            <StatTile icon={<ScrollText size={11} />} label="Entries" accent="blue" glow value={total.toLocaleString()} sub="logged" />
+            <StatTile icon={<Activity size={11} />} label="Event Types" accent="cyan" value={facets?.events?.length ?? 0} sub="distinct" />
+            <StatTile icon={<Users size={11} />} label="Actors" accent="purple" value={facets?.actors?.length ?? 0} sub="sources" />
+            <StatTile icon={<Tag size={11} />} label="Categories" accent="emerald" value={facets?.categories?.length ?? 0} sub="kinds" />
+          </>
+        }
+      />
+
       {/* AI synthesis */}
       <Card
         title="AI History Synthesis"

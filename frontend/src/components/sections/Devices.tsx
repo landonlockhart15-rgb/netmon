@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { LayoutGrid, List, Cpu, ScanLine, ShieldCheck } from 'lucide-react'
+import { LayoutGrid, List, Cpu, ScanLine, ShieldCheck, MonitorSmartphone, CircleHelp, Network } from 'lucide-react'
 import { getDevices, runScan, trustAllDevices, type Device } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Badge from '@/components/shared/Badge'
 import Btn from '@/components/shared/Btn'
 import EmptyState from '@/components/shared/EmptyState'
+import PageHero from '@/components/shared/PageHero'
+import StatTile from '@/components/shared/StatTile'
 import DeviceModal from '@/components/shared/DeviceModal'
 
 type View = 'list' | 'grid'
@@ -57,8 +59,42 @@ export default function Devices() {
     )
   })
 
+  const trustedCount = (devices as Device[]).filter(d => d.trusted).length
+  const total = (devices as Device[]).length
+  const withPorts = (devices as Device[]).filter(d => d.open_ports?.length > 0).length
+
   return (
     <div className="space-y-4">
+      <PageHero
+        icon={MonitorSmartphone}
+        accent="cyan"
+        pulse={scanMutation.isPending}
+        eyebrow={scanMutation.isPending ? 'Scanning…' : filter === 'current' ? 'Devices on network now' : 'All known devices'}
+        title="Devices"
+        subtitle="Everything discovered on your network — trust the ones you recognize, investigate the rest."
+        tiles={
+          <>
+            <StatTile icon={<MonitorSmartphone size={11} />} label="Total" accent="cyan" glow value={total} sub={filter === 'current' ? 'online now' : 'ever seen'} />
+            <StatTile icon={<ShieldCheck size={11} />} label="Trusted" accent="emerald" value={trustedCount} sub="recognized" />
+            <StatTile icon={<CircleHelp size={11} />} label="Unknown" accent={total - trustedCount > 0 ? 'amber' : 'gray'} value={total - trustedCount} sub="unverified" />
+            <StatTile icon={<Network size={11} />} label="Open Ports" accent="blue" value={withPorts} sub="devices w/ ports" />
+          </>
+        }
+        actions={
+          <>
+            <Btn variant="secondary" size="sm" loading={trustAllMutation.isPending} onClick={() => trustAllMutation.mutate()} title="Mark all current devices as trusted">
+              <ShieldCheck size={13} /> Trust All
+            </Btn>
+            <Btn variant="secondary" size="sm" loading={scanMutation.isPending && scanMutation.variables === true} onClick={() => scanMutation.mutate(true)} title="Quick ping sweep — finds devices in ~5s, no port scanning">
+              <ScanLine size={13} /> Quick Scan
+            </Btn>
+            <Btn variant="primary" size="sm" loading={scanMutation.isPending && scanMutation.variables === false} onClick={() => scanMutation.mutate(false)} title="Full scan — discovers devices and open ports (~30s)">
+              <ScanLine size={13} /> Full Scan
+            </Btn>
+          </>
+        }
+      />
+
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-2">
         <input
@@ -70,38 +106,6 @@ export default function Devices() {
         />
         <FilterToggle value={filter} onChange={setFilter} />
         <ViewToggle value={view} onChange={setView} />
-        <div className="flex gap-1.5 ml-auto">
-          <Btn
-            variant="secondary"
-            size="sm"
-            loading={trustAllMutation.isPending}
-            onClick={() => trustAllMutation.mutate()}
-            title="Mark all current devices as trusted"
-          >
-            <ShieldCheck size={13} />
-            Trust All
-          </Btn>
-          <Btn
-            variant="secondary"
-            size="sm"
-            loading={scanMutation.isPending && scanMutation.variables === true}
-            onClick={() => scanMutation.mutate(true)}
-            title="Quick ping sweep — finds devices in ~5s, no port scanning"
-          >
-            <ScanLine size={13} />
-            Quick Scan
-          </Btn>
-          <Btn
-            variant="primary"
-            size="sm"
-            loading={scanMutation.isPending && scanMutation.variables === false}
-            onClick={() => scanMutation.mutate(false)}
-            title="Full scan — discovers devices and open ports (~30s)"
-          >
-            <ScanLine size={13} />
-            Full Scan
-          </Btn>
-        </div>
       </div>
 
       {scanMutation.isPending && (

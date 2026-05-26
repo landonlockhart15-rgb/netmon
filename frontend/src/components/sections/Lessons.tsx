@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { BookOpen, Check, X, ExternalLink } from 'lucide-react'
+import { BookOpen, Check, X, ExternalLink, ListChecks, GraduationCap } from 'lucide-react'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge from '@/components/shared/Badge'
 import EmptyState from '@/components/shared/EmptyState'
+import PageHero from '@/components/shared/PageHero'
+import StatTile from '@/components/shared/StatTile'
 
 const CP_PORT = 8091
 const CP_TOKEN_KEY = 'netmon_cp_token'
@@ -82,8 +84,26 @@ export default function Lessons() {
     refetch()
   }
 
+  const pendingCount = (pending as Remediation[]).length
+  const lessonsCount = (lessons as Lesson[]).length
+
   return (
     <div className="space-y-4">
+      <PageHero
+        icon={GraduationCap}
+        accent="indigo"
+        pulse={pendingCount > 0}
+        eyebrow={pendingCount > 0 ? `${pendingCount} awaiting approval` : 'Self-improving defense'}
+        title="Learned Lessons"
+        subtitle="The AI-Hub control plane proposes remediations and learns from what you approve or reject."
+        tiles={
+          <>
+            <StatTile icon={<ListChecks size={11} />} label="Pending" accent={pendingCount > 0 ? 'amber' : 'gray'} glow value={pendingCount} sub="to review" />
+            <StatTile icon={<GraduationCap size={11} />} label="Lessons" accent="indigo" value={lessonsCount} sub="learned" />
+          </>
+        }
+      />
+
       {/* AI Hub link */}
       <Card title="AI-Hub Control Plane" action={
         <a href={cpUrl()} target="_blank" rel="noopener noreferrer"
