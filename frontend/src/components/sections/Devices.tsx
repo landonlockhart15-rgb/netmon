@@ -41,7 +41,7 @@ export default function Devices() {
     },
   })
 
-  const { data: devices = [], isLoading, refetch } = useQuery({
+  const { data: devices = [], isLoading } = useQuery({
     queryKey: ['devices', filter],
     queryFn: () => getDevices(filter === 'current'),
     refetchInterval: 30_000,

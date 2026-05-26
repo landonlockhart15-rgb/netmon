@@ -14,7 +14,7 @@ import EmptyState from '@/components/shared/EmptyState'
 import StatTile, { ACCENT, type Accent } from '@/components/shared/StatTile'
 
 export default function Health() {
-  const { data: health, refetch: refetchHealth } = useQuery({
+  const { data: health } = useQuery({
     queryKey: ['health-current'],
     queryFn: getHealthCurrent,
     refetchInterval: 30_000,
@@ -229,13 +229,6 @@ function TelBar({ label, value, color, label2 = '%' }: { label: string; value: n
       </div>
     </div>
   )
-}
-
-function fmtUptime(s: number): string {
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  if (h > 24) return `${Math.floor(h / 24)}d ${h % 24}h`
-  return `${h}h ${m}m`
 }
 
 function latencyChartOption(points: HealthPoint[]) {

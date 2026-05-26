@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { BookOpen, Check, X, ExternalLink, ListChecks, GraduationCap } from 'lucide-react'
+import { Check, X, ExternalLink, ListChecks, GraduationCap } from 'lucide-react'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge from '@/components/shared/Badge'

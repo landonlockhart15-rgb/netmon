@@ -225,15 +225,6 @@ function OverviewHero({ netinfo, latestScan, deviceCount, scanning, onScan }: {
   )
 }
 
-function Stat({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="text-center">
-      <div className="text-2xl font-bold text-white">{value}</div>
-      <div className="text-xs text-gray-500 mt-0.5">{label}</div>
-    </div>
-  )
-}
-
 function FilterToggle({ value, onChange }: { value: 'current' | 'all'; onChange: (v: 'current' | 'all') => void }) {
   return (
     <div className="flex rounded-md overflow-hidden border border-white/10 text-xs">

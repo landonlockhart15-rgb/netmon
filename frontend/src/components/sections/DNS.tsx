@@ -1,11 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Power, RefreshCw, BarChart2, Globe, Ban, Search, Database, Clock } from 'lucide-react'
 import { getDNSStatus, enableDNS, disableDNS, refreshBlocklist, resetDNSStats } from '@/lib/api'
-import { formatRelativeTime, cn } from '@/lib/utils'
+import { formatRelativeTime } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge from '@/components/shared/Badge'
-import EmptyState from '@/components/shared/EmptyState'
 import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
 
@@ -126,15 +125,6 @@ export default function DNS() {
           Blocklist sources: StevenBlack, OISD, AdGuard. Refresh pulls the latest lists from the internet.
         </p>
       </Card>
-    </div>
-  )
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg bg-white/3 border border-white/5 p-3">
-      <p className="text-lg font-bold text-white">{value}</p>
-      <p className="text-xs text-gray-500 mt-0.5">{label}</p>
     </div>
   )
 }

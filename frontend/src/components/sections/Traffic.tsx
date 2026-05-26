@@ -382,15 +382,6 @@ function MitmTargetPicker({ devices, targets, onToggle, onAddManual, onRemove }:
   )
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-white/8 bg-[#12121e] p-3">
-      <p className="text-base font-bold text-white truncate">{value}</p>
-      <p className="text-xs text-gray-500 mt-0.5">{label}</p>
-    </div>
-  )
-}
-
 // ── Domain categorization ─────────────────────────────────────────────────────
 const CATS: [string, string[], string][] = [
   ['Streaming',    ['netflix','youtube','spotify','hulu','twitch','tiktok','disneyplus','hbomax','peacock','primevideo','appletvplus','crunchyroll'], 'text-purple-400'],
