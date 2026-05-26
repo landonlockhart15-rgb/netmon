@@ -4,11 +4,13 @@ import json
 import urllib.request
 import urllib.error
 
-# Configured Netlify URL and Gemini API Bearer Key
-NETLIFY_URL = "https://claude-memory-mcp-lock1515.netlify.app/mcp"
-API_KEY = "f22bb27ddfa195ae78afb818d91a1fdf5f182565575fd97257f508785a375ad3"
+NETLIFY_URL = os.getenv("MEMORY_MCP_URL", "https://claude-memory-mcp-lock1515.netlify.app/mcp")
+API_KEY = os.getenv("MEMORY_MCP_API_KEY", "")
 
 def write_memory(content, category="Projects", title=None, memory_type="semantic", importance=0.5):
+    if not API_KEY:
+        raise SystemExit("MEMORY_MCP_API_KEY is not set")
+
     payload = {
         "jsonrpc": "2.0",
         "method": "tools/call",

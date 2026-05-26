@@ -11,7 +11,7 @@ your own machine, with nothing sent to a cloud dashboard.
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![Local-first](https://img.shields.io/badge/local--first-no%20cloud-2ea44f)
 
-![NetMon dashboard — network health view](docs/screenshots/network-health.png)
+![NetMon dashboard overview](docs/screenshots/overview.png)
 
 It runs from a system-tray icon and opens a modern, mobile-friendly **React
 dashboard** at <http://localhost:8000> — with Overview, Devices, Alerts, and
@@ -63,12 +63,24 @@ outage and per day, with cooldown and recovery windows to avoid reboot loops.
 
 <table>
 <tr>
-<td width="50%"><img src="docs/screenshots/device-chat.png" alt="AI device chat"><br><sub><b>AI device chat</b> — ask what any device is; the assistant can run scans to find out.</sub></td>
-<td width="50%"><img src="docs/screenshots/security-lab.png" alt="Security Lab"><br><sub><b>Security Lab</b> — wrappers for authorized vulnerability, password, exploit, and Wi-Fi testing.</sub></td>
+<td width="50%"><img src="docs/screenshots/shield.png" alt="NetMon Shield dashboard"><br><sub><b>Shield</b> — active defenses, uptime, DNS blocking, device counts, and threat status in one place.</sub></td>
+<td width="50%"><img src="docs/screenshots/uptime-guardian.png" alt="Uptime Guardian auto-heal dashboard"><br><sub><b>Uptime Guardian</b> — watches availability, tracks degraded/offline time, and can reboot supported routers after sustained outages.</sub></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/screenshots/speed-history.png" alt="Speed and latency history"><br><sub><b>Speed &amp; latency history</b> — download/upload trends over time.</sub></td>
-<td width="50%"></td>
+<td width="50%"><img src="docs/screenshots/devices.png" alt="Network device inventory"><br><sub><b>Devices</b> — discover what is on your LAN, mark trusted devices, and track open-port exposure.</sub></td>
+<td width="50%"><img src="docs/screenshots/health.png" alt="Connection health dashboard"><br><sub><b>Health</b> — latency, packet loss, local gateway RTT, and speed-test history for quick network triage.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/dns-blocker.png" alt="DNS ad blocker dashboard"><br><sub><b>DNS Ad Blocker</b> — local DNS filtering with blocklist stats and router-DNS setup hints.</sub></td>
+<td width="50%"><img src="docs/screenshots/traffic.png" alt="Traffic capture dashboard"><br><sub><b>Traffic Capture</b> — packet and protocol summaries for seeing which services devices talk to.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/reports.png" alt="Security reports dashboard"><br><sub><b>Security Reports</b> — hourly plain-English summaries of health, traffic, and anomalies written by local AI.</sub></td>
+<td width="50%"><img src="docs/screenshots/security-lab.png" alt="Security Lab"><br><sub><b>Security Lab</b> — authorized vulnerability, password, exploit, Wi-Fi, and exposure checks through WSL/Kali tools.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/alerts.png" alt="Alerts dashboard"><br><sub><b>Alerts</b> — new devices, anomalies, and threat events surface as soon as NetMon detects them.</sub></td>
+<td width="50%"><img src="docs/screenshots/logs.png" alt="Activity logs dashboard"><br><sub><b>Activity Logs</b> — one searchable audit trail for scans, AI verdicts, firewall changes, and threat detections.</sub></td>
 </tr>
 </table>
 

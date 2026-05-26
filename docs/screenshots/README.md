@@ -4,41 +4,34 @@ Screenshots and short demo clips belong here.
 
 Visual proof is one of the fastest ways to make NetMon easier to understand and trust. A visitor should be able to glance at this folder and immediately see what the project does.
 
-## Suggested captures
+## Current captures
 
-Add these when available:
+The main README currently uses these screenshots:
 
-1. **Dashboard overview**
-   - Show the main browser dashboard at `http://localhost:8000`.
-   - Avoid exposing public IPs, private device names, MAC addresses, or anything sensitive.
-
-2. **Network/device discovery**
-   - Show discovered devices and open-port information.
-   - Blur or replace real LAN identifiers if needed.
-
-3. **Network health panel**
-   - Show internet/router latency and adapter information.
-
-4. **DNS blocker view**
-   - Show blocklist status or DNS-blocking state.
-
-5. **AI explanation example**
-   - Show a safe example where local AI explains a benign network observation.
-
-6. **Tray app / startup flow**
-   - Show that NetMon runs locally and opens from the tray.
+1. `overview.png`
+2. `shield.png`
+3. `uptime-guardian.png`
+4. `devices.png`
+5. `health.png`
+6. `dns-blocker.png`
+7. `traffic.png`
+8. `reports.png`
+9. `security-lab.png`
+10. `alerts.png`
+11. `logs.png`
+12. `lessons.png`
 
 ## Naming convention
 
 Use clear lowercase names:
 
 ```text
-dashboard-overview.png
-device-discovery.png
-network-health.png
+overview.png
+devices.png
+health.png
 dns-blocker.png
-ai-explanation.png
-tray-startup.gif
+uptime-guardian.png
+security-lab.png
 ```
 
 ## Privacy checklist before committing images
