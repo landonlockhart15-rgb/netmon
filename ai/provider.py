@@ -794,6 +794,23 @@ def _is_transient_error(err: str) -> bool:
     return any(kw in err for kw in _TRANSIENT_KEYWORDS)
 
 
+# Errors that doom THIS provider but not the whole chain. A model that doesn't
+# exist or a bad/forbidden key is a provider-specific config problem — the next
+# provider has a different model and key, so it can still answer. Skip to it
+# instead of surfacing the error and dead-ending the chain.
+_PROVIDER_SPECIFIC_KEYWORDS = (
+    "model_not_found", "does not exist", "do not have access",
+    "not_found_error", "invalid model", "unknown model", "model not found",
+    "401", "403", "invalid api key", "incorrect api key", "invalid_api_key",
+    "unauthorized", "permission", "authentication",
+)
+
+
+def _is_provider_specific_error(err: str) -> bool:
+    err = (err or "").lower()
+    return any(kw in err for kw in _PROVIDER_SPECIFIC_KEYWORDS)
+
+
 # ── Chain provider ────────────────────────────────────────────────────────────
 
 class ChainProvider(BaseProvider):
@@ -821,10 +838,13 @@ class ChainProvider(BaseProvider):
             if result["error"] is None:
                 return result
             last_err = result["error"]
-            if _is_transient_error(last_err):
+            if _is_transient_error(last_err) or _is_provider_specific_error(last_err):
+                # Transient (rate limit/5xx) OR provider-specific (bad model/key):
+                # cool this provider down and fall through to the next one.
                 _mark_cooldown(p.name)
                 continue
-            # Non-transient — surface the real error, don't burn the chain.
+            # Request-level failure (e.g. malformed prompt) — fails everywhere,
+            # so surface it instead of burning the whole chain.
             return result
         return _fail("chain", f"all providers exhausted or on cooldown (last error: {last_err})")
 
