@@ -624,10 +624,10 @@ function ShodanPanel() {
     <Card title="Shodan — Internet Exposure">
       <p className="text-xs text-gray-500 mb-3">Check if your devices are visible on the public internet via Shodan.</p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
-        <input value={ip} onChange={e => setIp(e.target.value)} placeholder="IP to check"
+        <input value={ip} onChange={e => setIp(e.target.value)} placeholder="IP to check" autoComplete="off"
           className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
         <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Shodan API key"
-          type="password"
+          type="password" autoComplete="new-password"
           className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
       </div>
       <Btn variant="primary" size="sm" loading={loading} onClick={async () => {
