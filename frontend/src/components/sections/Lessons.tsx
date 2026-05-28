@@ -42,10 +42,14 @@ interface Remediation {
 
 interface Lesson {
   id: string | number
+  source?: string
   description?: string
   pattern?: string
   service?: string
+  service_label?: string
+  plain_english?: string
   action?: string
+  action_plain_english?: string
   success?: number
   fail?: number
   confidence?: number | null
@@ -262,18 +266,85 @@ function LessonRow({ lesson }: { lesson: Lesson | LearningLesson }) {
   const success = Number(lesson.success ?? 0)
   const fail = Number(lesson.fail ?? 0)
   const description = 'description' in lesson ? lesson.description : undefined
+  const service = lesson.service || 'netmon'
+  const serviceLabel = lesson.service_label || serviceLabelFor(service)
+  const plainEnglish = lesson.plain_english || describeLessonForUser(lesson, description)
+  const actionPlainEnglish = lesson.action_plain_english || describeActionForUser(lesson.action)
+  const source = 'source' in lesson ? lesson.source : undefined
   return (
-    <div className="text-xs py-2 border-b border-white/5 last:border-0">
-      <div className="flex flex-wrap items-center gap-2 mb-1">
-        {lesson.service && <Badge variant="info">{lesson.service}</Badge>}
-        {lesson.action && <span className="font-mono text-gray-400">{lesson.action}</span>}
+    <div className="rounded-lg border border-white/8 bg-white/[0.02] p-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <Badge variant="info">{serviceLabel}</Badge>
+        {source && <span className="rounded border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-500">{source}</span>}
         {confidence != null && <span className="text-emerald-300">{confidence}% confidence</span>}
         {lesson.suppressed && <Badge variant="warn">suppressed</Badge>}
       </div>
-      <p className="text-gray-300">{description ?? lesson.pattern ?? JSON.stringify(lesson)}</p>
-      <p className="text-gray-500 mt-0.5">
+      <p className="text-sm text-gray-200">{plainEnglish}</p>
+      {actionPlainEnglish && (
+        <p className="mt-1 text-gray-400">
+          <span className="text-gray-500">What NetMon will do with it: </span>{actionPlainEnglish}
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
+        {lesson.action && <span className="font-mono rounded border border-white/8 bg-black/20 px-1.5 py-0.5">{lesson.action}</span>}
+        {lesson.pattern && <span className="truncate">signal: {lesson.pattern}</span>}
+      </div>
+      <p className="text-gray-500 mt-2">
         {success} success / {fail} fail{lesson.last_outcome ? ` · last ${lesson.last_outcome}` : ''}
       </p>
     </div>
   )
+}
+
+function serviceLabelFor(service?: string) {
+  const key = (service || 'netmon').toLowerCase()
+  const labels: Record<string, string> = {
+    device: 'Device identity',
+    dns: 'DNS',
+    netmon: 'NetMon',
+    ntfy: 'Notifications',
+    router: 'Router / internet',
+    security: 'Security',
+    sentinel: 'Sentinel',
+    traffic: 'Network traffic',
+    wifi: 'Wi-Fi',
+  }
+  return labels[key] || key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
+
+function describeActionForUser(action?: string | null) {
+  const key = (action || '').toLowerCase()
+  if (!key) return 'Keep it as context for future checks.'
+  if (key === 'device_profile' || key === 'device_profile_update') {
+    return 'Use this evidence when naming or confirming the device later.'
+  }
+  if (key === 'label_device') return 'Save a clearer device label for future scans.'
+  if (key === 'restart') return 'Restart the affected service only when policy allows it.'
+  if (key === 'suggested') return 'Show the suggestion for human review before taking action.'
+  return key.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase())
+}
+
+function describeLessonForUser(lesson: Lesson | LearningLesson, description?: string) {
+  const service = lesson.service || 'netmon'
+  const serviceLabel = serviceLabelFor(service)
+  const pattern = (description || lesson.pattern || '').trim()
+  const lower = pattern.toLowerCase()
+
+  if (service === 'device') {
+    return 'NetMon learned a device identity clue so future scans can label that device more accurately.'
+  }
+  if (service === 'traffic') {
+    return 'NetMon learned a recurring traffic pattern and will use it when reviewing future network activity.'
+  }
+  if (service === 'security') {
+    return 'NetMon learned a security-related pattern so similar activity is easier to recognize later.'
+  }
+  if (service === 'router' || service === 'dns' || service === 'wifi') {
+    return `NetMon learned a ${serviceLabel.toLowerCase()} pattern that can help explain future connectivity problems.`
+  }
+  if (lower.includes('vendor=') || lower.includes('label=')) {
+    return 'NetMon matched technical traffic evidence to a more useful device label.'
+  }
+  if (pattern) return `${serviceLabel} learned this recurring pattern: ${pattern.slice(0, 180)}`
+  return `${serviceLabel} learned a new pattern it can reuse during future checks.`
 }

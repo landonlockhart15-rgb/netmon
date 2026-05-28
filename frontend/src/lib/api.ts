@@ -322,9 +322,14 @@ export interface Device {
 
 export interface LearningLesson {
   id: number | string
+  source?: string
   service?: string
+  service_label?: string
   pattern?: string
+  plain_english?: string
   action?: string
+  action_plain_english?: string
+  learned_from?: string
   success?: number
   fail?: number
   confidence?: number | null

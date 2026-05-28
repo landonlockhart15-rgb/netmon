@@ -35,6 +35,70 @@ _NETMON_SERVICE_HINTS = {
     "nighttime_device": "device",
 }
 
+_SERVICE_LABELS = {
+    "device": "Device identity",
+    "dns": "DNS",
+    "netmon": "NetMon",
+    "ntfy": "Notifications",
+    "router": "Router / internet",
+    "security": "Security",
+    "sentinel": "Sentinel",
+    "traffic": "Network traffic",
+    "wifi": "Wi-Fi",
+}
+
+_ACTION_LABELS = {
+    "device_profile": "remember this device profile",
+    "device_profile_update": "update the saved device profile",
+    "health_outage": "watch for router or internet downtime",
+    "label_device": "save a clearer device label",
+    "restart": "restart the affected service",
+    "suggested": "review the suggested next step",
+}
+
+
+def _display_service(service: str | None) -> str:
+    key = (service or "netmon").strip().lower()
+    return _SERVICE_LABELS.get(key, key.replace("_", " ").title())
+
+
+def _plain_pattern(service: str | None, pattern: object, action: object = None) -> str:
+    service_label = _display_service(service)
+    pattern_text = str(pattern or "").strip()
+    action_text = str(action or "").strip()
+    action_label = _ACTION_LABELS.get(action_text.lower(), action_text.replace("_", " "))
+
+    lower_pattern = pattern_text.lower()
+    if service == "device":
+        if "vendor=" in lower_pattern or "label=" in lower_pattern or "profile" in lower_pattern:
+            return "NetMon matched traffic details to a known device identity so the device can be labeled more accurately next time."
+        return "NetMon learned something about a device on the network so future scans can identify it more confidently."
+    if service == "traffic":
+        return "NetMon noticed a recurring traffic pattern and will use it as context when reviewing future network activity."
+    if service == "security":
+        return "NetMon saw a security-related pattern and saved it so similar activity is easier to recognize later."
+    if service in {"router", "dns", "wifi"}:
+        return f"NetMon connected this {service_label.lower()} pattern with a likely network condition so future outages are easier to explain."
+    if action_label:
+        return f"{service_label} learned that a repeated pattern is usually handled by: {action_label}."
+    if pattern_text:
+        return f"{service_label} learned a recurring pattern: {pattern_text[:180]}."
+    return f"{service_label} learned a new pattern it can reuse during future checks."
+
+
+def _plain_action(action: object, args: object = None) -> str:
+    action_text = str(action or "").strip()
+    if not action_text:
+        return "No automatic fix has been chosen yet."
+    label = _ACTION_LABELS.get(action_text.lower(), action_text.replace("_", " "))
+    if action_text.lower() in {"device_profile", "device_profile_update", "label_device"}:
+        return "Use this saved identity evidence when naming or confirming the device later."
+    if action_text.lower() == "restart":
+        return "Restart the affected service if policy allows it."
+    if action_text.lower() == "suggested" and isinstance(args, dict) and args.get("text"):
+        return str(args["text"])[:220]
+    return label[:1].upper() + label[1:]
+
 
 def available() -> bool:
     """True if the shared knowledge store is reachable."""
@@ -114,20 +178,29 @@ def learning_overview(limit: int = 20) -> dict:
         raw_lessons = []
     lessons = []
     for l in raw_lessons:
-        if l.get("service") not in services:
+        service = l.get("service")
+        if service not in services:
             continue
+        pattern = l.get("pattern_summary")
+        action = l.get("recommended_action")
+        args = l.get("recommended_args")
         lessons.append({
             "id": l.get("id"),
-            "service": l.get("service"),
-            "pattern": l.get("pattern_summary"),
-            "action": l.get("recommended_action"),
-            "args": l.get("recommended_args"),
+            "source": l.get("source") or "shared",
+            "service": service,
+            "service_label": _display_service(service),
+            "pattern": pattern,
+            "plain_english": _plain_pattern(service, pattern, action),
+            "action": action,
+            "action_plain_english": _plain_action(action, args),
+            "args": args,
             "success": l.get("success_count") or 0,
             "fail": l.get("fail_count") or 0,
             "confidence": l.get("confidence"),
             "suppressed": bool(l.get("suppressed")),
             "last_outcome": l.get("last_outcome"),
             "last_used_at": l.get("last_used_at"),
+            "learned_from": "NetMon" if service in services else _display_service(service),
         })
         if len(lessons) >= limit:
             break
