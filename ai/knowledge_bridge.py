@@ -103,6 +103,55 @@ def known_fixes_for(services: list[str] | None = None, limit: int = 5) -> list[d
     return out
 
 
+def learning_overview(limit: int = 20) -> dict:
+    """Return shared lessons/timeline/feedback for NetMon UI surfaces."""
+    if not _AVAILABLE:
+        return {"available": False, "lessons": [], "timeline": [], "feedback": []}
+    services = {"router", "dns", "traffic", "wifi", "device", "security", "netmon"}
+    try:
+        raw_lessons = knowledge.top_lessons(max(limit, 50))
+    except Exception:
+        raw_lessons = []
+    lessons = []
+    for l in raw_lessons:
+        if l.get("service") not in services:
+            continue
+        lessons.append({
+            "id": l.get("id"),
+            "service": l.get("service"),
+            "pattern": l.get("pattern_summary"),
+            "action": l.get("recommended_action"),
+            "args": l.get("recommended_args"),
+            "success": l.get("success_count") or 0,
+            "fail": l.get("fail_count") or 0,
+            "confidence": l.get("confidence"),
+            "suppressed": bool(l.get("suppressed")),
+            "last_outcome": l.get("last_outcome"),
+            "last_used_at": l.get("last_used_at"),
+        })
+        if len(lessons) >= limit:
+            break
+
+    timeline_fn = _knowledge_func("recent_timeline_events")
+    feedback_fn = _knowledge_func("recent_feedback")
+    try:
+        timeline = timeline_fn(limit=limit) if timeline_fn else []
+    except Exception as e:
+        sys.stderr.write(f"[knowledge_bridge] recent_timeline_events failed: {e}\n")
+        timeline = []
+    try:
+        feedback = feedback_fn(limit=limit) if feedback_fn else []
+    except Exception as e:
+        sys.stderr.write(f"[knowledge_bridge] recent_feedback failed: {e}\n")
+        feedback = []
+    return {
+        "available": True,
+        "lessons": lessons,
+        "timeline": timeline,
+        "feedback": feedback,
+    }
+
+
 def record_suggested_remediations(incident_id: int, suggestions: list[str]) -> None:
     """Persist AI-suggested next_steps as remediations with status='suggested'."""
     if not _AVAILABLE or not incident_id or not suggestions:

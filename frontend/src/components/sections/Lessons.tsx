@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Check, X, ExternalLink, ListChecks, GraduationCap } from 'lucide-react'
+import { Check, X, ExternalLink, ListChecks, GraduationCap, GitBranch, MessageSquare } from 'lucide-react'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge from '@/components/shared/Badge'
 import EmptyState from '@/components/shared/EmptyState'
 import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
+import { getLearningOverview, type LearningLesson } from '@/lib/api'
 
 const CP_PORT = 8091
 const CP_TOKEN_KEY = 'netmon_cp_token'
@@ -42,6 +43,14 @@ interface Remediation {
 interface Lesson {
   id: string | number
   description?: string
+  pattern?: string
+  service?: string
+  action?: string
+  success?: number
+  fail?: number
+  confidence?: number | null
+  suppressed?: boolean
+  last_outcome?: string
   outcome?: string
   created_at?: string
 }
@@ -64,9 +73,19 @@ export default function Lessons() {
     staleTime: 60_000,
   })
 
+  const { data: learning } = useQuery({
+    queryKey: ['learning-overview'],
+    queryFn: () => getLearningOverview(20),
+    retry: false,
+    staleTime: 60_000,
+  })
+
   // API returns { ok, source, pending: [...] } and { ok, source, lessons: [...] }
   const pending: Remediation[] = Array.isArray(pendingRaw) ? pendingRaw : (pendingRaw?.pending ?? [])
-  const lessons: Lesson[] = Array.isArray(lessonsRaw) ? lessonsRaw : (lessonsRaw?.lessons ?? [])
+  const cpLessons: Lesson[] = Array.isArray(lessonsRaw) ? lessonsRaw : (lessonsRaw?.lessons ?? [])
+  const lessons: Lesson[] = (learning?.lessons?.length ? learning.lessons : cpLessons) as Lesson[]
+  const timeline = learning?.timeline ?? []
+  const feedback = learning?.feedback ?? []
 
   const approveMutation = useMutation({
     mutationFn: (id: string | number) => cpFetch(`/remediation/${id}/approve`, { method: 'POST' }),
@@ -134,10 +153,37 @@ export default function Lessons() {
             <p className="text-xs text-red-400">
               {String((pendingError as Error)?.message).match(/401|403/)
                 ? 'Authentication failed — set your AI-Hub token above.'
-                : `Cannot reach AI-Hub at localhost:${CP_PORT}. Is it running?`}
+                : `Cannot reach AI-Hub at ${cpUrl()}. Is it running?`}
             </p>
           )}
         </div>
+      </Card>
+
+      <Card title="Learning Timeline" badge={timeline.length ? String(timeline.length) : undefined}>
+        {!learning?.available ? (
+          <EmptyState icon="◎" text="Shared learning unavailable" hint={learning?.error || 'NetMon will keep running; the shared knowledge bridge may be offline.'} />
+        ) : timeline.length === 0 ? (
+          <EmptyState icon="◎" text="No timeline events yet" hint="NetMon and Sentinel add events here as incidents, device learning, and remediations happen." />
+        ) : (
+          <div className="space-y-2">
+            {timeline.slice(0, 8).map(e => (
+              <div key={e.id} className="rounded-lg border border-white/8 bg-white/[0.02] p-3">
+                <div className="flex items-start gap-3">
+                  <GitBranch size={14} className="mt-0.5 text-indigo-300 flex-shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {e.service && <Badge variant={e.severity === 'high' ? 'error' : e.severity === 'medium' ? 'warn' : 'info'}>{e.service}</Badge>}
+                      {e.event_type && <span className="text-[10px] uppercase tracking-wide text-gray-500">{e.event_type}</span>}
+                      {e.source && <span className="text-[10px] text-gray-600">{e.source}</span>}
+                    </div>
+                    <p className="mt-1 text-xs text-gray-300">{e.summary || 'Timeline event'}</p>
+                    {e.created_at && <p className="mt-1 text-[10px] text-gray-600">{new Date(e.created_at).toLocaleString()}</p>}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
 
       {/* Pending remediations */}
@@ -184,14 +230,50 @@ export default function Lessons() {
         ) : (
           <div className="space-y-2">
             {(lessons as Lesson[]).map(l => (
-              <div key={l.id} className="text-xs py-2 border-b border-white/5 last:border-0">
-                <p className="text-gray-300">{l.description ?? JSON.stringify(l)}</p>
-                {l.outcome && <p className="text-gray-500 mt-0.5">{l.outcome}</p>}
+              <LessonRow key={l.id} lesson={l} />
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card title="Feedback Loop" badge={feedback.length ? String(feedback.length) : undefined}>
+        {feedback.length === 0 ? (
+          <EmptyState icon="◎" text="No feedback recorded yet" hint="Accepting or rejecting device identities records feedback here." />
+        ) : (
+          <div className="space-y-2">
+            {feedback.slice(0, 6).map(f => (
+              <div key={f.id} className="flex items-start gap-3 rounded-lg border border-white/8 bg-white/[0.02] p-3 text-xs">
+                <MessageSquare size={14} className="mt-0.5 text-cyan-300 flex-shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-gray-300">{f.verdict || 'feedback'} <span className="text-gray-600">on</span> {f.target_type || 'target'}</p>
+                  {f.note && <p className="mt-1 truncate text-gray-500">{f.note}</p>}
+                </div>
               </div>
             ))}
           </div>
         )}
       </Card>
+    </div>
+  )
+}
+
+function LessonRow({ lesson }: { lesson: Lesson | LearningLesson }) {
+  const confidence = typeof lesson.confidence === 'number' ? Math.round(lesson.confidence * 100) : null
+  const success = Number(lesson.success ?? 0)
+  const fail = Number(lesson.fail ?? 0)
+  const description = 'description' in lesson ? lesson.description : undefined
+  return (
+    <div className="text-xs py-2 border-b border-white/5 last:border-0">
+      <div className="flex flex-wrap items-center gap-2 mb-1">
+        {lesson.service && <Badge variant="info">{lesson.service}</Badge>}
+        {lesson.action && <span className="font-mono text-gray-400">{lesson.action}</span>}
+        {confidence != null && <span className="text-emerald-300">{confidence}% confidence</span>}
+        {lesson.suppressed && <Badge variant="warn">suppressed</Badge>}
+      </div>
+      <p className="text-gray-300">{description ?? lesson.pattern ?? JSON.stringify(lesson)}</p>
+      <p className="text-gray-500 mt-0.5">
+        {success} success / {fail} fail{lesson.last_outcome ? ` · last ${lesson.last_outcome}` : ''}
+      </p>
     </div>
   )
 }

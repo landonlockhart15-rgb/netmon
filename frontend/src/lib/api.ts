@@ -198,6 +198,8 @@ export const startMitm = (body: object) =>
   apiFetch<void>('/api/traffic/mitm/start', { method: 'POST', body: JSON.stringify(body) })
 export const stopMitm = () => apiFetch<void>('/api/traffic/mitm/stop', { method: 'POST' })
 export const getIncidents = () => apiFetch<Incident[]>('/api/incidents')
+export const getLearningOverview = (limit = 20) =>
+  apiFetch<LearningOverview>(`/api/learning/overview?limit=${limit}`)
 export const getHuntRules = () => apiFetch<HuntRule[]>('/api/hunt/rules')
 export const addHuntRule = (body: object) =>
   apiFetch<HuntRule>('/api/hunt/rules', { method: 'POST', body: JSON.stringify(body) })
@@ -316,6 +318,48 @@ export interface Device {
   open_ports: number[]
   os_guess: string | null
   is_new?: boolean
+}
+
+export interface LearningLesson {
+  id: number | string
+  service?: string
+  pattern?: string
+  action?: string
+  success?: number
+  fail?: number
+  confidence?: number | null
+  suppressed?: boolean
+  last_outcome?: string | null
+  last_used_at?: string | null
+}
+
+export interface LearningTimelineEvent {
+  id: number | string
+  correlation_id?: string
+  source?: string
+  service?: string
+  event_type?: string
+  severity?: string
+  summary?: string
+  created_at?: string
+}
+
+export interface LearningFeedback {
+  id: number | string
+  source?: string
+  target_type?: string
+  target?: string
+  verdict?: string
+  note?: string
+  created_at?: string
+}
+
+export interface LearningOverview {
+  available: boolean
+  lessons: LearningLesson[]
+  timeline: LearningTimelineEvent[]
+  feedback: LearningFeedback[]
+  error?: string
 }
 
 export interface Scan {

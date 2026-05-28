@@ -3532,6 +3532,22 @@ def list_incidents(limit: int = 50, db: Session = Depends(get_db)):
     } for r in rows]
 
 
+@router.get("/api/learning/overview")
+def learning_overview(limit: int = 20):
+    """Read-only view of shared NetMon/Sentinel learning state."""
+    try:
+        from ai.knowledge_bridge import learning_overview as _learning_overview
+        return _learning_overview(limit=limit)
+    except Exception as exc:
+        return {
+            "available": False,
+            "lessons": [],
+            "timeline": [],
+            "feedback": [],
+            "error": str(exc)[:300],
+        }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 8 — Hunt rule management
 # ─────────────────────────────────────────────────────────────────────────────
