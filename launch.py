@@ -118,10 +118,10 @@ def _start_ntfy() -> None:
         subprocess.run(["taskkill", "/F", "/IM", "ntfy.exe"], capture_output=True,
                        creationflags=CREATE_NO_WINDOW)
         try:
-            # Keep the file handle in a global so Python's GC never closes it.
-            # A closed handle makes ntfy lose stdout/stderr on Windows and crash.
-            _NTFY_LOG.parent.mkdir(parents=True, exist_ok=True)
-            _ntfy_log_fh = open(_NTFY_LOG, "w", encoding="utf-8")
+            import time
+            _ntfy_log_fh = open(_NTFY_LOG, "a", encoding="utf-8")
+            _ntfy_log_fh.write(f"\n--- ntfy start: {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+            _ntfy_log_fh.flush()
             command = [str(_NTFY_EXE), "serve", "--config", str(_NTFY_CONFIG)]
             _ntfy_proc = subprocess.Popen(
                 command,
@@ -247,9 +247,45 @@ def _stop(icon, item=None):
     icon.stop()
 
 
+_lock_socket = None
+
+def _kill_duplicates():
+    import os
+    try:
+        import psutil
+        current_pid = os.getpid()
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                pid = p.info["pid"]
+                if pid == current_pid:
+                    continue
+                cmdline = p.info["cmdline"] or []
+                if "python" in p.info["name"].lower() and any("launch.py" in str(arg).lower() for arg in cmdline):
+                    p.kill()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def _acquire_instance_lock():
+    global _lock_socket
+    import socket
+    import sys
+    _kill_duplicates()
+    try:
+        _lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _lock_socket.bind(("127.0.0.1", 2585))
+        _lock_socket.listen(1)
+    except OSError:
+        # Exit silently if another instance is already running
+        sys.exit(0)
+
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    _acquire_instance_lock()
     try:
         import pystray
     except ImportError:
