@@ -3430,6 +3430,39 @@ def _learn_from_activity(device_ip: str, activity: dict, db) -> None:
             write_log("info", "system", "device_learned",
                       f"Learned from traffic: {device_ip} → vendor={device.vendor} label={device.label}",
                       device_ip=device_ip)
+            try:
+                from ai.knowledge_bridge import (
+                    record_device_profile_lesson,
+                    record_timeline_event,
+                )
+                profile = {
+                    "device_id": device.id,
+                    "ip": device_ip,
+                    "label": device.label,
+                    "vendor": device.vendor,
+                    "os_guess": getattr(device, "os_guess", None),
+                }
+                evidence = {
+                    "top_domains": domains[:20],
+                    "user_agents": ua_strings[:5],
+                    "source": "traffic_activity",
+                }
+                record_device_profile_lesson(
+                    device_key=f"netmon.device.{device.id}",
+                    profile=profile,
+                    evidence=evidence,
+                    summary=f"Traffic activity identified {device_ip} as {device.label or device.vendor or 'unknown'}",
+                )
+                record_timeline_event(
+                    correlation_id=f"netmon.device.{device.id}",
+                    service="device",
+                    event_type="device_profile_learned",
+                    severity="info",
+                    summary=f"NetMon learned profile details for {device_ip}",
+                    detail={"profile": profile, "evidence": evidence},
+                )
+            except Exception:
+                pass
     except Exception as _e:
         db.rollback()
 
@@ -5701,6 +5734,41 @@ def _apply_proposal(db: Session, device, proposal: dict,
                            "prev_label": prev_label, "prev_os": prev_os},
             }, default=str),
         ))
+        try:
+            from ai.knowledge_bridge import (
+                record_device_profile_lesson,
+                record_timeline_event,
+            )
+            profile = {
+                "device_id": device.id,
+                "label": device.label,
+                "os_guess": device.os_guess,
+                "is_known": device.is_known,
+                "category": category,
+            }
+            evidence = {
+                "proposal": proposal,
+                "changes": changes,
+                "reasoning": reasoning,
+                "source": "identity_proposal",
+            }
+            record_device_profile_lesson(
+                device_key=f"netmon.device.{device.id}",
+                profile=profile,
+                evidence=evidence,
+                confidence=confidence,
+                summary=f"AI identity proposal applied to device #{device.id}: {name or device.label or 'unnamed'}",
+            )
+            record_timeline_event(
+                correlation_id=f"netmon.device.{device.id}",
+                service="device",
+                event_type="identity_auto_apply",
+                severity="info",
+                summary=f"AI auto-applied identity for device #{device.id}",
+                detail={"profile": profile, "evidence": evidence},
+            )
+        except Exception:
+            pass
     return {"applied": True, "changes": changes, "confidence": confidence}
 
 
@@ -5897,6 +5965,16 @@ def device_chat_proposal_action(device_id: int, body: dict,
                         f"User accepted identity: {p.get('name','?')} ({p.get('category','?')})",
                         meta={"manual_accept": p})
         db.commit()
+        try:
+            from ai.knowledge_bridge import record_user_feedback
+            record_user_feedback(
+                target_type="device_identity",
+                target=f"netmon.device.{device.id}",
+                verdict="accepted",
+                note=json.dumps(p, default=str)[:1000],
+            )
+        except Exception:
+            pass
         return {"applied": True, "changes": result.get("changes", []),
                 "device": {"id": device.id, "label": device.label,
                            "os_guess": device.os_guess}}
@@ -5905,6 +5983,16 @@ def device_chat_proposal_action(device_id: int, body: dict,
                         f"User rejected proposal: {proposal.get('name','?')}",
                         meta={"manual_reject": proposal})
         db.commit()
+        try:
+            from ai.knowledge_bridge import record_user_feedback
+            record_user_feedback(
+                target_type="device_identity",
+                target=f"netmon.device.{device.id}",
+                verdict="rejected",
+                note=json.dumps(proposal, default=str)[:1000],
+            )
+        except Exception:
+            pass
         return {"applied": False}
     else:
         raise HTTPException(status_code=400, detail="action must be accept or reject")

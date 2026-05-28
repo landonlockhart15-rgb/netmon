@@ -131,6 +131,131 @@ def log_event(kind: str, message: str) -> None:
         pass
 
 
+def _knowledge_func(name: str):
+    if not _AVAILABLE or knowledge is None:
+        return None
+    fn = getattr(knowledge, name, None)
+    return fn if callable(fn) else None
+
+
+def set_incident_root_cause(incident_id: int, root_cause_service: str) -> None:
+    """Attach root-cause context when the shared store supports it."""
+    fn = _knowledge_func("set_incident_root_cause")
+    if not fn or not incident_id:
+        return
+    try:
+        fn(incident_id, root_cause_service)
+    except Exception as e:
+        sys.stderr.write(f"[knowledge_bridge] set_incident_root_cause failed: {e}\n")
+
+
+def record_timeline_event(
+    correlation_id: str,
+    service: str,
+    event_type: str,
+    severity: str,
+    summary: str,
+    detail: Optional[dict] = None,
+) -> Optional[int]:
+    """Append a shared timeline event if AI-Hub exposes timeline support."""
+    fn = _knowledge_func("record_timeline_event")
+    if not fn:
+        return None
+    try:
+        return fn(
+            correlation_id=correlation_id or "uncorrelated",
+            source="netmon",
+            service=service,
+            event_type=event_type,
+            severity=severity,
+            summary=summary,
+            detail=detail or {},
+        )
+    except Exception as e:
+        sys.stderr.write(f"[knowledge_bridge] record_timeline_event failed: {e}\n")
+        return None
+
+
+def record_user_feedback(
+    target_type: str,
+    target: str,
+    verdict: str,
+    note: str = "",
+    source: str = "netmon",
+) -> Optional[int]:
+    """Store operator feedback when the shared store supports feedback rows."""
+    fn = _knowledge_func("record_feedback")
+    if not fn:
+        return None
+    try:
+        return fn(source, target_type, target, verdict, note)
+    except Exception as e:
+        sys.stderr.write(f"[knowledge_bridge] record_user_feedback failed: {e}\n")
+        return None
+
+
+def record_device_profile_lesson(
+    device_key: str,
+    profile: dict,
+    evidence: Optional[dict] = None,
+    confidence: Optional[float] = None,
+    outcome: str = "success",
+    summary: str = "",
+) -> Optional[int]:
+    """Persist a durable lesson about a device identity/profile.
+
+    Newer AI-Hub builds may expose a first-class record_device_profile_lesson().
+    Older builds fall back to the generic lessons table.
+    """
+    if not _AVAILABLE:
+        return None
+
+    fn = _knowledge_func("record_device_profile_lesson")
+    if fn:
+        try:
+            return fn(
+                source="netmon",
+                device_key=device_key,
+                profile=profile or {},
+                evidence=evidence or {},
+                confidence=confidence,
+                outcome=outcome,
+                summary=summary,
+            )
+        except TypeError:
+            try:
+                return fn(device_key, profile or {}, evidence or {}, confidence, outcome, summary)
+            except Exception as e:
+                sys.stderr.write(f"[knowledge_bridge] record_device_profile_lesson failed: {e}\n")
+                return None
+        except Exception as e:
+            sys.stderr.write(f"[knowledge_bridge] record_device_profile_lesson failed: {e}\n")
+            return None
+
+    try:
+        fp = knowledge.fingerprint("device", {
+            "device_key": device_key,
+            "profile": profile or {},
+            "evidence": evidence or {},
+        })
+        lesson = knowledge.upsert_lesson(
+            fp,
+            "device",
+            "device_profile_learned",
+            {
+                "device_key": device_key,
+                "profile": profile or {},
+                "confidence": confidence,
+            },
+            (summary or f"Device profile learned for {device_key}")[:500],
+            outcome if outcome in ("success", "fail") else "success",
+        )
+        return int(lesson.get("id")) if isinstance(lesson, dict) and lesson.get("id") else None
+    except Exception as e:
+        sys.stderr.write(f"[knowledge_bridge] record_device_profile_lesson fallback failed: {e}\n")
+        return None
+
+
 def record_remediation_outcome(
     service: str,
     evidence: dict,
@@ -160,6 +285,20 @@ def record_remediation_outcome(
             severity=severity,
         )
         knowledge.resolve_incident(incident_id, postmortem=summary[:2000])
+        set_incident_root_cause(incident_id, service)
+        record_timeline_event(
+            correlation_id=f"netmon.incident.{incident_id}",
+            service=service,
+            event_type="remediation_outcome",
+            severity=severity,
+            summary=(summary or f"{action} on {service}")[:1000],
+            detail={
+                "action": action,
+                "params": params or {},
+                "outcome": outcome,
+                "evidence": evidence or {},
+            },
+        )
         fp = knowledge.fingerprint(service, evidence or {})
         knowledge.upsert_lesson(
             fp, service, action, params or {},
