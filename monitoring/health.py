@@ -241,9 +241,12 @@ def _measure_one_download_stream(
             pass
 
 
-def run_speed_test(url: str = DEFAULT_SPEED_URL) -> dict:
+def run_speed_test(url: str = DEFAULT_SPEED_URL, router_cfg: Optional[dict] = None) -> dict:
     """
     Measure download and upload speed.
+
+    First attempts to run the test directly on a Netgear Orbi router via SOAP if configured.
+    Falls back to client-side Cloudflare speed test on any failure.
 
     Download: DOWNLOAD_STREAMS parallel TCP connections, synchronized start,
               DOWNLOAD_MEASURE_SECONDS wall-clock window, sum of bytes
@@ -262,12 +265,52 @@ def run_speed_test(url: str = DEFAULT_SPEED_URL) -> dict:
     import threading
     from concurrent.futures import ThreadPoolExecutor, wait
 
-    ping_result = run_ping()
-    latency_ms  = ping_result.get("latency_ms")
-
     download_mbps = None
     upload_mbps   = None
+    latency_ms    = None
     error         = None
+
+    # ── Attempt Router-level Speed Test first ────────────────────────────────
+    if router_cfg and router_cfg.get("password"):
+        try:
+            from pynetgear import Netgear
+            host = router_cfg.get("host") or "192.168.1.1"
+            user = router_cfg.get("user") or "admin"
+            password = router_cfg.get("password")
+
+            # Try HTTPS (port 443) first, as required by newer Orbi firmware
+            ng = Netgear(password=password, host=host, user=user, port=443, ssl=True)
+            if not ng.login():
+                # Fallback to HTTP (port 80)
+                ng = Netgear(password=password, host=host, user=user)
+                if not ng.login():
+                    raise Exception("Router login failed on both HTTPS and HTTP")
+
+            res = ng.get_new_speed_test_result()
+            if res is not None:
+                try:
+                    download_mbps = float(res.get("NewOOKLADownlinkBandwidth") or 0.0)
+                    upload_mbps = float(res.get("NewOOKLAUplinkBandwidth") or 0.0)
+                    avg_ping = res.get("AveragePing")
+                    latency_ms = float(avg_ping) if avg_ping is not None else None
+                    
+                    return {
+                        "download_mbps": download_mbps,
+                        "upload_mbps":   upload_mbps,
+                        "latency_ms":    latency_ms,
+                        "error":         None,
+                    }
+                except ValueError as ve:
+                    raise Exception(f"Failed to parse speed test results: {res} - {ve}")
+            else:
+                raise Exception("Router speed test returned no results (None)")
+
+        except Exception as e:
+            print(f"Router speed test failed: {e}. Falling back to client-side speed test.")
+
+    # ── Client-side Fallback Speed Test ──────────────────────────────────────
+    ping_result = run_ping()
+    latency_ms  = ping_result.get("latency_ms")
 
     # ── Download (parallel, time-bounded) ────────────────────────────────────
     try:

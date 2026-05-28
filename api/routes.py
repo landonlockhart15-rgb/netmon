@@ -664,9 +664,26 @@ def run_speed_test_now(db: Session = Depends(get_db)):
     """
     from monitoring.health import run_speed_test
 
+    gateway = ""
+    try:
+        from network.autodetect import get_network_info
+        gateway = get_network_info().get("gateway") or ""
+    except Exception:
+        pass
+
+    router_host = _get_setting_str(db, "autoheal_router_host", "") or gateway or "192.168.1.1"
+    router_user = _get_setting_str(db, "autoheal_router_user", "admin")
+    router_pass = os.getenv("ROUTER_PASS") or _get_setting_str(db, "autoheal_router_pass", "")
+
+    router_cfg = {
+        "host": router_host,
+        "user": router_user,
+        "password": router_pass,
+    }
+
     url    = _get_setting_str(db, "speed_test_url",
                               "https://speed.cloudflare.com/__down?bytes=50000000")
-    result = run_speed_test(url=url)
+    result = run_speed_test(url=url, router_cfg=router_cfg)
 
     st = SpeedTest(
         download_mbps=result["download_mbps"],
