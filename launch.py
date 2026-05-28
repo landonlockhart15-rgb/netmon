@@ -254,6 +254,15 @@ def _kill_duplicates():
     try:
         import psutil
         current_pid = os.getpid()
+        try:
+            for conn in psutil.net_connections(kind="tcp"):
+                if conn.laddr.port == 8000 and conn.pid and conn.pid != current_pid:
+                    try:
+                        psutil.Process(conn.pid).kill()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         for p in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
                 pid = p.info["pid"]
