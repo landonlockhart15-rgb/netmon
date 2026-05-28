@@ -5489,11 +5489,11 @@ def start_aircrack(body: dict, db: Session = Depends(get_db)):
 @router.post("/api/security/metasploit/start")
 def start_metasploit(body: dict, db: Session = Depends(get_db)):
     target      = body.get("target")
-    module_name = body.get("module_name")
+    # Default to a safe TCP port scan when no module is supplied so the run
+    # never fails just because the caller omitted module_name.
+    module_name = (body.get("module_name") or "").strip() or "auxiliary/scanner/portscan/tcp"
     if not target:
         raise HTTPException(status_code=400, detail="target required")
-    if not module_name:
-        raise HTTPException(status_code=400, detail="module_name required")
     if not body.get("authorization_confirmed"):
         raise HTTPException(status_code=400, detail="authorization_confirmed required")
     require_local_target(target, authorization_confirmed=True)

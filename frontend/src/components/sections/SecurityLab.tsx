@@ -541,22 +541,52 @@ function PasswordPanel({ onStartHydra, onStartJohn }: {
   )
 }
 
+const DEFAULT_MSF_MODULE = 'auxiliary/scanner/portscan/tcp'
+const MSF_MODULES = [
+  { value: 'auxiliary/scanner/portscan/tcp', label: 'TCP port scan (safe default)' },
+  { value: 'auxiliary/scanner/http/http_version', label: 'HTTP version / banner' },
+  { value: 'auxiliary/scanner/http/title', label: 'HTTP page titles' },
+  { value: 'auxiliary/scanner/ssh/ssh_version', label: 'SSH version' },
+  { value: 'auxiliary/scanner/ftp/ftp_version', label: 'FTP version' },
+  { value: 'auxiliary/scanner/smb/smb_version', label: 'SMB version' },
+  { value: 'auxiliary/scanner/upnp/ssdp_msearch', label: 'UPnP / SSDP discovery (routers)' },
+  { value: 'auxiliary/scanner/snmp/snmp_login', label: 'SNMP community check' },
+  { value: '__custom__', label: 'Custom module…' },
+]
+
 function ExploitPanel({ onStart }: { onStart: (body: object) => void }) {
   const [target, setTarget] = useState('')
+  const [moduleSel, setModuleSel] = useState(DEFAULT_MSF_MODULE)
+  const [customModule, setCustomModule] = useState('')
   const [loading, setLoading] = useState(false)
+  const isCustom = moduleSel === '__custom__'
+  const effectiveModule = (isCustom ? customModule.trim() : moduleSel) || DEFAULT_MSF_MODULE
   return (
     <Card title="Metasploit — Exploit Framework">
-      <p className="text-xs text-gray-500 mb-3">Run Metasploit against a target on your network. Use only on devices you own.</p>
-      <div className="flex gap-2">
-        <input value={target} onChange={e => setTarget(e.target.value)} placeholder="Target IP"
-          className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
-        <Btn variant="primary" size="sm" loading={loading} onClick={async () => {
-          if (!target) return
-          setLoading(true)
-          try { await onStart({ target }) } finally { setLoading(false) }
-        }}>
-          <Play size={13} /> Start
-        </Btn>
+      <p className="text-xs text-gray-500 mb-3">Run a Metasploit module against a target on your network. Use only on devices you own.</p>
+      <div className="space-y-2">
+        <div className="flex gap-2">
+          <input value={target} onChange={e => setTarget(e.target.value)} placeholder="Target IP"
+            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
+          <select value={moduleSel} onChange={e => setModuleSel(e.target.value)}
+            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-purple-500">
+            {MSF_MODULES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+        </div>
+        {isCustom && (
+          <input value={customModule} onChange={e => setCustomModule(e.target.value)}
+            placeholder="e.g. auxiliary/scanner/http/http_version"
+            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
+        )}
+        <div className="flex justify-end">
+          <Btn variant="primary" size="sm" loading={loading} disabled={!target} onClick={async () => {
+            if (!target) return
+            setLoading(true)
+            try { await onStart({ target, module_name: effectiveModule }) } finally { setLoading(false) }
+          }}>
+            <Play size={13} /> Start
+          </Btn>
+        </div>
       </div>
     </Card>
   )
