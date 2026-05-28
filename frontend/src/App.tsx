@@ -20,6 +20,7 @@ const Lessons = lazy(() => import('@/components/sections/Lessons'))
 const SecurityLab = lazy(() => import('@/components/sections/SecurityLab'))
 const Settings = lazy(() => import('@/components/sections/Settings'))
 const UptimeGuardian = lazy(() => import('@/components/sections/UptimeGuardian'))
+const Sentinel = lazy(() => import('@/components/sections/Sentinel'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -48,6 +49,7 @@ export default function App() {
             <Route path="logs" element={<Logs />} />
             <Route path="lessons" element={<Lessons />} />
             <Route path="seclab" element={<SecurityLab />} />
+            <Route path="sentinel" element={<Sentinel />} />
             <Route path="settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

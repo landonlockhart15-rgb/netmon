@@ -118,3 +118,52 @@ pre, code { font-family: var(--font-mono); }
     animation: none;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   Sentinel radial shield graphic styles
+   ══════════════════════════════════════════════════════════════════ */
+:root {
+  --neon-green: #4dff91;
+  --amber: #ffc04d;
+  --down: #ff5c6c;
+}
+
+.sentinel-wrap { padding: 14px 10px 4px; }
+.sentinel-graphic { width: 100%; max-width: 640px; margin: 0 auto; display: block; overflow: visible; }
+.sent-spoke { stroke-width: 2; opacity: .45; stroke-linecap: round; }
+.sent-spoke.healthy { stroke: var(--neon-green); stroke-dasharray: 14 90; animation: sent-flow 1.4s linear infinite; }
+.sent-spoke.degraded { stroke: var(--amber); }
+.sent-spoke.down { stroke: var(--down); opacity: .6; }
+.sent-spoke.unknown { stroke: var(--color-text-muted); }
+@keyframes sent-flow { to { stroke-dashoffset: -104; } }
+
+.sent-shield-pulse { fill: none; stroke: var(--neon-green); stroke-width: 2; transform-box: fill-box; transform-origin: center; animation: sent-pulse 2.6s cubic-bezier(0.22,0.61,0.36,1) infinite; }
+@keyframes sent-pulse { 0% { transform: scale(.75); opacity: .65; } 70%, 100% { transform: scale(1.7); opacity: 0; } }
+.sent-shield-frame { fill: rgba(77,255,145,0.07); stroke: var(--neon-green); stroke-width: 2.5; filter: drop-shadow(0 0 9px rgba(77,255,145,0.75)); }
+.sent-shield-label { fill: var(--neon-green); font-family: var(--font-sans); font-weight: 700; font-size: 13px; text-anchor: middle; letter-spacing: .4px; filter: drop-shadow(0 0 6px rgba(77,255,145,0.6)); }
+
+.sent-node { stroke-width: 1.8; fill: rgba(16,20,30,0.94); transition: filter .2s cubic-bezier(0.22,0.61,0.36,1); }
+.sent-node.healthy { stroke: var(--neon-green); color: var(--neon-green); filter: drop-shadow(0 0 7px rgba(77,255,145,0.65)); }
+.sent-node.degraded { stroke: var(--amber); color: var(--amber); filter: drop-shadow(0 0 7px rgba(255,192,77,0.6)); }
+.sent-node.down { stroke: var(--down); color: var(--down); filter: drop-shadow(0 0 9px rgba(255,92,108,0.75)); }
+.sent-node.unknown { stroke: var(--color-text-muted); color: var(--color-text-muted); opacity: .7; }
+.sent-node-g { cursor: default; }
+.sent-node-g:hover .sent-node { filter: drop-shadow(0 0 12px currentColor); }
+.sent-node-name { font-family: var(--font-sans); font-size: 12px; font-weight: 600; text-anchor: middle; fill: var(--color-text-head); }
+.sent-node-sub { font-family: var(--font-mono); font-size: 9px; text-anchor: middle; fill: var(--color-text-muted); letter-spacing: .3px; }
+
+.sent-legend { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; padding: 8px 16px 16px; font-size: 11px; color: var(--color-text-muted); }
+.sent-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sent-legend b { color: var(--color-text-head); font-variant-numeric: tabular-nums; }
+.sent-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.sent-dot.healthy { background: var(--neon-green); box-shadow: 0 0 8px var(--neon-green); }
+.sent-dot.degraded { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+.sent-dot.down { background: var(--down); box-shadow: 0 0 8px var(--down); }
+.sent-dot.unknown { background: var(--color-text-muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .sent-spoke.healthy, .sent-shield-pulse {
+    animation: none;
+  }
+}
+
