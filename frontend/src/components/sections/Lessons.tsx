@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { Check, X, ExternalLink, ListChecks, GraduationCap, GitBranch, MessageSquare } from 'lucide-react'
 import Card from '@/components/shared/Card'
@@ -40,6 +40,10 @@ interface Remediation {
   status?: string
 }
 
+interface RemediationResponse {
+  pending?: Remediation[]
+}
+
 interface Lesson {
   id: string | number
   source?: string
@@ -49,37 +53,52 @@ interface Lesson {
   service_label?: string
   plain_english?: string
   action?: string
+  recommended_action?: string
   action_plain_english?: string
   success?: number
+  success_count?: number
   fail?: number
+  fail_count?: number
   confidence?: number | null
   suppressed?: boolean
   last_outcome?: string
   outcome?: string
   created_at?: string
+  updated_at?: string
+  last_used_at?: string
+  pattern_summary?: string
+}
+
+interface LessonsResponse {
+  lessons?: Lesson[]
 }
 
 export default function Lessons() {
   const [token, setToken] = useState(localStorage.getItem(CP_TOKEN_KEY) ?? '')
   const [editToken, setEditToken] = useState(false)
+  const [lessonSearch, setLessonSearch] = useState('')
+  const [lessonSource, setLessonSource] = useState('all')
+  const [lessonService, setLessonService] = useState('all')
+  const [lessonAction, setLessonAction] = useState('all')
+  const [lessonOutcome, setLessonOutcome] = useState('all')
 
   const { data: pendingRaw, error: pendingError, refetch } = useQuery({
     queryKey: ['cp-remediations'],
-    queryFn: () => cpFetch<any>('/remediation/pending'),
+    queryFn: () => cpFetch<RemediationResponse | Remediation[]>('/remediation/pending'),
     retry: false,
     staleTime: 30_000,
   })
 
   const { data: lessonsRaw } = useQuery({
     queryKey: ['cp-lessons'],
-    queryFn: () => cpFetch<any>('/lessons'),
+    queryFn: () => cpFetch<LessonsResponse | Lesson[]>('/lessons'),
     retry: false,
     staleTime: 60_000,
   })
 
   const { data: learning } = useQuery({
     queryKey: ['learning-overview'],
-    queryFn: () => getLearningOverview(20),
+    queryFn: () => getLearningOverview(100),
     retry: false,
     staleTime: 60_000,
   })
@@ -109,6 +128,17 @@ export default function Lessons() {
 
   const pendingCount = (pending as Remediation[]).length
   const lessonsCount = (lessons as Lesson[]).length
+  const lessonOptions = useMemo(() => buildLessonOptions(lessons), [lessons])
+  const filteredLessons = useMemo(
+    () => filterLessons(lessons, {
+      search: lessonSearch,
+      source: lessonSource,
+      service: lessonService,
+      action: lessonAction,
+      outcome: lessonOutcome,
+    }),
+    [lessons, lessonSearch, lessonSource, lessonService, lessonAction, lessonOutcome],
+  )
 
   return (
     <div className="space-y-4">
@@ -232,10 +262,45 @@ export default function Lessons() {
         {(lessons as Lesson[]).length === 0 ? (
           <EmptyState icon="◎" text="No lessons recorded yet" hint="Lessons are learned from approved/rejected remediations." />
         ) : (
-          <div className="space-y-2">
-            {(lessons as Lesson[]).map(l => (
-              <LessonRow key={l.id} lesson={l} />
-            ))}
+          <div className="space-y-3">
+            <div className="grid gap-2 md:grid-cols-[minmax(180px,1fr)_repeat(4,minmax(120px,160px))]">
+              <input
+                value={lessonSearch}
+                onChange={e => setLessonSearch(e.target.value)}
+                placeholder="Search lessons"
+                className="min-w-0 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-gray-200 placeholder-gray-600 outline-none focus:border-cyan-400/60"
+              />
+              <LessonSelect value={lessonSource} onChange={setLessonSource} options={lessonOptions.sources} allLabel="All sources" />
+              <LessonSelect value={lessonService} onChange={setLessonService} options={lessonOptions.services} allLabel="All services" />
+              <LessonSelect value={lessonAction} onChange={setLessonAction} options={lessonOptions.actions} allLabel="All actions" />
+              <LessonSelect value={lessonOutcome} onChange={setLessonOutcome} options={lessonOptions.outcomes} allLabel="All outcomes" />
+            </div>
+            <div className="text-[10px] uppercase tracking-wide text-gray-600">
+              Showing {filteredLessons.length} of {(lessons as Lesson[]).length}
+            </div>
+            {filteredLessons.length === 0 ? (
+              <EmptyState icon="◎" text="No matching lessons" hint="Adjust the search or filters." />
+            ) : (
+              <div className="overflow-x-auto rounded-lg border border-white/8">
+                <table className="min-w-[900px] w-full text-left text-xs">
+                  <thead className="bg-white/[0.03] text-[10px] uppercase tracking-wide text-gray-500">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold">Service</th>
+                      <th className="px-3 py-2 font-semibold">Plain-English Lesson</th>
+                      <th className="px-3 py-2 font-semibold">Action</th>
+                      <th className="px-3 py-2 font-semibold">Outcome</th>
+                      <th className="px-3 py-2 font-semibold">Confidence</th>
+                      <th className="px-3 py-2 font-semibold">Updated</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredLessons.map(l => (
+                      <LessonTableRow key={l.id} lesson={l} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -261,39 +326,126 @@ export default function Lessons() {
   )
 }
 
-function LessonRow({ lesson }: { lesson: Lesson | LearningLesson }) {
+function LessonTableRow({ lesson }: { lesson: Lesson | LearningLesson }) {
   const confidence = typeof lesson.confidence === 'number' ? Math.round(lesson.confidence * 100) : null
-  const success = Number(lesson.success ?? 0)
-  const fail = Number(lesson.fail ?? 0)
+  const success = lessonSuccess(lesson)
+  const fail = lessonFail(lesson)
   const description = 'description' in lesson ? lesson.description : undefined
   const service = lesson.service || 'netmon'
   const serviceLabel = lesson.service_label || serviceLabelFor(service)
   const plainEnglish = lesson.plain_english || describeLessonForUser(lesson, description)
-  const actionPlainEnglish = lesson.action_plain_english || describeActionForUser(lesson.action)
+  const action = lessonAction(lesson)
+  const actionPlainEnglish = lesson.action_plain_english || describeActionForUser(action)
   const source = 'source' in lesson ? lesson.source : undefined
   return (
-    <div className="rounded-lg border border-white/8 bg-white/[0.02] p-3 text-xs">
-      <div className="flex flex-wrap items-center gap-2 mb-2">
-        <Badge variant="info">{serviceLabel}</Badge>
-        {source && <span className="rounded border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-500">{source}</span>}
-        {confidence != null && <span className="text-emerald-300">{confidence}% confidence</span>}
-        {lesson.suppressed && <Badge variant="warn">suppressed</Badge>}
-      </div>
-      <p className="text-sm text-gray-200">{plainEnglish}</p>
-      {actionPlainEnglish && (
-        <p className="mt-1 text-gray-400">
-          <span className="text-gray-500">What NetMon will do with it: </span>{actionPlainEnglish}
-        </p>
-      )}
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
-        {lesson.action && <span className="font-mono rounded border border-white/8 bg-black/20 px-1.5 py-0.5">{lesson.action}</span>}
-        {lesson.pattern && <span className="truncate">signal: {lesson.pattern}</span>}
-      </div>
-      <p className="text-gray-500 mt-2">
-        {success} success / {fail} fail{lesson.last_outcome ? ` · last ${lesson.last_outcome}` : ''}
-      </p>
-    </div>
+    <tr className="border-t border-white/6 align-top hover:bg-white/[0.03]">
+      <td className="px-3 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="info">{serviceLabel}</Badge>
+          {source && <span className="rounded border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-500">{source}</span>}
+          {lesson.suppressed && <Badge variant="warn">suppressed</Badge>}
+        </div>
+      </td>
+      <td className="px-3 py-3">
+        <p className="text-sm text-gray-200">{plainEnglish}</p>
+        {lessonPattern(lesson) && <p className="mt-1 max-w-[520px] truncate text-[10px] text-gray-600">signal: {lessonPattern(lesson)}</p>}
+      </td>
+      <td className="px-3 py-3">
+        <p className="text-gray-300">{actionPlainEnglish}</p>
+        {action && <p className="mt-1 font-mono text-[10px] text-gray-600">{action}</p>}
+      </td>
+      <td className="px-3 py-3 text-gray-400">
+        <p>{success} success / {fail} fail</p>
+        {lesson.last_outcome && <p className="mt-1 text-[10px] text-gray-600">last {lesson.last_outcome}</p>}
+      </td>
+      <td className="px-3 py-3">
+        {confidence != null ? <span className="text-emerald-300">{confidence}%</span> : <span className="text-gray-600">—</span>}
+      </td>
+      <td className="px-3 py-3 text-gray-500">{lessonUpdatedAt(lesson)}</td>
+    </tr>
   )
+}
+
+function LessonSelect({ value, onChange, options, allLabel }: {
+  value: string
+  onChange: (value: string) => void
+  options: string[]
+  allLabel: string
+}) {
+  return (
+    <select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      className="min-w-0 rounded-lg border border-white/10 bg-[#0d1220] px-3 py-2 text-xs text-gray-200 outline-none focus:border-cyan-400/60"
+    >
+      <option value="all">{allLabel}</option>
+      {options.map(option => <option key={option} value={option}>{option}</option>)}
+    </select>
+  )
+}
+
+function buildLessonOptions(lessons: (Lesson | LearningLesson)[]) {
+  const unique = (values: string[]) => Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b))
+  return {
+    sources: unique(lessons.map(l => ('source' in l ? l.source || '' : ''))),
+    services: unique(lessons.map(l => l.service_label || serviceLabelFor(l.service))),
+    actions: unique(lessons.map(lessonAction)),
+    outcomes: unique(lessons.map(l => l.last_outcome || '').filter(Boolean)),
+  }
+}
+
+function filterLessons(lessons: (Lesson | LearningLesson)[], filters: {
+  search: string
+  source: string
+  service: string
+  action: string
+  outcome: string
+}) {
+  const q = filters.search.trim().toLowerCase()
+  return lessons.filter(lesson => {
+    const source = 'source' in lesson ? lesson.source || '' : ''
+    const serviceLabel = lesson.service_label || serviceLabelFor(lesson.service)
+    const action = lessonAction(lesson)
+    const outcome = lesson.last_outcome || ''
+    const haystack = [
+      source,
+      serviceLabel,
+      lesson.service,
+      lessonPattern(lesson),
+      lesson.plain_english,
+      lesson.action_plain_english,
+      action,
+      outcome,
+    ].join(' ').toLowerCase()
+    return (!q || haystack.includes(q))
+      && (filters.source === 'all' || source === filters.source)
+      && (filters.service === 'all' || serviceLabel === filters.service)
+      && (filters.action === 'all' || action === filters.action)
+      && (filters.outcome === 'all' || outcome === filters.outcome)
+  })
+}
+
+function lessonAction(lesson: Lesson | LearningLesson) {
+  return lesson.action || ('recommended_action' in lesson ? lesson.recommended_action || '' : '')
+}
+
+function lessonPattern(lesson: Lesson | LearningLesson) {
+  return lesson.pattern || ('pattern_summary' in lesson ? lesson.pattern_summary || '' : '')
+}
+
+function lessonSuccess(lesson: Lesson | LearningLesson) {
+  return Number(lesson.success ?? ('success_count' in lesson ? lesson.success_count : 0) ?? 0)
+}
+
+function lessonFail(lesson: Lesson | LearningLesson) {
+  return Number(lesson.fail ?? ('fail_count' in lesson ? lesson.fail_count : 0) ?? 0)
+}
+
+function lessonUpdatedAt(lesson: Lesson | LearningLesson) {
+  const value = lesson.last_used_at || ('updated_at' in lesson ? lesson.updated_at : undefined) || ('created_at' in lesson ? lesson.created_at : undefined)
+  if (!value) return '—'
+  const d = new Date(value)
+  return isNaN(d.getTime()) ? value : d.toLocaleString()
 }
 
 function serviceLabelFor(service?: string) {
@@ -327,7 +479,7 @@ function describeActionForUser(action?: string | null) {
 function describeLessonForUser(lesson: Lesson | LearningLesson, description?: string) {
   const service = lesson.service || 'netmon'
   const serviceLabel = serviceLabelFor(service)
-  const pattern = (description || lesson.pattern || '').trim()
+  const pattern = (description || lessonPattern(lesson) || '').trim()
   const lower = pattern.toLowerCase()
 
   if (service === 'device') {
