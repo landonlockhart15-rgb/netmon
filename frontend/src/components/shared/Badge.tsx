@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
 
-type Variant = 'ok' | 'warn' | 'error' | 'info' | 'muted' | 'purple'
+export type Variant = 'ok' | 'warn' | 'error' | 'info' | 'muted' | 'purple'
 
 const VARIANTS: Record<Variant, string> = {
   ok:     'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',

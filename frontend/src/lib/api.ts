@@ -171,6 +171,8 @@ export const clearDeviceChat = (id: number) =>
 export const getAlerts = () => apiFetch<Alert[]>('/api/alerts')
 export const readAlert = (id: number) => apiFetch<void>(`/api/alerts/${id}/read`, { method: 'POST' })
 export const readAllAlerts = () => apiFetch<void>('/api/alerts/read-all', { method: 'POST' })
+export const deleteAlert = (id: number) => apiFetch<void>(`/api/alerts/${id}`, { method: 'DELETE' })
+export const clearReadAlerts = () => apiFetch<{ deleted: number }>('/api/alerts/clear-read', { method: 'DELETE' })
 
 // ── Logs ─────────────────────────────────────────────────────────────────────
 

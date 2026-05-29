@@ -664,26 +664,9 @@ def run_speed_test_now(db: Session = Depends(get_db)):
     """
     from monitoring.health import run_speed_test
 
-    gateway = ""
-    try:
-        from network.autodetect import get_network_info
-        gateway = get_network_info().get("gateway") or ""
-    except Exception:
-        pass
-
-    router_host = _get_setting_str(db, "autoheal_router_host", "") or gateway or "192.168.1.1"
-    router_user = _get_setting_str(db, "autoheal_router_user", "admin")
-    router_pass = os.getenv("ROUTER_PASS") or _get_setting_str(db, "autoheal_router_pass", "")
-
-    router_cfg = {
-        "host": router_host,
-        "user": router_user,
-        "password": router_pass,
-    }
-
     url    = _get_setting_str(db, "speed_test_url",
                               "https://speed.cloudflare.com/__down?bytes=50000000")
-    result = run_speed_test(url=url, router_cfg=router_cfg)
+    result = run_speed_test(url=url)
 
     st = SpeedTest(
         download_mbps=result["download_mbps"],
@@ -2678,25 +2661,6 @@ def mark_all_alerts_read(db: Session = Depends(get_db)):
     db.query(Alert).filter(Alert.read == False).update({"read": True})
     db.commit()
     return {"status": "ok"}
-
-
-@router.delete("/api/alerts/clear-read")
-def clear_read_alerts(db: Session = Depends(get_db)):
-    """Delete every alert that has already been marked read — clears the backlog."""
-    deleted = db.query(Alert).filter(Alert.read == True).delete(synchronize_session=False)
-    db.commit()
-    return {"deleted": deleted}
-
-
-@router.delete("/api/alerts/{alert_id}")
-def delete_alert_route(alert_id: int, db: Session = Depends(get_db)):
-    """Permanently delete a single alert."""
-    alert = db.query(Alert).filter(Alert.id == alert_id).first()
-    if not alert:
-        raise HTTPException(status_code=404, detail="Alert not found")
-    db.delete(alert)
-    db.commit()
-    return {"id": alert_id, "deleted": True}
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -5508,11 +5472,11 @@ def start_aircrack(body: dict, db: Session = Depends(get_db)):
 @router.post("/api/security/metasploit/start")
 def start_metasploit(body: dict, db: Session = Depends(get_db)):
     target      = body.get("target")
-    # Default to a safe TCP port scan when no module is supplied so the run
-    # never fails just because the caller omitted module_name.
-    module_name = (body.get("module_name") or "").strip() or "auxiliary/scanner/portscan/tcp"
+    module_name = body.get("module_name")
     if not target:
         raise HTTPException(status_code=400, detail="target required")
+    if not module_name:
+        raise HTTPException(status_code=400, detail="module_name required")
     if not body.get("authorization_confirmed"):
         raise HTTPException(status_code=400, detail="authorization_confirmed required")
     require_local_target(target, authorization_confirmed=True)
