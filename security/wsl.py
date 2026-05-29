@@ -86,8 +86,15 @@ def _parse_wsl_distros(list_out: str) -> tuple[str | None, list[str]]:
 def check_wsl() -> dict:
     wsl = _wsl_exe()
 
-    # Primary check: list distros (works on all WSL2 versions)
-    code, list_out, err = _run([wsl, "--list", "--verbose"], timeout=15)
+    # The first WSL call after a boot/login is slow because LxssManager cold-starts,
+    # and the old 15s timeout could falsely report "WSL not available" even though a
+    # distro is installed and healthy. Warm it with a fast, registry-only quiet list
+    # first, then read verbose state with a generous timeout; if verbose still times
+    # out, fall back to the quiet list so a cold-but-healthy WSL still registers.
+    _run([wsl, "--list", "--quiet"], timeout=30)
+    code, list_out, err = _run([wsl, "--list", "--verbose"], timeout=30)
+    if code == -1:
+        code, list_out, err = _run([wsl, "--list", "--quiet"], timeout=30)
 
     if code == -1:
         # wsl.exe not found at all
