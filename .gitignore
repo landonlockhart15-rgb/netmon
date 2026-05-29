@@ -50,3 +50,4 @@ captures/
 *.min.css
 !static/lib/
 !static/lib/echarts.min.js
+*.bak
