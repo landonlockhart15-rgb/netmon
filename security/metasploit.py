@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -6,6 +7,13 @@ import threading
 from security.wsl import _wsl_exe
 from security.common import mark_run_started, append_output_chunk, mark_run_completed
 from security.ai_explain import explain_tool_output
+
+# Strip terminal color/escape sequences so stored + streamed output is readable.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s)
 
 
 def win_to_wsl(path: str) -> str:
@@ -24,7 +32,15 @@ def run_metasploit(*, run_id, target, module_name, options=None,
     db = SessionLocal()
     rc_path = None
     try:
-        options = options or {}
+        options = dict(options or {})
+        # The default TCP port scan otherwise crawls all 10,000 ports one at a
+        # time and looks "hung" after the first few open ports. Scan the common
+        # range with high concurrency so it finishes in seconds, unless the
+        # caller explicitly overrode these.
+        if module_name == "auxiliary/scanner/portscan/tcp":
+            options.setdefault("PORTS", "1-1024")
+            options.setdefault("CONCURRENCY", "100")
+            options.setdefault("TIMEOUT", "500")
         rc_lines = [f"use {module_name}", f"set RHOSTS {target}"]
         for k, v in options.items():
             rc_lines.append(f"set {k} {v}")
@@ -47,6 +63,7 @@ def run_metasploit(*, run_id, target, module_name, options=None,
         def _read(pipe, thread_db, store, stream):
             try:
                 for line in iter(pipe.readline, ""):
+                    line = _strip_ansi(line)
                     store.append(line)
                     append_output_chunk(thread_db, run_id, stream=stream, content=line)
             finally:
