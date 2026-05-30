@@ -811,6 +811,42 @@ def _is_provider_specific_error(err: str) -> bool:
     return any(kw in err for kw in _PROVIDER_SPECIFIC_KEYWORDS)
 
 
+# ── AI Router telemetry ───────────────────────────────────────────────────────
+# Report every NetMon model call to the AI Router (:4000) /router/log endpoint so
+# it shows up in the unified dashboard — per-model call counts, cost, and the
+# fallback ledger (requested -> failed -> served). Fire-and-forget in a daemon
+# thread with a short timeout: telemetry must never slow down or break analysis.
+
+def _log_to_router(model_requested: str, model_selected: str, fallback_chain: list,
+                   prompt_tokens, completion_tokens, latency_s: float,
+                   status: str = "success", error: str | None = None) -> None:
+    def _post():
+        try:
+            import urllib.request
+            url = os.getenv("AI_ROUTER_LOG_URL", "http://localhost:4000/router/log")
+            key = os.getenv("AI_ROUTER_KEY", "sk-1234")
+            payload = json.dumps({
+                "model_requested":  model_requested,
+                "model_selected":   model_selected,
+                "fallback_chain":   fallback_chain or [],
+                "prompt_tokens":    prompt_tokens or 0,
+                "completion_tokens": completion_tokens or 0,
+                "latency_s":        round(latency_s, 3),
+                "status":           status,
+                "error":            error,
+                "client":           "NetMon",
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                url, data=payload, method="POST",
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+            )
+            urllib.request.urlopen(req, timeout=3).read()
+        except Exception:
+            pass  # never let telemetry break analysis
+    import threading
+    threading.Thread(target=_post, daemon=True).start()
+
+
 # ── Chain provider ────────────────────────────────────────────────────────────
 
 class ChainProvider(BaseProvider):
@@ -830,12 +866,18 @@ class ChainProvider(BaseProvider):
         self.chain = providers
 
     def analyze(self, context: dict, prompt: str | None = None, kind: str = "combined", deep: bool = False) -> dict:
+        t0 = time.time()
+        chain_labels = [f"netmon/{p.name}/{getattr(p, '_model', '?')}" for p in self.chain]
+        requested = chain_labels[0] if chain_labels else "netmon/chain"
         last_err: str | None = None
         for p in self.chain:
             if _on_cooldown(p.name):
                 continue
             result = p.analyze(context, prompt, kind, deep)
             if result["error"] is None:
+                _log_to_router(requested, f"netmon/{result.get('model') or p.name}", chain_labels,
+                               result.get("input_tokens"), result.get("output_tokens"),
+                               time.time() - t0, "success")
                 return result
             last_err = result["error"]
             if _is_transient_error(last_err) or _is_provider_specific_error(last_err):
@@ -845,7 +887,12 @@ class ChainProvider(BaseProvider):
                 continue
             # Request-level failure (e.g. malformed prompt) — fails everywhere,
             # so surface it instead of burning the whole chain.
+            _log_to_router(requested, f"netmon/{result.get('model') or p.name}", chain_labels,
+                           result.get("input_tokens"), result.get("output_tokens"),
+                           time.time() - t0, "failed", last_err)
             return result
+        _log_to_router(requested, requested, chain_labels, 0, 0,
+                       time.time() - t0, "failed", f"all providers exhausted (last: {last_err})")
         return _fail("chain", f"all providers exhausted or on cooldown (last error: {last_err})")
 
 
@@ -944,6 +991,9 @@ def chain_chat(messages: list[dict], max_tokens: int = 1024) -> str:
             continue
         cloud_candidates.append((cls.name, key, base_url, default_model))
 
+    _t0 = time.time()
+    _chat_chain = [f"netmon/{n}/{m}" for (n, _k, _b, m) in cloud_candidates] + ["netmon/ollama"]
+    _requested = _chat_chain[0] if _chat_chain else "netmon/chat"
     for provider_name, api_key, base_url, model in cloud_candidates:
         if _on_cooldown(provider_name):
             continue
@@ -956,6 +1006,11 @@ def chain_chat(messages: list[dict], max_tokens: int = 1024) -> str:
                 temperature=0.3,
                 max_tokens=max_tokens,
             )
+            _u = getattr(resp, "usage", None)
+            _log_to_router(_requested, f"netmon/{provider_name}/{model}", _chat_chain,
+                           getattr(_u, "prompt_tokens", 0) if _u else 0,
+                           getattr(_u, "completion_tokens", 0) if _u else 0,
+                           time.time() - _t0, "success")
             return resp.choices[0].message.content.strip()
         except Exception as exc:
             err = str(exc)
@@ -981,10 +1036,16 @@ def chain_chat(messages: list[dict], max_tokens: int = 1024) -> str:
         )
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read())
-        return (data.get("message") or {}).get("content", "").strip()
+        _txt = (data.get("message") or {}).get("content", "").strip()
+        _log_to_router(_requested, f"netmon/ollama/{active_model}", _chat_chain,
+                       data.get("prompt_eval_count", 0), data.get("eval_count", 0),
+                       time.time() - _t0, "success")
+        return _txt
     except Exception:
         pass
 
+    _log_to_router(_requested, _requested, _chat_chain, 0, 0,
+                   time.time() - _t0, "failed", "all providers exhausted")
     return "AI unavailable — no providers reachable."
 
 
