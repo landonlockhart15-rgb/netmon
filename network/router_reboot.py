@@ -33,6 +33,8 @@ def _netgear_soap(
 ) -> dict:
     """Reboot a Netgear router via its SOAP API using pynetgear."""
     method = "netgear_soap"
+    if use_ssl and port is None:
+        port = 443
     if not password:
         return {"success": False, "method": method, "detail": "",
                 "error": "No router admin password configured (set it in Settings or the ROUTER_PASS env var)."}

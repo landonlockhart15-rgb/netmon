@@ -88,6 +88,8 @@ def get_config(db) -> dict:
             router_port = int(router_port_str)
         except ValueError:
             pass
+    elif router_ssl:
+        router_port = 443
 
     return {
         "enabled":        _get(db, "autoheal_enabled", "false") == "true",

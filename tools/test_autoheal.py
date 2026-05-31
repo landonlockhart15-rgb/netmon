@@ -92,7 +92,8 @@ def test_run_cycle_dryrun():
         overrides = {"autoheal_enabled": "true", "autoheal_dry_run": "true",
                      "autoheal_confirm_checks": "3", "autoheal_max_reboots_per_outage": "1",
                      "autoheal_recovery_window_s": "240", "autoheal_cooldown_min": "10",
-                     "autoheal_router_pass": ""}
+                     "autoheal_router_pass": "", "autoheal_router_ssl": "true",
+                     "autoheal_router_port": ""}
         for k, v in overrides.items():
             row = db.query(Setting).filter(Setting.key == k).first()
             saved[k] = row.value if row else None
@@ -101,6 +102,9 @@ def test_run_cycle_dryrun():
         db.commit()
 
         ah._reset_state()
+        cfg = ah.get_config(db)
+        check("SSL router mode defaults to port 443", cfg["router_ssl"] is True and cfg["router_port"] == 443)
+
         offline = lambda cfg: {"internet_up": False, "gateway_up": True,
                                "internet_latency_ms": None, "gateway_latency_ms": 2.0}
         online = lambda cfg: {"internet_up": True, "gateway_up": True,

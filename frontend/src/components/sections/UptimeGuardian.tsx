@@ -243,7 +243,7 @@ export default function UptimeGuardian() {
               <Field label={`Router password ${cfg.has_password ? '(set — leave blank to keep)' : '(not set)'}`}>
                 <Input type="password" value={pw} onChange={setPw} placeholder={cfg.has_password ? '••••••••' : 'enter admin password'} />
               </Field>
-              <Field label="Router port (default: auto)"><Input value={form.autoheal_router_port ?? ''} onChange={v => set('autoheal_router_port', v)} placeholder="e.g. 443 or 5000" mono /></Field>
+              <Field label="Router port (blank = 443 with SSL, otherwise auto)"><Input value={form.autoheal_router_port ?? ''} onChange={v => set('autoheal_router_port', v)} placeholder="e.g. 443 or 5000" mono /></Field>
               <Field label="Internet targets (comma-sep)"><Input value={form.autoheal_internet_targets ?? ''} onChange={v => set('autoheal_internet_targets', v)} mono /></Field>
               <Field label="Confirm checks before acting"><Input type="number" value={form.autoheal_confirm_checks ?? ''} onChange={v => set('autoheal_confirm_checks', v)} /></Field>
               <Field label="Check interval (seconds)"><Input type="number" value={form.autoheal_interval_s ?? ''} onChange={v => set('autoheal_interval_s', v)} /></Field>
