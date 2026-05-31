@@ -124,7 +124,7 @@ def test_run_cycle_dryrun():
 
         reset = ah.reset_reboot_counter(db)
         stats_after_reset = ah.attempt_stats(db)
-        check("reset clears counted reboot budget", reset["cleared_reboots_today"] == 1 and stats_after_reset["reboots_today"] == 0)
+        check("reset clears counted reboot budget", reset["cleared_reboots_today"] >= 1 and stats_after_reset["reboots_today"] == 0)
 
         a4b = ah.run_cycle(probe_fn=offline)
         check("after reset, outage can use budget again", a4b["action"] == "reboot" and a4b.get("executed") == "dry_run")

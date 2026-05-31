@@ -23,7 +23,14 @@ from __future__ import annotations
 from typing import Optional
 
 
-def _netgear_soap(host: str, user: str, password: str, timeout: int = 25) -> dict:
+def _netgear_soap(
+    host: str,
+    user: str,
+    password: str,
+    timeout: int = 25,
+    use_ssl: bool = False,
+    port: Optional[int] = None,
+) -> dict:
     """Reboot a Netgear router via its SOAP API using pynetgear."""
     method = "netgear_soap"
     if not password:
@@ -38,7 +45,7 @@ def _netgear_soap(host: str, user: str, password: str, timeout: int = 25) -> dic
     try:
         # pynetgear logs in lazily on the first call. host defaults to the
         # gateway; user defaults to 'admin' on Netgear consumer firmware.
-        ng = Netgear(password=password, host=host, user=user or "admin")
+        ng = Netgear(password=password, host=host, user=user or "admin", ssl=use_ssl, port=port)
         ok = ng.reboot()
         if ok:
             return {"success": True, "method": method,
@@ -64,6 +71,8 @@ def reboot_router(
     password: str,
     method: str = "netgear_soap",
     timeout: int = 25,
+    use_ssl: bool = False,
+    port: Optional[int] = None,
 ) -> dict:
     """
     Reboot the router using the named driver.
@@ -76,4 +85,4 @@ def reboot_router(
     if driver is None:
         return {"success": False, "method": method, "detail": "",
                 "error": f"Unknown reboot method '{method}'. Available: {', '.join(_DRIVERS)}"}
-    return driver(host, user, password, timeout=timeout)
+    return driver(host, user, password, timeout=timeout, use_ssl=use_ssl, port=port)

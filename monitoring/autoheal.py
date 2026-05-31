@@ -22,6 +22,7 @@ Design rules:
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -79,6 +80,14 @@ def get_config(db) -> dict:
 
     host = _get(db, "autoheal_router_host", "") or gateway or "192.168.1.1"
     password = os.getenv("ROUTER_PASS") or _get(db, "autoheal_router_pass", "")
+    router_ssl = _get(db, "autoheal_router_ssl", "false") == "true"
+    router_port_str = _get(db, "autoheal_router_port", "")
+    router_port = None
+    if router_port_str.strip():
+        try:
+            router_port = int(router_port_str)
+        except ValueError:
+            pass
 
     return {
         "enabled":        _get(db, "autoheal_enabled", "false") == "true",
@@ -89,6 +98,8 @@ def get_config(db) -> dict:
         "router_host":    host,
         "router_user":    _get(db, "autoheal_router_user", "admin"),
         "router_pass":    password,
+        "router_ssl":     router_ssl,
+        "router_port":    router_port,
         "has_password":   bool(password),
         "max_per_outage": _int("autoheal_max_reboots_per_outage", 1),
         "cooldown_s":     _int("autoheal_cooldown_min", 10) * 60,
@@ -350,7 +361,14 @@ def run_cycle(db=None, probe_fn=None) -> dict:
                 decision["executed"] = "dry_run"
             else:
                 from network.router_reboot import reboot_router
-                res = reboot_router(cfg["router_host"], cfg["router_user"], cfg["router_pass"], method=cfg["method"])
+                res = reboot_router(
+                    cfg["router_host"],
+                    cfg["router_user"],
+                    cfg["router_pass"],
+                    method=cfg["method"],
+                    use_ssl=cfg["router_ssl"],
+                    port=cfg["router_port"],
+                )
                 level = "action" if res["success"] else "warning"
                 summary = ("Rebooted the router to restore connectivity."
                            if res["success"] else f"Router reboot FAILED: {res['error']}")
@@ -403,7 +421,14 @@ def manual_reboot(db=None, force: bool = False) -> dict:
             return {"success": True, "dry_run": True,
                     "detail": "Dry-run mode — no real reboot sent. Use force to actually reboot."}
         from network.router_reboot import reboot_router
-        res = reboot_router(cfg["router_host"], cfg["router_user"], cfg["router_pass"], method=cfg["method"])
+        res = reboot_router(
+            cfg["router_host"],
+            cfg["router_user"],
+            cfg["router_pass"],
+            method=cfg["method"],
+            use_ssl=cfg["router_ssl"],
+            port=cfg["router_port"],
+        )
         level = "action" if res["success"] else "warning"
         summary = ("Manual router reboot sent." if res["success"]
                    else f"Manual router reboot FAILED: {res['error']}")
@@ -427,12 +452,21 @@ def reset_reboot_counter(db=None) -> dict:
         before = attempt_stats(db)
         _STATE["rebooted_this_outage"] = False
         _STATE["gave_up"] = False
-        _emit(EV_RESET, "action", "Uptime Guardian reboot counter reset by user.",
-              {"cleared_reboots_today": before["reboots_today"]}, notify=False)
+        reset_entry = ActivityLog(
+            level="action",
+            category="autoheal",
+            event=EV_RESET,
+            summary="Uptime Guardian reboot counter reset by user.",
+            detail=json.dumps({"cleared_reboots_today": before["reboots_today"]}),
+            actor="autoheal",
+        )
+        db.add(reset_entry)
+        db.commit()
+        reset_at = _aware(reset_entry.created_at) or datetime.now(timezone.utc)
         return {
             "status": "ok",
             "cleared_reboots_today": before["reboots_today"],
-            "counter_reset_at": datetime.now(timezone.utc).isoformat(),
+            "counter_reset_at": reset_at.isoformat(),
         }
     finally:
         if own:

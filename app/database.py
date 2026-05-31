@@ -271,6 +271,8 @@ def seed_default_settings():
         "autoheal_router_host":           "",          # blank → autodetected gateway
         "autoheal_router_user":           "admin",
         "autoheal_router_pass":           "",
+        "autoheal_router_ssl":            "false",
+        "autoheal_router_port":           "",
         "autoheal_internet_targets":      "8.8.8.8,1.1.1.1",
         "autoheal_max_reboots_per_outage": "1",
         "autoheal_cooldown_min":          "10",

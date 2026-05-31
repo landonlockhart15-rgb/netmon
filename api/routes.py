@@ -4775,6 +4775,7 @@ def _refresh_public_ip_bg():
 _AUTOHEAL_KEYS = {
     "autoheal_enabled", "autoheal_dry_run", "autoheal_interval_s", "autoheal_confirm_checks",
     "autoheal_reboot_method", "autoheal_router_host", "autoheal_router_user", "autoheal_router_pass",
+    "autoheal_router_ssl", "autoheal_router_port",
     "autoheal_internet_targets", "autoheal_max_reboots_per_outage", "autoheal_cooldown_min",
     "autoheal_max_reboots_per_day", "autoheal_recovery_window_s",
 }

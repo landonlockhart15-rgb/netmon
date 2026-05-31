@@ -15,6 +15,7 @@ interface Cfg {
   method: string; router_host: string; router_user: string; has_password: boolean
   max_per_outage: number; cooldown_s: number; max_per_day: number
   recovery_window_s: number; internet_targets: string[]
+  router_ssl?: boolean; router_port?: number | null
 }
 
 const ACTION_ACCENT: Record<string, Accent> = {
@@ -57,6 +58,8 @@ export default function UptimeGuardian() {
         autoheal_recovery_window_s: cfg.recovery_window_s,
         autoheal_internet_targets: (cfg.internet_targets || []).join(', '),
         autoheal_reboot_method: cfg.method,
+        autoheal_router_ssl: cfg.router_ssl ?? false,
+        autoheal_router_port: cfg.router_port ?? '',
       })
     }
   }, [cfg]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -225,6 +228,7 @@ export default function UptimeGuardian() {
             <div className="flex flex-wrap gap-6">
               <Toggle label="Enabled" hint="Master switch for the Uptime Guardian" checked={!!form.autoheal_enabled} onChange={v => set('autoheal_enabled', v)} />
               <Toggle label="Dry-run" hint="Detect & log only — never sends a real reboot" checked={!!form.autoheal_dry_run} onChange={v => set('autoheal_dry_run', v)} />
+              <Toggle label="Use HTTPS (SSL)" hint="Enforce SSL (required for Orbi/CBR)" checked={!!form.autoheal_router_ssl} onChange={v => set('autoheal_router_ssl', v)} />
             </div>
 
             {form.autoheal_enabled && !form.autoheal_dry_run && (
@@ -239,6 +243,7 @@ export default function UptimeGuardian() {
               <Field label={`Router password ${cfg.has_password ? '(set — leave blank to keep)' : '(not set)'}`}>
                 <Input type="password" value={pw} onChange={setPw} placeholder={cfg.has_password ? '••••••••' : 'enter admin password'} />
               </Field>
+              <Field label="Router port (default: auto)"><Input value={form.autoheal_router_port ?? ''} onChange={v => set('autoheal_router_port', v)} placeholder="e.g. 443 or 5000" mono /></Field>
               <Field label="Internet targets (comma-sep)"><Input value={form.autoheal_internet_targets ?? ''} onChange={v => set('autoheal_internet_targets', v)} mono /></Field>
               <Field label="Confirm checks before acting"><Input type="number" value={form.autoheal_confirm_checks ?? ''} onChange={v => set('autoheal_confirm_checks', v)} /></Field>
               <Field label="Check interval (seconds)"><Input type="number" value={form.autoheal_interval_s ?? ''} onChange={v => set('autoheal_interval_s', v)} /></Field>
