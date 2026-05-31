@@ -13,7 +13,7 @@ from typing import Optional
 
 _AI_HUB = os.environ.get(
     "AI_HUB_DIR",
-    r"C:\Users\lock_\OneDrive\Projects\AI-Hub",
+    r"C:\Projects\AI-Hub",
 )
 if _AI_HUB not in sys.path:
     sys.path.insert(0, _AI_HUB)
