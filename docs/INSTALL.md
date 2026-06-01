@@ -26,9 +26,22 @@ nmap --version
 NetMon can run without these, but some features depend on them:
 
 - Ollama for local AI explanations
+- **Npcap** for packet capture and deep traffic analysis (the scapy-based features)
 - Wireshark for `dumpcap` / `tshark` traffic summaries
 - ntfy for local push notifications
 - WSL + Kali tools for Security Lab workflows
+
+### Npcap (deep traffic analysis)
+
+Device discovery, health, and DNS blocking work **without** Npcap. But the
+Traffic Analysis / deep packet inspection features rely on
+[scapy](https://scapy.net/), which on Windows needs the **Npcap** capture driver
+to actually see packets — without it those features load but capture nothing.
+
+Install it from <https://npcap.com> (Wireshark's installer also bundles it). On
+the Npcap installer screen, leave **"Install Npcap in WinPcap API-compatible
+mode"** checked. Traffic Analysis is off by default; you only need Npcap if you
+turn it on.
 
 ## Quick install
 

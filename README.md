@@ -99,8 +99,9 @@ shortcut. `start.bat` requests administrator rights, which some features need
 (nmap discovery, firewall actions, DNS binding on port 53, packet capture).
 
 Requires Windows 10/11, Python 3.10+, and [nmap](https://nmap.org/download.html)
-on `PATH`. Full prerequisites, optional tools, AI setup, and troubleshooting are
-in the **[install guide](docs/INSTALL.md)**.
+on `PATH`. Optional: [Npcap](https://npcap.com) for deep traffic capture, Ollama
+for local AI. Full prerequisites, optional tools, AI setup, and troubleshooting
+are in the **[install guide](docs/INSTALL.md)**.
 
 ## Documentation
 
@@ -110,6 +111,7 @@ in the **[install guide](docs/INSTALL.md)**.
 - **[Security policy](SECURITY.md)** — authorized use, local-data handling, reporting
 - **[Roadmap](ROADMAP.md)** — what's planned next
 - **[Frontend development](frontend/README.md)** — working on the React dashboard
+- **[License](LICENSE)** — MIT
 
 ## Useful Commands
 
@@ -126,3 +128,9 @@ in the **[install guide](docs/INSTALL.md)**.
 # Register the optional auto-start scheduled task
 powershell -ExecutionPolicy Bypass -File .\install_task.ps1
 ```
+
+## License
+
+NetMon is released under the [MIT License](LICENSE) — free to use, modify, and
+build on. Use it only on networks and devices you own or are explicitly
+authorized to test.
