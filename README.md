@@ -138,6 +138,16 @@ are in the **[install guide](docs/INSTALL.md)**.
 powershell -ExecutionPolicy Bypass -File .\install_task.ps1
 ```
 
+## Credits
+
+Created and maintained by **Landon Lockhart**.
+
+Built with significant contributions from AI collaborators:
+
+- **Claude** (Anthropic)
+- **Codex** (OpenAI)
+- **Antigravity** (Google)
+
 ## License
 
 NetMon is released under the [MIT License](LICENSE) — free to use, modify, and
