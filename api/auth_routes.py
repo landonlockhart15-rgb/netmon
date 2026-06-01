@@ -27,6 +27,7 @@ import os
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, RedirectResponse
 
+from app.paths import static_dir
 from app.auth import (
     check_credentials,
     check_login_rate_limit,
@@ -43,7 +44,7 @@ router = APIRouter()
 @router.get("/login")
 def login_page():
     """Serve the self-contained login page."""
-    return FileResponse("static/login.html")
+    return FileResponse(os.path.join(static_dir(), "login.html"))
 
 
 @router.post("/auth/login")

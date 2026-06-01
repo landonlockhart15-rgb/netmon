@@ -43,7 +43,20 @@ the Npcap installer screen, leave **"Install Npcap in WinPcap API-compatible
 mode"** checked. Traffic Analysis is off by default; you only need Npcap if you
 turn it on.
 
-## Quick install
+## Option A — installer (no Python required)
+
+Download `NetMon-Setup-<version>.exe` from the
+[latest release](https://github.com/landonlockhart15-rgb/netmon/releases/latest)
+and run it. NetMon installs to Program Files and adds a Start Menu shortcut.
+User data (database, captures, logs, `.env`) is stored under
+`%LOCALAPPDATA%\NetMon`. On first launch it generates a dashboard login and
+displays it (also saved to `FIRST-RUN-LOGIN.txt` in that data folder).
+
+The installer is unsigned, so Windows SmartScreen may warn — choose
+**More info → Run anyway**. You'll still need **nmap** on `PATH` (below) for
+device discovery.
+
+## Option B — from source
 
 ```powershell
 git clone https://github.com/landonlockhart15-rgb/netmon.git

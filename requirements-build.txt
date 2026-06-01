@@ -1,0 +1,8 @@
+# Build-only dependencies (not needed to run NetMon from source).
+# Installs into the project's .venv; used by tools/build_installer.ps1.
+#
+#   .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+#
+# Inno Setup is a separate, non-pip tool: winget install JRSoftware.InnoSetup
+
+pyinstaller>=6.0

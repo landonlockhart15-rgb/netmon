@@ -38,6 +38,10 @@ load_dotenv()
 
 import models.tables  # noqa: F401 — registers all ORM models with Base
 
+from app.paths import static_dir
+
+STATIC_DIR = static_dir()
+
 
 # ── Auth Middleware ────────────────────────────────────────────────────────────
 
@@ -220,7 +224,7 @@ app = FastAPI(
 
 app.add_middleware(AuthMiddleware)
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(auth_router)
 app.include_router(router)
 
@@ -228,7 +232,7 @@ app.include_router(router)
 @app.get("/")
 def serve_dashboard():
     return FileResponse(
-        "static/index.html",
+        os.path.join(STATIC_DIR, "index.html"),
         headers={"Cache-Control": "no-store, must-revalidate"},
     )
 
@@ -241,11 +245,11 @@ def spa_fallback(full_path: str):
     if full_path.startswith("api/") or full_path.startswith("auth/") or full_path == "login":
         from fastapi import HTTPException
         raise HTTPException(status_code=404)
-    static_file = os.path.join("static", full_path)
+    static_file = os.path.join(STATIC_DIR, full_path)
     if os.path.isfile(static_file):
         return FileResponse(static_file)
     return FileResponse(
-        "static/index.html",
+        os.path.join(STATIC_DIR, "index.html"),
         headers={"Cache-Control": "no-store, must-revalidate"},
     )
 

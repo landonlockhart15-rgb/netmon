@@ -19,22 +19,29 @@ import webbrowser
 import shutil
 from pathlib import Path
 
-# Must run from the project directory so uvicorn finds app.main
-BASE_DIR = Path(__file__).resolve().parent
-os.chdir(BASE_DIR)
+import netmon_runtime as _rt
 
-# Redirect Scapy's cache to our data dir before any import touches it.
-# Prevents [WinError 5] when the default ~/.cache/scapy is owned by a
-# different user account (e.g. after a prior admin run).
-_scapy_cache = BASE_DIR / "data" / "scapy_cache"
-_scapy_cache.mkdir(parents=True, exist_ok=True)
-os.environ["SCAPY_CACHE_DIR"] = str(_scapy_cache)
+# Bundled assets (static/, config/) live under resource_root; writable runtime
+# data (DB, .env, captures, logs) lives under data_home.
+BASE_DIR = _rt.resource_root()
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
+if not _rt.is_frozen():
+    # Source run (start.bat / `python launch.py`): behave exactly as before —
+    # run from the repo dir, point Scapy's cache at ./data, and load the local
+    # .env. When frozen, netmon_app.bootstrap_env() has already done all of this
+    # (and pointed paths at %LOCALAPPDATA%\NetMon), so we must not override it.
+    os.chdir(BASE_DIR)
+    # Redirect Scapy's cache to our data dir before any import touches it.
+    # Prevents [WinError 5] when the default ~/.cache/scapy is owned by a
+    # different user account (e.g. after a prior admin run).
+    _scapy_cache = BASE_DIR / "data" / "scapy_cache"
+    _scapy_cache.mkdir(parents=True, exist_ok=True)
+    os.environ["SCAPY_CACHE_DIR"] = str(_scapy_cache)
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -208,8 +215,11 @@ def _start_uvicorn() -> None:
             port = int(os.getenv("APP_PORT", "8000"))
         except ValueError:
             port = 8000
+        # Pass the app object (not the "app.main:app" import string) so the
+        # frozen build doesn't depend on uvicorn re-importing by name.
+        from app.main import app as fastapi_app
         uvicorn.run(
-            "app.main:app",
+            fastapi_app,
             host       = host,
             port       = port,
             reload     = False,
@@ -276,39 +286,6 @@ def _kill_duplicates():
     except Exception:
         pass
 
-def _is_tray_running() -> bool:
-    try:
-        import psutil
-        for p in psutil.process_iter(["name", "cmdline"]):
-            try:
-                cmdline = p.info["cmdline"] or []
-                if "python" in p.info["name"].lower() and any("ai_hub_tray.py" in str(arg).lower() for arg in cmdline):
-                    return True
-            except Exception:
-                continue
-    except Exception:
-        pass
-    return False
-
-def _tray_watchdog() -> None:
-    """Restart ai_hub_tray.py if it exits unexpectedly. Runs in a daemon thread."""
-    import time
-    import subprocess
-    while _ntfy_alive:
-        time.sleep(15)
-        if not _ntfy_alive:
-            break
-        if not _is_tray_running():
-            try:
-                cmd = [r"C:\Program Files\Python312\pythonw.exe", r"C:\Users\lock_\ai_hub_tray.py"]
-                subprocess.Popen(
-                    cmd,
-                    cwd=r"C:\Users\lock_",
-                    creationflags=CREATE_NO_WINDOW,
-                )
-            except Exception:
-                pass
-
 def _acquire_instance_lock():
     global _lock_socket
     import socket
@@ -326,7 +303,7 @@ def _acquire_instance_lock():
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
-def main():
+def run_tray():
     _acquire_instance_lock()
     try:
         import pystray
@@ -343,7 +320,6 @@ def main():
     # Start ntfy first (fast)
     _start_ntfy()
     threading.Thread(target=_ntfy_watchdog, daemon=True, name="ntfy-watchdog").start()
-    threading.Thread(target=_tray_watchdog, daemon=True, name="tray-watchdog").start()
 
     # Start the FastAPI/uvicorn server
     threading.Thread(target=_start_uvicorn, daemon=True, name="uvicorn").start()
@@ -375,7 +351,7 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        run_tray()
     except Exception as exc:
         _alert(f"Unexpected error:\n\n{exc}")
         sys.exit(1)

@@ -25,6 +25,11 @@ build/
 venv/
 env/
 
+# PyInstaller / Inno Setup build outputs
+dist_test/
+build_test/
+installer/Output/
+
 # Logs
 *.log
 logs/

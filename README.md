@@ -84,7 +84,15 @@ outage and per day, with cooldown and recovery windows to avoid reboot loops.
 </tr>
 </table>
 
-## Quick Start
+## Install
+
+**Easiest — download the installer:** grab `NetMon-Setup-<version>.exe` from the
+[latest release](https://github.com/landonlockhart15-rgb/netmon/releases/latest),
+run it, and launch NetMon from the Start Menu. No Python or git required. On first
+run it generates a dashboard login and shows it to you. (Windows SmartScreen may
+warn on the unsigned installer — choose **More info → Run anyway**.)
+
+## Quick Start (from source)
 
 ```powershell
 git clone https://github.com/landonlockhart15-rgb/netmon.git
@@ -111,6 +119,7 @@ are in the **[install guide](docs/INSTALL.md)**.
 - **[Security policy](SECURITY.md)** — authorized use, local-data handling, reporting
 - **[Roadmap](ROADMAP.md)** — what's planned next
 - **[Frontend development](frontend/README.md)** — working on the React dashboard
+- **[Contributing](CONTRIBUTING.md)** — dev setup, project layout, building the installer
 - **[License](LICENSE)** — MIT
 
 ## Useful Commands
