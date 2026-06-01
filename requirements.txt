@@ -6,6 +6,7 @@ python-multipart==0.0.20
 psutil==7.2.2
 bcrypt==5.0.0
 anthropic>=0.40.0   # optional — only needed if AI_PROVIDER=anthropic
+openai>=1.0.0         # optional — only needed if using Groq/Cerebras/SambaNova/OpenRouter/Gemini
 scapy>=2.5.0        # ARP MitM for full network visibility on switched networks
 pystray>=0.19.0     # Windows system tray icon
 pillow>=10.0.0      # Required by pystray for icon rendering

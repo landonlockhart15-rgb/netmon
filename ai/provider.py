@@ -522,7 +522,7 @@ class GroqProvider(BaseProvider):
 #     model = f"{provider}/{model_name}" so the UI can label the real source.
 
 class CerebrasProvider(BaseProvider):
-    """Cerebras free tier — 1M tokens/day, very fast. Default: llama-3.1-8b."""
+    """Cerebras free tier — 1M tokens/day, very fast. Default: gpt-oss-120b."""
     name = "cerebras"
 
     def __init__(self):
@@ -531,7 +531,7 @@ class CerebrasProvider(BaseProvider):
         if not api_key:
             raise ValueError("CEREBRAS_API_KEY not set")
         self._client = OpenAI(api_key=api_key, base_url="https://api.cerebras.ai/v1")
-        self._model  = os.getenv("CEREBRAS_MODEL", "llama-3.1-8b")
+        self._model  = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
 
     def analyze(self, context: dict, prompt: str | None = None, kind: str = "combined", deep: bool = False) -> dict:
         from ai.prompt import build_prompt
@@ -982,7 +982,7 @@ def chain_chat(messages: list[dict], max_tokens: int = 1024) -> str:
     for cls, key_var, base_url, default_model in [
         (GroqProvider,       "GROQ_API_KEY",       "https://api.groq.com/openai/v1",       "llama-3.3-70b-versatile"),
         (SambaNovaProvider,  "SAMBANOVA_API_KEY",  "https://api.sambanova.ai/v1",           "Meta-Llama-3.3-70B-Instruct"),
-        (CerebrasProvider,   "CEREBRAS_API_KEY",   "https://api.cerebras.ai/v1",            "llama-3.1-8b"),
+        (CerebrasProvider,   "CEREBRAS_API_KEY",   "https://api.cerebras.ai/v1",            "gpt-oss-120b"),
         (OpenRouterProvider, "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1",          "openrouter/auto"),
         (GeminiProvider,     "GEMINI_API_KEY",     "https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-2.5-flash"),
     ]:
