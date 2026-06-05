@@ -203,6 +203,7 @@ def seed_default_settings():
     from models.tables import Setting
 
     defaults = {
+        "netmon_enabled":          "true",
         "health_check_interval_s": "300",
         "health_target":           "8.8.8.8",
         "latency_warn_ms":         "100",

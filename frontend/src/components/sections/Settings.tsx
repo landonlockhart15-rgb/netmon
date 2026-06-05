@@ -31,6 +31,14 @@ export default function Settings() {
         subtitle="Tune scanning, health checks, AI, notifications, and anomaly detection. Changes save instantly."
       />
 
+      {/* Service controls */}
+      <CfgCard title="Service Controls" icon="⏻">
+        <Toggle label="NetMon enabled" settingKey="netmon_enabled" settings={settings} onSave={saveMutation.mutate} />
+        <p className="mt-2 text-xs text-gray-500">
+          Turn this off before planned lock-screen, travel, or internet-offline windows. The dashboard stays reachable, but scans, health checks, auto-heal, and anomaly reactions pause.
+        </p>
+      </CfgCard>
+
       {/* Scanning */}
       <CfgCard title="Scanning" icon="◉">
         <Toggle label="Auto-scan enabled" settingKey="auto_scan_enabled" settings={settings} onSave={saveMutation.mutate} />

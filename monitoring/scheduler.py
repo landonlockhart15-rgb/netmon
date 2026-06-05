@@ -29,6 +29,7 @@ RETENTION
 import asyncio
 import json
 import os
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
@@ -44,6 +45,10 @@ _executor = ThreadPoolExecutor(max_workers=15, thread_name_prefix="netmon")
 MAX_ROWS    = 2000   # prune when we exceed this
 KEEP_ROWS   = 1000   # keep this many after pruning
 STARTUP_DELAY_S = 8  # wait for server to fully start before first check
+AI_HUB_MAINTENANCE_FILE = Path(os.environ.get(
+    "AI_HUB_MAINTENANCE_FILE",
+    r"C:\Users\lock_\AppData\Local\AI-Hub\service_maintenance.json",
+))
 
 
 def _get_str(db, key: str, default: str) -> str:
@@ -65,6 +70,19 @@ def _get_int(db, key: str, default: int) -> int:
         return default
 
 
+def _netmon_enabled(db) -> bool:
+    if _get_str(db, "netmon_enabled", "true").lower() != "true":
+        return False
+    try:
+        data = json.loads(AI_HUB_MAINTENANCE_FILE.read_text(encoding="utf-8"))
+        entry = (data.get("services") or {}).get("netmon") or {}
+        if entry.get("disabled"):
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def _run_and_save() -> None:
     """
     Synchronous: run one health check and persist the result.
@@ -75,6 +93,8 @@ def _run_and_save() -> None:
 
     db = SessionLocal()
     try:
+        if not _netmon_enabled(db):
+            return
         # Read thresholds from settings
         target         = _get_str  (db, "health_target",        "8.8.8.8")
         _auto_gw       = None
@@ -623,6 +643,7 @@ async def auto_scan_loop() -> None:
     try:
         from models.tables import Scan
         from sqlalchemy import desc as _desc
+        netmon_on  = _netmon_enabled(db)
         enabled    = _get_str(db, "auto_scan_enabled", "true").lower()
         interval_h = _get_float(db, "auto_scan_interval_h", 1.0)
         last_scan  = (
@@ -634,7 +655,7 @@ async def auto_scan_loop() -> None:
     finally:
         db.close()
 
-    if enabled == "true":
+    if netmon_on and enabled == "true":
         age_h = None
         if last_scan and last_scan.ended_at:
             ended = last_scan.ended_at
@@ -654,6 +675,7 @@ async def auto_scan_loop() -> None:
     while True:
         db = SessionLocal()
         try:
+            netmon_on  = _netmon_enabled(db)
             enabled    = _get_str(db, "auto_scan_enabled",    "true").lower()
             interval_h = _get_float(db, "auto_scan_interval_h", 1.0)  # 1 hour default
         finally:
@@ -678,7 +700,7 @@ async def auto_scan_loop() -> None:
                 scan_requested = True
                 break
 
-        if enabled != "true":
+        if not netmon_on or enabled != "true":
             continue
 
         try:
@@ -713,6 +735,7 @@ async def health_check_loop() -> None:
         db = SessionLocal()
         try:
             interval_s = _get_int(db, "health_check_interval_s", 300)
+            netmon_on = _netmon_enabled(db)
         finally:
             db.close()
 
@@ -721,6 +744,9 @@ async def health_check_loop() -> None:
         except asyncio.CancelledError:
             print("[health] Scheduler cancelled — shutting down.")
             break
+
+        if not netmon_on:
+            continue
 
         try:
             await loop.run_in_executor(_executor, _run_and_save)
@@ -737,6 +763,12 @@ async def health_check_loop() -> None:
 
 def _run_autoheal_cycle() -> None:
     """Synchronous wrapper — runs one auto-heal cycle in a worker thread."""
+    db = SessionLocal()
+    try:
+        if not _netmon_enabled(db):
+            return
+    finally:
+        db.close()
     from monitoring.autoheal import run_cycle
     run_cycle()
 
@@ -776,6 +808,12 @@ async def autoheal_loop() -> None:
 
 def _run_anomaly_checks() -> None:
     """Synchronous wrapper — runs in ThreadPoolExecutor."""
+    db = SessionLocal()
+    try:
+        if not _netmon_enabled(db):
+            return
+    finally:
+        db.close()
     from monitoring.anomaly import run_anomaly_checks
     run_anomaly_checks()
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { ShieldCheck, ExternalLink, RefreshCw } from 'lucide-react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { Power, ShieldCheck, ExternalLink, RefreshCw } from 'lucide-react'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import EmptyState from '@/components/shared/EmptyState'
@@ -47,6 +47,30 @@ export default function Sentinel() {
     refetchInterval: 5000,
     retry: false,
     enabled: !!token,
+  })
+
+  const sentinelDisabled = data?.heartbeat?.status === 'disabled' || data?.state?.disabled === true
+
+  const sentinelPowerMutation = useMutation({
+    mutationFn: () => cpFetch(
+      sentinelDisabled ? '/maintenance/sentinel/enable' : '/maintenance/sentinel/disable',
+      {
+        method: 'POST',
+        body: sentinelDisabled ? undefined : JSON.stringify({ reason: 'disabled from NetMon Sentinel tab' }),
+      }
+    ),
+    onSuccess: () => setTimeout(() => refetch(), 1200),
+  })
+
+  const bulkPowerMutation = useMutation({
+    mutationFn: (action: 'pause' | 'resume') => cpFetch(
+      action === 'pause' ? '/maintenance/pause-all' : '/maintenance/resume-all',
+      {
+        method: 'POST',
+        body: action === 'pause' ? JSON.stringify({ reason: 'bulk action from NetMon Sentinel tab' }) : undefined,
+      }
+    ),
+    onSuccess: () => setTimeout(() => refetch(), 1800),
   })
 
   const saveToken = () => {
@@ -171,6 +195,37 @@ export default function Sentinel() {
               <Btn variant="ghost" size="sm" onClick={() => refetch()} className="gap-1">
                 <RefreshCw size={12} className={isFetching ? 'animate-spin' : ''} /> Refresh
               </Btn>
+            </div>
+          )}
+          {token && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <Btn
+                variant="primary"
+                size="sm"
+                loading={bulkPowerMutation.isPending}
+                onClick={() => bulkPowerMutation.mutate('resume')}
+              >
+                <Power size={13} /> Resume All
+              </Btn>
+              <Btn
+                variant="secondary"
+                size="sm"
+                loading={bulkPowerMutation.isPending}
+                onClick={() => bulkPowerMutation.mutate('pause')}
+              >
+                <Power size={13} /> Pause All
+              </Btn>
+              <Btn
+                variant={sentinelDisabled ? 'primary' : 'danger'}
+                size="sm"
+                loading={sentinelPowerMutation.isPending}
+                onClick={() => sentinelPowerMutation.mutate()}
+              >
+                <Power size={13} /> {sentinelDisabled ? 'Enable Sentinel' : 'Disable Sentinel'}
+              </Btn>
+              <span className="text-xs text-gray-500">
+                {sentinelDisabled ? 'Sentinel is intentionally paused.' : 'Pause Sentinel before planned downtime or internet disconnects.'}
+              </span>
             </div>
           )}
           {(error || !token) && (
