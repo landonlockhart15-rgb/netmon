@@ -138,6 +138,28 @@ are in the **[install guide](docs/INSTALL.md)**.
 powershell -ExecutionPolicy Bypass -File .\install_task.ps1
 ```
 
+## Verification
+
+Run these from the project root before relying on a change:
+
+```powershell
+# 1. Compile — catch syntax/import errors across the Python packages
+.\.venv\Scripts\python.exe -m compileall ai api app monitoring network scanner traffic
+
+# 2. Unit tests — focused pure-logic tests (stdlib unittest, no extra deps)
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+
+# 3. Smoke — boot and serve the API without the tray/instance lock,
+#    then check it responds (Ctrl+C to stop)
+$env:NETMON_SELFTEST = "1"; .\.venv\Scripts\python.exe netmon_app.py
+#   in another shell: curl http://127.0.0.1:8000
+```
+
+`tests/` holds focused unit tests for side-effect-free logic (e.g. the AI
+provider's JSON extraction and fallback error classification in
+`ai/provider.py`). They need no API keys or network. Add a test alongside any
+new pure helper.
+
 ## Credits
 
 Created and maintained by **Landon Lockhart**.
