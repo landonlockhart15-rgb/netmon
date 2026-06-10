@@ -1,0 +1,13 @@
+{
+  "checks": [
+    {"name": "core-imports", "type": "cmd",
+     "cmd": ["${PYTHON}", "-c", "import netmon_app, netmon_runtime"],
+     "timeout": 120},
+    {"name": "compiles", "type": "cmd",
+     "cmd": ["${PYTHON}", "-m", "compileall", "-q", "."],
+     "timeout": 180}
+  ],
+  "live": [
+    {"name": "web-ui", "url": "http://127.0.0.1:8000/", "expect_status": 200}
+  ]
+}
