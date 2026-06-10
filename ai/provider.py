@@ -113,7 +113,7 @@ class BaseProvider:
     """
     name: str = "base"
 
-    def analyze(self, context: dict) -> dict:
+    def analyze(self, context: dict, prompt: str | None = None, kind: str = "combined", deep: bool = False) -> dict:
         raise NotImplementedError
 
 
@@ -130,7 +130,7 @@ class NullProvider(BaseProvider):
     def __init__(self, reason: str = "AI not configured"):
         self.reason = reason
 
-    def analyze(self, context: dict) -> dict:
+    def analyze(self, context: dict, prompt: str | None = None, kind: str = "combined", deep: bool = False) -> dict:
         return {
             "summary":      None,
             "severity":     None,
