@@ -71,12 +71,19 @@ def run_ping(
         }
     """
     try:
+        # Belt-and-suspenders window suppression: CREATE_NO_WINDOW alone can still
+        # let a console flash on some Windows builds when the parent is windowless
+        # (pythonw). A hidden STARTUPINFO (SW_HIDE) guarantees no visible terminal.
+        _si = subprocess.STARTUPINFO()
+        _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        _si.wShowWindow = 0  # SW_HIDE
         result = subprocess.run(
             ["ping", "-n", str(count), target],
             capture_output=True,
             text=True,
             timeout=30,
             creationflags=subprocess.CREATE_NO_WINDOW,
+            startupinfo=_si,
         )
         output = result.stdout
 

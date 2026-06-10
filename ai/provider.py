@@ -339,7 +339,7 @@ class OllamaProvider(BaseProvider):
         # before flushing — so streaming arrives in big bursts and the UI
         # appears frozen. We instead instruct the model to emit JSON via the
         # prompt rules and parse defensively in _extract_json.
-        payload = json.dumps({
+        payload_obj = {
             "model":    active_model,
             "messages": [{"role": "user", "content": prompt}],
             "stream":   True,
@@ -347,7 +347,14 @@ class OllamaProvider(BaseProvider):
                 "temperature": 0.1,
                 "num_predict": 2048,
             },
-        }).encode("utf-8")
+        }
+        # Thinking models (Gemma 4, Qwen3) emit a `<|channel>thought ... <channel|>`
+        # block that would corrupt our JSON parsing of raw_text. think=False tells
+        # Ollama to suppress it. Gated to thinking models so the non-thinking default
+        # (qwen2.5:3b) is left untouched.
+        if any(tok in active_model.lower() for tok in ("gemma4", "qwen3", "thinking")):
+            payload_obj["think"] = False
+        payload = json.dumps(payload_obj).encode("utf-8")
 
         try:
             req = urllib.request.Request(

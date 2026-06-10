@@ -1994,9 +1994,20 @@ def _run_deep_scan_ai_analysis() -> None:
             "Be concise. DNS-blocked rows alone are NOT suspicious — ignore them unless corroborated."
         )
 
-        from ai.provider import get_provider
-        provider = get_provider()
-        ai_result = provider.analyze({}, prompt=prompt, kind="deep_scan")
+        from ai.provider import get_provider, OllamaProvider
+        # The deep scan is a scheduled, token-gated security assessment — a perfect
+        # job for the local "smart but slow" model (Gemma 4 12B via AI_DEEP_MODEL).
+        # Use the Ollama provider DIRECTLY (deep=True) so we actually land on the
+        # local reasoner instead of the cloud-first chain. If the local model is
+        # unavailable (e.g. the external drive is unplugged), fall back to the
+        # normal provider chain so the deep scan still runs.
+        try:
+            ai_result = OllamaProvider().analyze({}, prompt=prompt, kind="deep_scan", deep=True)
+            if ai_result.get("error"):
+                raise RuntimeError(ai_result["error"])
+        except Exception as _deep_e:
+            print(f"[deep-scan-ai] local deep model unavailable ({_deep_e}); using provider chain")
+            ai_result = get_provider().analyze({}, prompt=prompt, kind="deep_scan")
         if ai_result.get("error"):
             print(f"[deep-scan-ai] AI error: {ai_result['error']}")
             return
