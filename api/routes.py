@@ -2699,6 +2699,57 @@ def delete_alert_route(alert_id: int, db: Session = Depends(get_db)):
     return {"id": alert_id, "deleted": True}
 
 
+@router.post("/api/alerts/{alert_id}/explain")
+def explain_alert(alert_id: int, db: Session = Depends(get_db)):
+    """Generate an AI-powered explanation for a specific alert."""
+    from models.tables import Alert, Device
+    from ai.provider import get_investigation_provider
+
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    provider = get_investigation_provider()
+    if provider.name == "none":
+        raise HTTPException(status_code=400, detail="AI is not configured.")
+
+    device_info = ""
+    if alert.device_id:
+        device = db.query(Device).filter(Device.id == alert.device_id).first()
+        if device:
+            device_info = (
+                f"Device details:\n"
+                f"- IP: {device.ip}\n"
+                f"- Hostname: {device.hostname or 'unknown'}\n"
+                f"- Vendor: {device.vendor or 'unknown'}\n"
+                f"- Label: {device.label or 'None'}\n"
+                f"- Trusted: {device.trusted}\n"
+            )
+
+    prompt = (
+        f"You are NetMon AI. Explain the following network alert in clear, friendly, and non-technical terms "
+        f"for a home network owner. Explain why it might have happened, whether they should be worried, "
+        f"and what simple steps they should take to resolve or verify it.\n\n"
+        f"Alert Type: {alert.alert_type}\n"
+        f"Alert Message: {alert.message}\n"
+        f"Alert Date: {alert.created_at.isoformat()}\n"
+        f"{device_info}\n"
+        f"Please provide a concise explanation (1-2 paragraphs) in Markdown format."
+    )
+
+    result = provider.analyze({}, prompt=prompt, kind="alert_explain")
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail=f"AI error: {result['error']}")
+
+    explanation = result.get("raw_response") or result.get("summary") or ""
+    if not explanation.strip():
+        raise HTTPException(status_code=500, detail="AI returned an empty explanation.")
+
+    return {"explanation": explanation.strip()}
+
+
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # ACTIVITY LOG
 # ═════════════════════════════════════════════════════════════════════════════

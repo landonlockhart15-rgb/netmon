@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCheck, Bell, BellRing, Inbox, Search, Trash2, MonitorSmartphone, Eraser } from 'lucide-react'
-import { getAlerts, readAlert, readAllAlerts, deleteAlert, clearReadAlerts } from '@/lib/api'
+import { CheckCheck, Bell, BellRing, Inbox, Search, Trash2, MonitorSmartphone, Eraser, BrainCircuit, Loader2 } from 'lucide-react'
+import { getAlerts, readAlert, readAllAlerts, deleteAlert, clearReadAlerts, explainAlert } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
@@ -10,6 +10,7 @@ import EmptyState from '@/components/shared/EmptyState'
 import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
 import DeviceModal from '@/components/shared/DeviceModal'
+import Markdown from '@/components/shared/Markdown'
 
 // API shape: { unread_count: number, alerts: RawAlert[] }
 interface RawAlert {
@@ -204,6 +205,27 @@ function Chip({ label, count, active, onClick, accent }: {
 function AlertRow({ alert: a, onRead, onDelete, onView }: {
   alert: RawAlert; onRead: () => void; onDelete: () => void; onView?: () => void
 }) {
+  const [explanation, setExplanation] = useState<string | null>(null)
+  const [explaining, setExplaining] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleExplain = async () => {
+    if (explanation) {
+      setExplanation(null)
+      return
+    }
+    setExplaining(true)
+    setError(null)
+    try {
+      const res = await explainAlert(a.id)
+      setExplanation(res.explanation)
+    } catch (e: any) {
+      setError(e.message || 'Failed to generate explanation')
+    } finally {
+      setExplaining(false)
+    }
+  }
+
   return (
     <div className={cn(
       'rounded-lg border p-3 transition-all',
@@ -222,6 +244,19 @@ function AlertRow({ alert: a, onRead, onDelete, onView }: {
           </div>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            onClick={handleExplain}
+            title="Explain with AI"
+            disabled={explaining}
+            className={cn(
+              'p-1.5 rounded transition-colors',
+              explanation
+                ? 'text-purple-400 bg-purple-500/10 hover:text-purple-300'
+                : 'text-gray-500 hover:text-purple-400 hover:bg-white/5'
+            )}
+          >
+            {explaining ? <Loader2 size={14} className="animate-spin" /> : <BrainCircuit size={14} />}
+          </button>
           {onView && (
             <button onClick={onView} title="View device"
               className="p-1.5 rounded text-gray-500 hover:text-cyan-400 hover:bg-white/5 transition-colors">
@@ -240,6 +275,27 @@ function AlertRow({ alert: a, onRead, onDelete, onView }: {
           </button>
         </div>
       </div>
+
+      {(explaining || explanation || error) && (
+        <div className="mt-3 pt-3 border-t border-white/5 text-xs space-y-2">
+          {explaining && (
+            <div className="flex items-center gap-2 text-purple-400 animate-pulse font-medium py-1">
+              <BrainCircuit size={12} className="animate-pulse" />
+              <span>AI is generating explanation…</span>
+            </div>
+          )}
+          {error && (
+            <div className="text-red-400 font-medium py-1">
+              Error: {error}
+            </div>
+          )}
+          {explanation && (
+            <div className="prose prose-invert max-w-none font-normal leading-relaxed text-gray-300 bg-purple-950/10 rounded-lg p-3 border border-purple-500/10 shadow-inner">
+              <Markdown text={explanation} />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

@@ -175,6 +175,8 @@ export const readAlert = (id: number) => apiFetch<void>(`/api/alerts/${id}/read`
 export const readAllAlerts = () => apiFetch<void>('/api/alerts/read-all', { method: 'POST' })
 export const deleteAlert = (id: number) => apiFetch<void>(`/api/alerts/${id}`, { method: 'DELETE' })
 export const clearReadAlerts = () => apiFetch<{ deleted: number }>('/api/alerts/clear-read', { method: 'DELETE' })
+export const explainAlert = (id: number) =>
+  apiFetch<{ explanation: string }>(`/api/alerts/${id}/explain`, { method: 'POST' })
 
 // ── Logs ─────────────────────────────────────────────────────────────────────
 
