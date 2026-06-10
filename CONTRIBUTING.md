@@ -80,6 +80,45 @@ How freezing works (worth knowing before you touch paths):
 - `NETMON_SELFTEST=1` runs a serve-only path (no tray, no instance lock) — handy
   for smoke-testing a build without disturbing a running instance.
 
+## Validation and Testing
+
+To verify changes before committing, run the standardized validation runner:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\validate.ps1
+```
+
+This script automates:
+1. Environment detection (resolving virtual environment `.venv` or system Python installs).
+2. Test database creation, schema migrations, and default settings seeding.
+3. Running unit tests (`python -m unittest discover -s tests -v`).
+4. Running Uptime Guardian (Autoheal) dry-runs (`python tools/test_autoheal.py`).
+
+### Optional WSL Integration Tests
+
+If you have WSL and Kali Linux installed, you can also run the full Security Lab integration tests:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\validate.ps1 -IncludeSecurity
+```
+
+### Manual Individual Runs
+
+If you prefer to run specific validation tasks manually:
+
+- **Unit tests only**:
+  ```powershell
+  python -m unittest discover -s tests -v
+  ```
+- **Autoheal guardian tests only**:
+  ```powershell
+  python tools/test_autoheal.py
+  ```
+- **Security integration tests only** (requires WSL/Kali):
+  ```powershell
+  python security_test.py
+  ```
+
 ## Coding conventions
 
 - Match the surrounding style; keep changes focused and self-contained.
