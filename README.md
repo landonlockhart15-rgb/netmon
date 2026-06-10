@@ -146,19 +146,25 @@ Run these from the project root before relying on a change:
 # 1. Compile — catch syntax/import errors across the Python packages
 .\.venv\Scripts\python.exe -m compileall ai api app monitoring network scanner traffic
 
-# 2. Unit tests — focused pure-logic tests (stdlib unittest, no extra deps)
+# 2. Run the entire unit test suite
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 
-# 3. Smoke — boot and serve the API without the tray/instance lock,
+# 3. Run individual focused test files:
+.\.venv\Scripts\python.exe -m unittest tests/test_provider.py -v          # AI provider
+.\.venv\Scripts\python.exe -m unittest tests/test_dns_blocker.py -v       # DNS ad-blocker
+.\.venv\Scripts\python.exe -m unittest tests/test_scanner_diff.py -v      # Scanner diffing
+.\.venv\Scripts\python.exe -m unittest tests/test_traffic_analyzer.py -v  # Traffic analysis
+
+# 4. Run Security Lab wrappers/tools integration tests (requires WSL/Kali setup)
+.\.venv\Scripts\python.exe security_test.py
+
+# 5. Smoke — boot and serve the API without the tray/instance lock,
 #    then check it responds (Ctrl+C to stop)
 $env:NETMON_SELFTEST = "1"; .\.venv\Scripts\python.exe netmon_app.py
 #   in another shell: curl http://127.0.0.1:8000
 ```
 
-`tests/` holds focused unit tests for side-effect-free logic (e.g. the AI
-provider's JSON extraction and fallback error classification in
-`ai/provider.py`). They need no API keys or network. Add a test alongside any
-new pure helper.
+`tests/` holds focused unit tests for side-effect-free logic (e.g., the AI provider's JSON extraction, DNS blocklist parsing, scanner diffing, and traffic packet/protocol parsing). They need no API keys, WSL setup, or network access. Add a test alongside any new helper.
 
 ## Credits
 
