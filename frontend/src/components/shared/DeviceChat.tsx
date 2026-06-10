@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Send, Wand2, Check, X, Edit2, Undo2, Trash2, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
+import { Send, Wand2, Check, X, Edit2, Undo2, Trash2, ChevronDown, ChevronUp, Loader2, BrainCircuit } from 'lucide-react'
 import {
   getDeviceChat, postDeviceChat, postDeviceChatProposal, undoDeviceChat,
-  clearDeviceChat,
+  clearDeviceChat, explainDeviceChatTurn,
   type DeviceChatTurn, type DeviceChatProposal, type DeviceChatToolReq,
 } from '@/lib/api'
 
@@ -115,6 +115,30 @@ export default function DeviceChat({ deviceId, onDeviceUpdated }: Props) {
     },
   })
 
+  const explainMutation = useMutation({
+    mutationFn: (turnId: number) => explainDeviceChatTurn(deviceId, turnId),
+    onSuccess: (res, turnId) => {
+      qc.setQueryData(['device-chat', deviceId], (old: any) => {
+        if (!old) return old
+        return {
+          ...old,
+          history: old.history.map((t: any) => {
+            if (t.id === turnId) {
+              return {
+                ...t,
+                meta: {
+                  ...(t.meta ?? {}),
+                  explanation: res.explanation,
+                },
+              }
+            }
+            return t
+          }),
+        }
+      })
+    },
+  })
+
   const submit = () => {
     const text = input.trim()
     if (!text || chatMutation.isPending) return
@@ -133,7 +157,14 @@ export default function DeviceChat({ deviceId, onDeviceUpdated }: Props) {
             or "what is this thing?" — the AI can run scans to figure it out.
           </p>
         )}
-        {history.map(turn => <ChatTurn key={turn.id} turn={turn} />)}
+        {history.map(turn => (
+          <ChatTurn
+            key={turn.id}
+            turn={turn}
+            onExplain={() => explainMutation.mutate(turn.id)}
+            isExplaining={explainMutation.isPending && explainMutation.variables === turn.id}
+          />
+        ))}
         {chatMutation.isPending && (
           <div className="flex items-center gap-2 text-xs text-purple-400">
             <Loader2 size={12} className="animate-spin" />
@@ -275,7 +306,12 @@ export default function DeviceChat({ deviceId, onDeviceUpdated }: Props) {
   )
 }
 
-function ChatTurn({ turn }: { turn: DeviceChatTurn }) {
+function ChatTurn({ turn, onExplain, isExplaining }: {
+  turn: DeviceChatTurn
+  onExplain: () => void
+  isExplaining: boolean
+}) {
+  const explanation = turn.meta?.explanation
   if (turn.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -288,22 +324,71 @@ function ChatTurn({ turn }: { turn: DeviceChatTurn }) {
   if (turn.role === 'tool') {
     const toolName = turn.meta?.tool ?? 'tool'
     return (
-      <details className="rounded-lg border border-blue-500/20 bg-blue-500/5 text-[11px]">
-        <summary className="cursor-pointer px-3 py-1.5 text-blue-300 font-mono">
-          ⚙ {toolName} result
-        </summary>
-        <pre className="px-3 pb-2 pt-1 whitespace-pre-wrap text-gray-300 max-h-64 overflow-y-auto">{turn.content}</pre>
-      </details>
+      <div className="space-y-1.5 w-full">
+        <details className="rounded-lg border border-blue-500/20 bg-blue-500/5 text-[11px] w-full">
+          <summary className="cursor-pointer px-3 py-1.5 text-blue-300 font-mono flex items-center justify-between">
+            <span>⚙ {toolName} result</span>
+            {!explanation && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  onExplain()
+                }}
+                disabled={isExplaining}
+                className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1 bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20 disabled:opacity-50"
+              >
+                {isExplaining ? <Loader2 size={9} className="animate-spin" /> : <BrainCircuit size={9} />}
+                Explain
+              </button>
+            )}
+          </summary>
+          <pre className="px-3 pb-2 pt-1 whitespace-pre-wrap text-gray-300 max-h-64 overflow-y-auto">{turn.content}</pre>
+        </details>
+        {explanation && (
+          <div className="rounded-lg border border-purple-500/30 bg-gradient-to-br from-purple-500/5 to-indigo-500/5 p-3 text-xs space-y-2">
+            <div className="flex items-center gap-1.5 text-purple-300 font-semibold">
+              <BrainCircuit size={13} className="text-purple-400" />
+              <span>AI Explanation</span>
+            </div>
+            <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">{explanation}</p>
+          </div>
+        )}
+      </div>
     )
   }
   if (turn.role === 'system') {
     return <p className="text-[10px] text-gray-500 italic">— {turn.content} —</p>
   }
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[90%] rounded-lg bg-white/5 text-gray-200 px-3 py-1.5 text-xs whitespace-pre-wrap">
+    <div className="flex flex-col items-start gap-1 max-w-[90%] w-full">
+      <div className="rounded-lg bg-white/5 text-gray-200 px-3 py-1.5 text-xs whitespace-pre-wrap relative group w-full">
         {turn.content || <span className="text-gray-600 italic">(no reply)</span>}
+        
+        {turn.content && !explanation && turn.role === 'assistant' && (
+          <div className="mt-1 flex justify-end">
+            <button
+              type="button"
+              onClick={onExplain}
+              disabled={isExplaining}
+              className="text-[9px] text-purple-400 hover:text-purple-300 flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity bg-purple-500/10 px-1 py-0.5 rounded border border-purple-500/20 disabled:opacity-50"
+            >
+              {isExplaining ? <Loader2 size={8} className="animate-spin" /> : <BrainCircuit size={8} />}
+              Explain
+            </button>
+          </div>
+        )}
       </div>
+      {explanation && (
+        <div className="rounded-lg border border-purple-500/30 bg-gradient-to-br from-purple-500/5 to-indigo-500/5 p-3 text-[11px] space-y-1 w-full mt-1">
+          <div className="flex items-center gap-1 text-purple-300 font-semibold">
+            <BrainCircuit size={12} className="text-purple-400" />
+            <span>AI Explanation</span>
+          </div>
+          <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">{explanation}</p>
+        </div>
+      )}
     </div>
   )
 }

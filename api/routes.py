@@ -6091,3 +6091,44 @@ def device_chat_clear(device_id: int, db: Session = Depends(get_db)):
     db.query(DeviceChat).filter(DeviceChat.device_id == device_id).delete()
     db.commit()
     return {"cleared": True}
+
+
+@router.post("/api/device/{device_id}/chat/{turn_id}/explain")
+def device_chat_explain(device_id: int, turn_id: int, db: Session = Depends(get_db)):
+    """Generate an AI-powered explanation for a specific chat turn."""
+    from models.tables import DeviceChat
+    from ai.provider import get_investigation_provider
+    from ai.investigation_chat import build_explanation_prompt
+
+    device = _device_or_404(db, device_id)
+    turn = (db.query(DeviceChat)
+              .filter(DeviceChat.device_id == device_id, DeviceChat.id == turn_id)
+              .first())
+    if not turn:
+        raise HTTPException(status_code=404, detail=f"chat turn {turn_id} not found")
+
+    provider = get_investigation_provider()
+    if provider.name == "none":
+        raise HTTPException(status_code=400, detail="AI is not configured.")
+
+    meta = {}
+    if turn.meta_json:
+        try:
+            meta = json.loads(turn.meta_json)
+        except Exception:
+            pass
+
+    prompt = build_explanation_prompt(device, turn.role, turn.content, meta)
+    result = provider.analyze({}, prompt=prompt, kind="device_chat_explain")
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail=f"AI error: {result['error']}")
+
+    explanation = result.get("raw_response") or result.get("summary") or ""
+    if not explanation.strip():
+        raise HTTPException(status_code=500, detail="AI returned an empty explanation.")
+
+    meta["explanation"] = explanation.strip()
+    turn.meta_json = json.dumps(meta)
+    db.commit()
+
+    return {"explanation": meta["explanation"]}

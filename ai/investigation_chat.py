@@ -905,3 +905,53 @@ def parse_chat_response(raw: str) -> dict:
         }
     except Exception:
         return {"reply": raw, "tool_request": None, "proposal": None, "notes": []}
+
+
+def build_explanation_prompt(device, turn_role: str, turn_content: str, meta: dict | None = None) -> str:
+    """Compose a prompt for the AI to explain a specific chat turn (like a tool output or assistant reply)."""
+    device_info = (
+        f"Device ID: {device.id}\n"
+        f"Name/Label: {device.label or 'Unknown'}\n"
+        f"IP Address: {device.ip_addr or 'Unknown'}\n"
+        f"MAC Address: {device.mac_addr or 'Unknown'}\n"
+        f"OS: {device.os_guess or 'Unknown'}"
+    )
+
+    if turn_role == "tool":
+        tool_name = (meta or {}).get("tool", "Unknown Tool")
+        args = (meta or {}).get("args", {})
+        return (
+            f"You are NetMon's network assistant. A user has run the tool '{tool_name}' (with args: {args}) "
+            f"on the following network device:\n"
+            f"{device_info}\n\n"
+            f"The raw tool output is:\n"
+            f"---START TOOL OUTPUT---\n"
+            f"{turn_content}\n"
+            f"---END TOOL OUTPUT---\n\n"
+            f"Explain in clear, friendly, and non-technical language:\n"
+            f"1. What this tool does and what these results mean for this device.\n"
+            f"2. Any interesting findings, warnings, or anomalies discovered in the output.\n"
+            f"3. Practical next steps or recommendations for the user.\n"
+            f"Keep your explanation concise, direct, and structured. Avoid heavy technical jargon."
+        )
+    elif turn_role == "assistant":
+        return (
+            f"You are NetMon's network assistant. A user is asking for a clear, plain-English explanation of your "
+            f"message in the context of device investigation:\n"
+            f"Message:\n"
+            f"{turn_content}\n\n"
+            f"Context: The message is about this network device:\n"
+            f"{device_info}\n\n"
+            f"Explain this message clearly, concisely, and in simple terms, highlighting why it is important for the "
+            f"user to know, and what actions they can take."
+        )
+    else:
+        return (
+            f"You are NetMon's network assistant. A user is asking for a clear, plain-English explanation of this "
+            f"chat message (role: {turn_role}):\n"
+            f"Message:\n"
+            f"{turn_content}\n\n"
+            f"Context: The message is about this network device:\n"
+            f"{device_info}\n\n"
+            f"Explain this message clearly and concisely."
+        )

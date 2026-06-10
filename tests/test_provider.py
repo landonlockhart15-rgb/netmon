@@ -82,5 +82,32 @@ class NullProviderShape(unittest.TestCase):
             self.assertIn(key, result)
 
 
+class MockDevice:
+    def __init__(self, id, label, ip_addr, mac_addr, os_guess):
+        self.id = id
+        self.label = label
+        self.ip_addr = ip_addr
+        self.mac_addr = mac_addr
+        self.os_guess = os_guess
+
+
+class ExplanationPrompt(unittest.TestCase):
+    def test_build_explanation_prompt_tool(self):
+        from ai.investigation_chat import build_explanation_prompt
+        device = MockDevice(1, "My Phone", "192.168.1.10", "aa:bb:cc:dd:ee:ff", "iOS")
+        prompt = build_explanation_prompt(device, "tool", "some tool logs", {"tool": "oui_lookup", "args": {}})
+        self.assertIn("oui_lookup", prompt)
+        self.assertIn("some tool logs", prompt)
+        self.assertIn("My Phone", prompt)
+        self.assertIn("aa:bb:cc:dd:ee:ff", prompt)
+
+    def test_build_explanation_prompt_assistant(self):
+        from ai.investigation_chat import build_explanation_prompt
+        device = MockDevice(1, "My Phone", "192.168.1.10", "aa:bb:cc:dd:ee:ff", "iOS")
+        prompt = build_explanation_prompt(device, "assistant", "assistant message")
+        self.assertIn("assistant message", prompt)
+        self.assertIn("My Phone", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -165,6 +165,8 @@ export const undoDeviceChat = (id: number) =>
   apiFetch<{ undone: boolean; device?: any; reason?: string }>(`/api/device/${id}/chat/undo`, { method: 'POST' })
 export const clearDeviceChat = (id: number) =>
   apiFetch<{ cleared: boolean }>(`/api/device/${id}/chat`, { method: 'DELETE' })
+export const explainDeviceChatTurn = (deviceId: number, turnId: number) =>
+  apiFetch<{ explanation: string }>(`/api/device/${deviceId}/chat/${turnId}/explain`, { method: 'POST' })
 
 // ── Alerts ───────────────────────────────────────────────────────────────────
 
