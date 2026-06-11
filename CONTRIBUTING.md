@@ -90,22 +90,34 @@ powershell -ExecutionPolicy Bypass -File .\validate.ps1
 
 This script automates:
 1. Environment detection (resolving virtual environment `.venv` or system Python installs).
-2. Test database creation, schema migrations, and default settings seeding.
-3. Running unit tests (`python -m unittest discover -s tests -v`).
-4. Running Uptime Guardian (Autoheal) dry-runs (`python tools/test_autoheal.py`).
+2. Python compilation checks (`compileall`) to catch syntax/import errors.
+3. Test database creation, schema migrations, and default settings seeding.
+4. Running unit tests (`python -m unittest discover -s tests -v`).
+5. Running Uptime Guardian (Autoheal) dry-runs (`python tools/test_autoheal.py`).
 
-### Optional WSL Integration Tests
+### Script Command Options
 
-If you have WSL and Kali Linux installed, you can also run the full Security Lab integration tests:
+You can pass the following parameters to `validate.ps1` to customize its execution:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\validate.ps1 -IncludeSecurity
-```
+- `-CompileOnly`
+  Only run compilation checks on python source files (very fast; useful for quick checks).
+- `-SkipCompile`
+  Skip the compilation checks and jump straight to DB initialization and tests.
+- `-TestFile <path>`
+  Run a specific unit test file (e.g. `tests/test_anomaly.py`) instead of discovering all tests.
+- `-ListTests`
+  Show a list of all available test files under the `tests` directory along with usage help.
+- `-IncludeSecurity`
+  Include WSL/Kali Linux security lab integration tests (requires WSL and Kali installed locally).
 
 ### Manual Individual Runs
 
 If you prefer to run specific validation tasks manually:
 
+- **Compilation check only**:
+  ```powershell
+  python -m compileall ai api app monitoring network scanner traffic
+  ```
 - **Unit tests only**:
   ```powershell
   python -m unittest discover -s tests -v
