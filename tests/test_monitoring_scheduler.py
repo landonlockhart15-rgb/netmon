@@ -14,12 +14,15 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.tables import Base, Setting
+from datetime import datetime, timezone, timedelta
+from models.tables import Base, Setting, ActivityLog, HealthCheck
 from monitoring.scheduler import (
     _get_str,
     _get_float,
     _get_int,
     _netmon_enabled,
+    _run_log_cleanup,
+    _run_and_save,
 )
 
 
@@ -125,6 +128,129 @@ class TestSchedulerHelpers(unittest.TestCase):
             }
         })
         self.assertTrue(_netmon_enabled(self.session))
+
+
+class TestSchedulerRuns(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.session = self.Session()
+
+    def tearDown(self):
+        self.session.close()
+        self.engine.dispose()
+
+    def test_run_log_cleanup(self):
+        now = datetime.now(timezone.utc)
+        
+        # 1. DNS entry older than 7 days (should be deleted)
+        dns_old = ActivityLog(
+            category="dns",
+            event="query",
+            summary="dns query",
+            created_at=now - timedelta(days=8)
+        )
+        # 2. DNS entry newer than 7 days (should be kept)
+        dns_new = ActivityLog(
+            category="dns",
+            event="query",
+            summary="dns query",
+            created_at=now - timedelta(days=6)
+        )
+        # 3. General entry older than 30 days (should be deleted)
+        gen_old = ActivityLog(
+            category="traffic",
+            event="spike",
+            summary="traffic spike",
+            created_at=now - timedelta(days=31)
+        )
+        # 4. General entry newer than 30 days (should be kept)
+        gen_new = ActivityLog(
+            category="traffic",
+            event="spike",
+            summary="traffic spike",
+            created_at=now - timedelta(days=29)
+        )
+        
+        self.session.add_all([dns_old, dns_new, gen_old, gen_new])
+        self.session.commit()
+
+        dns_old_id = dns_old.id
+        dns_new_id = dns_new.id
+        gen_old_id = gen_old.id
+        gen_new_id = gen_new.id
+        
+        with patch("monitoring.scheduler.SessionLocal", self.Session):
+            _run_log_cleanup()
+            
+        remaining = self.session.query(ActivityLog).all()
+        remaining_ids = {r.id for r in remaining}
+        
+        self.assertNotIn(dns_old_id, remaining_ids)
+        self.assertIn(dns_new_id, remaining_ids)
+        self.assertNotIn(gen_old_id, remaining_ids)
+        self.assertIn(gen_new_id, remaining_ids)
+        self.assertEqual(len(remaining), 2)
+
+    def test_run_and_save_basic(self):
+        with patch("monitoring.health.run_ping") as mock_ping, \
+             patch("network.autodetect.get_network_info") as mock_get_info, \
+             patch("monitoring.scheduler.SessionLocal", self.Session), \
+             patch("monitoring.scheduler.AI_HUB_MAINTENANCE_FILE") as mock_maint:
+            
+            mock_ping.return_value = {
+                "status": "online",
+                "latency_ms": 12.0,
+                "packet_loss": 0.0,
+                "target": "8.8.8.8",
+                "error": None
+            }
+            mock_get_info.return_value = {"gateway": "192.168.1.1"}
+            mock_maint.read_text.side_effect = Exception("Not found")
+            
+            _run_and_save()
+
+        hcs = self.session.query(HealthCheck).all()
+        self.assertEqual(len(hcs), 1)
+        self.assertEqual(hcs[0].status, "online")
+        self.assertEqual(hcs[0].latency_ms, 12.0)
+        self.assertEqual(hcs[0].local_target, "192.168.1.1")
+
+    def test_run_and_save_pruning(self):
+        # Insert 6 old health checks
+        for i in range(6):
+            self.session.add(HealthCheck(
+                status="online",
+                latency_ms=10.0,
+                local_latency_ms=5.0,
+                packet_loss=0.0,
+                target="8.8.8.8",
+                local_target="192.168.1.1"
+            ))
+        self.session.commit()
+
+        with patch("monitoring.health.run_ping") as mock_ping, \
+             patch("network.autodetect.get_network_info") as mock_get_info, \
+             patch("monitoring.scheduler.SessionLocal", self.Session), \
+             patch("monitoring.scheduler.AI_HUB_MAINTENANCE_FILE") as mock_maint, \
+             patch("monitoring.scheduler.MAX_ROWS", 5), \
+             patch("monitoring.scheduler.KEEP_ROWS", 3):
+            
+            mock_ping.return_value = {
+                "status": "online",
+                "latency_ms": 12.0,
+                "packet_loss": 0.0,
+                "target": "8.8.8.8",
+                "error": None
+            }
+            mock_get_info.return_value = {"gateway": "192.168.1.1"}
+            mock_maint.read_text.side_effect = Exception("Not found")
+            
+            _run_and_save()
+
+        hcs = self.session.query(HealthCheck).order_by(HealthCheck.id.asc()).all()
+        self.assertEqual(len(hcs), 3)
 
 
 if __name__ == "__main__":
