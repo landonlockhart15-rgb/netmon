@@ -45,6 +45,26 @@ class TestAnomalyCooldown(unittest.TestCase):
         anomaly._COOLDOWNS[key] = datetime.now(timezone.utc) - timedelta(minutes=31)
         self.assertTrue(anomaly._is_cooled_down(key, "traffic_spike"))
 
+    def test_cooldown_not_expired_under_limit(self):
+        key = "test_alert:192.168.1.5"
+        anomaly._stamp(key)
+        # Move the stamped time 29 minutes into the past (traffic_spike is 30 mins)
+        anomaly._COOLDOWNS[key] = datetime.now(timezone.utc) - timedelta(minutes=29)
+        self.assertFalse(anomaly._is_cooled_down(key, "traffic_spike"))
+
+    def test_cooldown_custom_limits(self):
+        key = "test_alert:192.168.1.5"
+        anomaly._stamp(key)
+        
+        # 16 minutes in the past:
+        # - port_scan (15 mins limit) -> should be expired (True)
+        # - traffic_spike (30 mins limit) -> should NOT be expired (False)
+        # - health_outage (10 mins limit) -> should be expired (True)
+        anomaly._COOLDOWNS[key] = datetime.now(timezone.utc) - timedelta(minutes=16)
+        self.assertTrue(anomaly._is_cooled_down(key, "port_scan"))
+        self.assertFalse(anomaly._is_cooled_down(key, "traffic_spike"))
+        self.assertTrue(anomaly._is_cooled_down(key, "health_outage"))
+
 
 class TestNightTimeCheck(unittest.TestCase):
     @patch("monitoring.anomaly.datetime")
