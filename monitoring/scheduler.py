@@ -83,6 +83,92 @@ def _netmon_enabled(db) -> bool:
     return True
 
 
+def _get_int_async_wrapper(key: str, default: int) -> int:
+    db = SessionLocal()
+    try:
+        return _get_int(db, key, default)
+    finally:
+        db.close()
+
+
+def _get_float_async_wrapper(key: str, default: float) -> float:
+    db = SessionLocal()
+    try:
+        return _get_float(db, key, default)
+    finally:
+        db.close()
+
+
+def _get_str_async_wrapper(key: str, default: str) -> str:
+    db = SessionLocal()
+    try:
+        return _get_str(db, key, default)
+    finally:
+        db.close()
+
+
+def _netmon_enabled_async_wrapper() -> bool:
+    db = SessionLocal()
+    try:
+        return _netmon_enabled(db)
+    finally:
+        db.close()
+
+
+def _get_health_check_settings() -> tuple[int, bool]:
+    db = SessionLocal()
+    try:
+        interval_s = _get_int(db, "health_check_interval_s", 300)
+        netmon_on = _netmon_enabled(db)
+        return interval_s, netmon_on
+    finally:
+        db.close()
+
+
+def _should_run_startup_scan() -> tuple[bool, float | None, float]:
+    db = SessionLocal()
+    try:
+        from models.tables import Scan
+        from sqlalchemy import desc as _desc
+        netmon_on  = _netmon_enabled(db)
+        enabled    = _get_str(db, "auto_scan_enabled", "true").lower()
+        interval_h = _get_float(db, "auto_scan_interval_h", 1.0)
+        
+        if not netmon_on or enabled != "true":
+            return False, None, interval_h
+            
+        last_scan  = (
+            db.query(Scan)
+            .filter(Scan.status == "complete")
+            .order_by(_desc(Scan.ended_at))
+            .first()
+        )
+        
+        age_h = None
+        if last_scan and last_scan.ended_at:
+            ended = last_scan.ended_at
+            if ended.tzinfo is None:
+                ended = ended.replace(tzinfo=timezone.utc)
+            age_h = (datetime.now(timezone.utc) - ended).total_seconds() / 3600
+
+        should_run = (age_h is None or age_h >= interval_h)
+        return should_run, age_h, interval_h
+    finally:
+        db.close()
+
+
+def _get_auto_scan_settings() -> tuple[bool, str, float]:
+    db = SessionLocal()
+    try:
+        netmon_on  = _netmon_enabled(db)
+        enabled    = _get_str(db, "auto_scan_enabled",    "true").lower()
+        interval_h = _get_float(db, "auto_scan_interval_h", 1.0)
+        return netmon_on, enabled, interval_h
+    finally:
+        db.close()
+
+
+
 def _run_and_save() -> None:
     """
     Synchronous: run one health check and persist the result.
@@ -371,11 +457,10 @@ async def traffic_analysis_loop() -> None:
     await asyncio.sleep(5)   # short startup delay
 
     while True:
-        db = SessionLocal()
         try:
-            interval_s = _get_int(db, "traffic_summary_interval_s", 20)
-        finally:
-            db.close()
+            interval_s = await loop.run_in_executor(_executor, _get_int_async_wrapper, "traffic_summary_interval_s", 20)
+        except Exception:
+            interval_s = 20
 
         # Clamp to sensible range: 10s min, 300s max
         interval_s = max(10, min(interval_s, 300))
@@ -639,47 +724,25 @@ async def auto_scan_loop() -> None:
     await asyncio.sleep(30)
 
     # Only run a startup scan if no recent scan exists within the configured interval
-    db = SessionLocal()
     try:
-        from models.tables import Scan
-        from sqlalchemy import desc as _desc
-        netmon_on  = _netmon_enabled(db)
-        enabled    = _get_str(db, "auto_scan_enabled", "true").lower()
-        interval_h = _get_float(db, "auto_scan_interval_h", 1.0)
-        last_scan  = (
-            db.query(Scan)
-            .filter(Scan.status == "complete")
-            .order_by(_desc(Scan.ended_at))
-            .first()
-        )
-    finally:
-        db.close()
-
-    if netmon_on and enabled == "true":
-        age_h = None
-        if last_scan and last_scan.ended_at:
-            ended = last_scan.ended_at
-            if ended.tzinfo is None:
-                ended = ended.replace(tzinfo=timezone.utc)
-            age_h = (datetime.now(timezone.utc) - ended).total_seconds() / 3600
-
-        if age_h is None or age_h >= interval_h:
+        should_run, age_h, interval_h = await loop.run_in_executor(_executor, _should_run_startup_scan)
+        if should_run:
             print(f"[auto-scan] startup scan (last was {f'{age_h:.1f}h ago' if age_h is not None else 'never'})")
             try:
                 await loop.run_in_executor(_executor, _run_auto_scan)
             except Exception as exc:
                 print(f"[auto-scan] initial scan error: {exc}")
         else:
-            print(f"[auto-scan] skipping startup scan — last ran {age_h:.1f}h ago (interval={interval_h}h)")
+            if age_h is not None:
+                print(f"[auto-scan] skipping startup scan — last ran {age_h:.1f}h ago (interval={interval_h}h)")
+    except Exception as exc:
+        print(f"[auto-scan] startup scan check error: {exc}")
 
     while True:
-        db = SessionLocal()
         try:
-            netmon_on  = _netmon_enabled(db)
-            enabled    = _get_str(db, "auto_scan_enabled",    "true").lower()
-            interval_h = _get_float(db, "auto_scan_interval_h", 1.0)  # 1 hour default
-        finally:
-            db.close()
+            netmon_on, enabled, interval_h = await loop.run_in_executor(_executor, _get_auto_scan_settings)
+        except Exception:
+            netmon_on, enabled, interval_h = True, "true", 1.0
 
         interval_s = max(300, interval_h * 3600)   # floor at 5 minutes
 
@@ -732,12 +795,10 @@ async def health_check_loop() -> None:
 
     while True:
         # Re-read interval each cycle so settings changes take effect
-        db = SessionLocal()
         try:
-            interval_s = _get_int(db, "health_check_interval_s", 300)
-            netmon_on = _netmon_enabled(db)
-        finally:
-            db.close()
+            interval_s, netmon_on = await loop.run_in_executor(_executor, _get_health_check_settings)
+        except Exception:
+            interval_s, netmon_on = 300, True
 
         try:
             await asyncio.sleep(interval_s)
@@ -783,11 +844,10 @@ async def autoheal_loop() -> None:
     await asyncio.sleep(STARTUP_DELAY_S + 4)   # settle after health loop's first run
 
     while True:
-        db = SessionLocal()
         try:
-            interval_s = _get_int(db, "autoheal_interval_s", 30)
-        finally:
-            db.close()
+            interval_s = await loop.run_in_executor(_executor, _get_int_async_wrapper, "autoheal_interval_s", 30)
+        except Exception:
+            interval_s = 30
 
         try:
             await asyncio.sleep(interval_s)
