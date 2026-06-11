@@ -214,6 +214,8 @@ class TestPortScans(unittest.TestCase):
     def test_vertical_scan(self):
         with patch("monitoring.anomaly._is_this_machine", return_value=False), \
              patch("monitoring.anomaly.explain_protected_target", return_value=None), \
+             patch("network.protection.explain_protected_target", return_value=None), \
+             patch("network.protection.protected_ips", return_value=set()), \
              patch("traffic.interfaces.find_tool", return_value="tshark"), \
              patch("traffic.analyzer.get_readable_files", return_value=["dummy.pcapng"]), \
              patch("subprocess.run") as mock_run:
@@ -237,6 +239,8 @@ class TestPortScans(unittest.TestCase):
     def test_horizontal_scan(self):
         with patch("monitoring.anomaly._is_this_machine", return_value=False), \
              patch("monitoring.anomaly.explain_protected_target", return_value=None), \
+             patch("network.protection.explain_protected_target", return_value=None), \
+             patch("network.protection.protected_ips", return_value=set()), \
              patch("traffic.interfaces.find_tool", return_value="tshark"), \
              patch("traffic.analyzer.get_readable_files", return_value=["dummy.pcapng"]), \
              patch("subprocess.run") as mock_run:

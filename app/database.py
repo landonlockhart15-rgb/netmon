@@ -12,6 +12,15 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/netmon.db")
 
+# Automatically create the parent directory of the SQLite database if it doesn't exist
+if DATABASE_URL.startswith("sqlite:///"):
+    db_path = DATABASE_URL[9:]
+    if "?" in db_path:
+        db_path = db_path.split("?")[0]
+    db_dir = os.path.dirname(db_path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False},
