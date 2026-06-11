@@ -1,0 +1,266 @@
+"""
+Focused unit tests for monitoring/anomaly.py behavioral anomaly detection checks.
+
+Run from the project root:
+    python -m unittest tests/test_anomaly.py -v
+"""
+import os
+import sys
+import json
+import unittest
+import warnings
+from datetime import datetime, timezone, timedelta
+from unittest.mock import patch, MagicMock
+
+warnings.simplefilter("ignore", category=ResourceWarning)
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from models.tables import Base, TrafficSummary, HealthCheck, Setting, Device, ActivityLog
+import monitoring.anomaly as anomaly
+
+
+class TestAnomalyCooldown(unittest.TestCase):
+    def setUp(self):
+        self._orig_cooldowns = anomaly._COOLDOWNS.copy()
+        anomaly._COOLDOWNS.clear()
+
+    def tearDown(self):
+        anomaly._COOLDOWNS = self._orig_cooldowns
+
+    def test_cooldown_expired(self):
+        key = "test_alert:192.168.1.5"
+        # Initially not in cooldown, so it should be cooled down (ready to alert)
+        self.assertTrue(anomaly._is_cooled_down(key, "traffic_spike"))
+
+        # Stamp it
+        anomaly._stamp(key)
+        self.assertFalse(anomaly._is_cooled_down(key, "traffic_spike"))
+
+        # Move the stamped time 31 minutes into the past
+        anomaly._COOLDOWNS[key] = datetime.now(timezone.utc) - timedelta(minutes=31)
+        self.assertTrue(anomaly._is_cooled_down(key, "traffic_spike"))
+
+
+class TestNightTimeCheck(unittest.TestCase):
+    @patch("monitoring.anomaly.datetime")
+    def test_is_night(self, mock_datetime):
+        from zoneinfo import ZoneInfo
+        
+        # Test daytime (e.g. 12:00 PM Central Time)
+        mock_dt_day = datetime(2026, 6, 11, 12, 0, 0, tzinfo=ZoneInfo("America/Chicago"))
+        mock_datetime.now.return_value = mock_dt_day
+        self.assertFalse(anomaly._is_night())
+
+        # Test nighttime (e.g. 23:00 PM Central Time)
+        mock_dt_night = datetime(2026, 6, 11, 23, 0, 0, tzinfo=ZoneInfo("America/Chicago"))
+        mock_datetime.now.return_value = mock_dt_night
+        self.assertTrue(anomaly._is_night())
+
+
+class TestTrafficSpikes(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.session = self.Session()
+        self._orig_cooldowns = anomaly._COOLDOWNS.copy()
+        anomaly._COOLDOWNS.clear()
+
+    def tearDown(self):
+        self.session.close()
+        self.engine.dispose()
+        anomaly._COOLDOWNS = self._orig_cooldowns
+
+    def test_insufficient_history(self):
+        # With less than 5 rows, it should return []
+        events = anomaly.check_traffic_spikes(self.session)
+        self.assertEqual(events, [])
+
+    def test_no_spike(self):
+        # Add setting for threshold (e.g., 4.0)
+        self.session.add(Setting(key="anomaly_spike_multiplier", value="4.0"))
+        
+        # Add 6 summaries where traffic is steady (10MB each)
+        top_talkers_data = json.dumps([{"ip": "192.168.1.5", "bytes": 10000000}])
+        for i in range(6):
+            self.session.add(TrafficSummary(top_talkers=top_talkers_data))
+        self.session.commit()
+
+        events = anomaly.check_traffic_spikes(self.session)
+        self.assertEqual(events, [])
+
+    def test_spike_detected(self):
+        self.session.add(Setting(key="anomaly_spike_multiplier", value="4.0"))
+        
+        # Add 5 summaries with baseline of 2MB
+        baseline_talkers = json.dumps([{"ip": "192.168.1.5", "bytes": 2000000}])
+        for i in range(5):
+            self.session.add(TrafficSummary(top_talkers=baseline_talkers))
+            
+        # Add a spike in the latest summary: 10MB
+        spike_talkers = json.dumps([{"ip": "192.168.1.5", "bytes": 10000000}])
+        self.session.add(TrafficSummary(top_talkers=spike_talkers))
+        self.session.commit()
+
+        events = anomaly.check_traffic_spikes(self.session)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "traffic_spike")
+        self.assertEqual(events[0]["ip"], "192.168.1.5")
+
+
+class TestHealthOutage(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.session = self.Session()
+        self._orig_cooldowns = anomaly._COOLDOWNS.copy()
+        anomaly._COOLDOWNS.clear()
+
+    def tearDown(self):
+        self.session.close()
+        self.engine.dispose()
+        anomaly._COOLDOWNS = self._orig_cooldowns
+
+    def test_insufficient_history(self):
+        events = anomaly.check_health_outage(self.session)
+        self.assertEqual(events, [])
+
+    def test_healthy(self):
+        for i in range(3):
+            self.session.add(HealthCheck(status="online", packet_loss=0.0, latency_ms=10.0))
+        self.session.commit()
+        events = anomaly.check_health_outage(self.session)
+        self.assertEqual(events, [])
+
+    def test_outage_detected(self):
+        for i in range(3):
+            self.session.add(HealthCheck(status="offline", packet_loss=50.0, latency_ms=100.0))
+        self.session.commit()
+        events = anomaly.check_health_outage(self.session)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "health_outage")
+        self.assertIsNone(events[0]["ip"])
+        self.assertEqual(events[0]["level"], "critical")
+
+
+class TestSustainedBandwidth(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.session = self.Session()
+        self._orig_cooldowns = anomaly._COOLDOWNS.copy()
+        anomaly._COOLDOWNS.clear()
+
+    def tearDown(self):
+        self.session.close()
+        self.engine.dispose()
+        anomaly._COOLDOWNS = self._orig_cooldowns
+
+    def test_sustained_detected(self):
+        # N = 6 summaries with 9,000,000 bytes for 192.168.1.5 (above floor of 8MB)
+        talkers = json.dumps([{"ip": "192.168.1.5", "bytes": 9000000}])
+        for i in range(6):
+            self.session.add(TrafficSummary(top_talkers=talkers))
+        self.session.commit()
+        events = anomaly.check_sustained_bandwidth(self.session)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "sustained_bandwidth")
+        self.assertEqual(events[0]["ip"], "192.168.1.5")
+
+
+class TestDegradedHealth(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.session = self.Session()
+        self._orig_cooldowns = anomaly._COOLDOWNS.copy()
+        anomaly._COOLDOWNS.clear()
+
+    def tearDown(self):
+        self.session.close()
+        self.engine.dispose()
+        anomaly._COOLDOWNS = self._orig_cooldowns
+
+    def test_degraded_detected(self):
+        # We need recent (rows[:5]) to have the degraded checks, and baseline (rows[5:]) to have the online ones.
+        # Since the query orders by ID descending, the last added rows have higher IDs and will be in rows[:5].
+        for i in range(25):
+            self.session.add(HealthCheck(status="online", packet_loss=1.0, latency_ms=10.0))
+        for i in range(5):
+            self.session.add(HealthCheck(status="degraded", packet_loss=10.0, latency_ms=150.0))
+        self.session.commit()
+
+        events = anomaly.check_degraded_health(self.session)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "degraded_health")
+
+
+class TestPortScans(unittest.TestCase):
+    def setUp(self):
+        self._orig_cooldowns = anomaly._COOLDOWNS.copy()
+        anomaly._COOLDOWNS.clear()
+
+    def tearDown(self):
+        anomaly._COOLDOWNS = self._orig_cooldowns
+
+    @patch("monitoring.anomaly._is_this_machine")
+    @patch("traffic.interfaces.find_tool")
+    @patch("traffic.analyzer.get_readable_files")
+    @patch("subprocess.run")
+    def test_vertical_scan(self, mock_run, mock_files, mock_find_tool, mock_is_this_machine):
+        mock_is_this_machine.return_value = False
+        mock_find_tool.return_value = "tshark"
+        mock_files.return_value = ["dummy.pcapng"]
+        
+        # VERT_THRESHOLD = 20 distinct ports
+        lines = []
+        for port in range(1, 22):
+            lines.append(f"192.168.1.15\t192.168.1.20\t{port}")
+        stdout_output = "\n".join(lines)
+        
+        mock_proc = MagicMock()
+        mock_proc.stdout = stdout_output
+        mock_run.return_value = mock_proc
+
+        events = anomaly.check_port_scans()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "port_scan")
+        self.assertEqual(events[0]["ip"], "192.168.1.15")
+        self.assertIn("probed 21 ports", events[0]["body"])
+
+    @patch("monitoring.anomaly._is_this_machine")
+    @patch("traffic.interfaces.find_tool")
+    @patch("traffic.analyzer.get_readable_files")
+    @patch("subprocess.run")
+    def test_horizontal_scan(self, mock_run, mock_files, mock_find_tool, mock_is_this_machine):
+        mock_is_this_machine.return_value = False
+        mock_find_tool.return_value = "tshark"
+        mock_files.return_value = ["dummy.pcapng"]
+
+        # HORIZ_THRESHOLD = 15 distinct hosts scanned
+        lines = []
+        for dst_last in range(10, 27):
+            lines.append(f"192.168.1.15\t192.168.1.{dst_last}\t80")
+        stdout_output = "\n".join(lines)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = stdout_output
+        mock_run.return_value = mock_proc
+
+        events = anomaly.check_port_scans()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "port_scan")
+        self.assertEqual(events[0]["ip"], "192.168.1.15")
+        self.assertIn("probed 17 distinct hosts", events[0]["body"])
+
+
+if __name__ == "__main__":
+    unittest.main()
