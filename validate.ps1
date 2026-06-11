@@ -7,8 +7,11 @@
 #   -IncludeSecurity    Run WSL/Kali security lab integration tests (requires WSL and Kali installed)
 
 param(
-    [switch]$IncludeSecurity
+    [switch]$IncludeSecurity,
+    [string]$TestFile,
+    [switch]$ListTests
 )
+
 
 $ErrorActionPreference = "Stop"
 
@@ -69,6 +72,23 @@ function Invoke-Checked {
     return $true
 }
 
+# 1.5. List available tests if requested
+if ($ListTests) {
+    Write-Host "Available Focused Test Modules:" -ForegroundColor Cyan
+    Write-Host "==============================" -ForegroundColor Cyan
+    Write-Host "Run all unit tests:" -ForegroundColor Gray
+    Write-Host "  powershell -ExecutionPolicy Bypass -File .\validate.ps1" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Run a specific test file (e.g. anomaly detection):" -ForegroundColor Gray
+    Write-Host "  powershell -ExecutionPolicy Bypass -File .\validate.ps1 -TestFile tests/test_anomaly.py" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Test files available:" -ForegroundColor Gray
+    Get-ChildItem -Path tests -Filter test_*.py | ForEach-Object {
+        Write-Host "  tests/$($_.Name)" -ForegroundColor Green
+    }
+    Exit 0
+}
+
 # 2. Ensure data directory and database schema are initialized
 Write-Host "Initializing testing environment..." -ForegroundColor Yellow
 Invoke-Python "-c `"import os; os.makedirs('data', exist_ok=True)`""
@@ -81,7 +101,11 @@ if ($LASTEXITCODE -ne 0) {
 $FailedTests = 0
 
 # 3. Run unit tests
-$UnitPassed = Invoke-Checked "Unit Tests (unittest)" "-m unittest discover -s tests -v"
+if ($TestFile) {
+    $UnitPassed = Invoke-Checked "Focused Unit Test ($TestFile)" "-m unittest $TestFile -v"
+} else {
+    $UnitPassed = Invoke-Checked "Unit Tests (unittest)" "-m unittest discover -s tests -v"
+}
 if (-not $UnitPassed) { $FailedTests++ }
 
 # 4. Run autoheal/uptime guardian tests
