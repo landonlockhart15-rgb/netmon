@@ -48,8 +48,11 @@ def _cfg() -> dict:
     db = SessionLocal()
     try:
         def g(k, d=""):
-            row = db.query(Setting).filter(Setting.key == k).first()
-            return row.value if (row and row.value is not None) else d
+            try:
+                row = db.query(Setting).filter(Setting.key == k).first()
+                return row.value if (row and row.value is not None) else d
+            except Exception:
+                return d
         ntfy_pass = os.getenv("NTFY_PASS") or g("ntfy_pass", "")
         smtp_pass = os.getenv("SMTP_PASS") or g("smtp_pass", "")
         return {
@@ -269,8 +272,11 @@ def alert(
     """
     db = SessionLocal()
     try:
-        row = db.query(Setting).filter(Setting.key == "ntfy_min_level").first()
-        min_level = row.value if (row and row.value) else "critical"
+        try:
+            row = db.query(Setting).filter(Setting.key == "ntfy_min_level").first()
+            min_level = row.value if (row and row.value) else "critical"
+        except Exception:
+            min_level = "critical"
     finally:
         db.close()
 

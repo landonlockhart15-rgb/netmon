@@ -909,11 +909,22 @@ def parse_chat_response(raw: str) -> dict:
 
 def build_explanation_prompt(device, turn_role: str, turn_content: str, meta: dict | None = None) -> str:
     """Compose a prompt for the AI to explain a specific chat turn (like a tool output or assistant reply)."""
+    ip_addr = getattr(device, "ip_addr", None)
+    if not ip_addr:
+        apps = getattr(device, "appearances", [])
+        if apps:
+            latest_app = max(apps, key=lambda a: getattr(a, "id", 0))
+            ip_addr = getattr(latest_app, "ip", "Unknown")
+        else:
+            ip_addr = "Unknown"
+
+    mac_addr = getattr(device, "mac_addr", getattr(device, "mac", "Unknown"))
+
     device_info = (
         f"Device ID: {device.id}\n"
         f"Name/Label: {device.label or 'Unknown'}\n"
-        f"IP Address: {device.ip_addr or 'Unknown'}\n"
-        f"MAC Address: {device.mac_addr or 'Unknown'}\n"
+        f"IP Address: {ip_addr}\n"
+        f"MAC Address: {mac_addr}\n"
         f"OS: {device.os_guess or 'Unknown'}"
     )
 

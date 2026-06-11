@@ -118,6 +118,34 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(data["devices"][0]["ip"], "192.168.1.50")
         self.assertEqual(data["devices"][0]["vendor"], "Apple")
 
+    @patch("ai.provider.get_investigation_provider")
+    def test_explain_chat_turn(self, mock_get_provider):
+        """Test POST /api/device/{device_id}/chat/{turn_id}/explain route."""
+        scan = Scan(id=1, status="complete")
+        device = Device(id=1, mac="00:11:22:33:44:55", vendor="Apple")
+        from models.tables import DeviceChat
+        turn = DeviceChat(id=42, device_id=1, role="assistant", content="Looks like an Apple device.")
+
+        self.db.add(scan)
+        self.db.add(device)
+        self.db.add(turn)
+        self.db.commit()
+
+        mock_provider = MagicMock()
+        mock_provider.name = "gemini"
+        mock_provider.analyze.return_value = {
+            "raw_response": "This message indicates it is an Apple device based on OUI prefix.",
+            "error": None
+        }
+        mock_get_provider.return_value = mock_provider
+
+        response = self.client.post("/api/device/1/chat/42/explain")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("explanation", data)
+        self.assertEqual(data["explanation"], "This message indicates it is an Apple device based on OUI prefix.")
+
+
 
 if __name__ == "__main__":
     unittest.main()
