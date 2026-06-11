@@ -5,11 +5,18 @@
 #
 # Options:
 #   -IncludeSecurity    Run WSL/Kali security lab integration tests (requires WSL and Kali installed)
+#   -TestFile <path>    Run a specific focused test file (e.g. tests/test_anomaly.py)
+#   -ListTests          List all available test files and show usage help
+#   -SkipCompile        Skip compilation checking (compileall)
+#   -CompileOnly        Run only compilation checking and exit immediately
+#
 
 param(
     [switch]$IncludeSecurity,
     [string]$TestFile,
-    [switch]$ListTests
+    [switch]$ListTests,
+    [switch]$SkipCompile,
+    [switch]$CompileOnly
 )
 
 
@@ -87,6 +94,22 @@ if ($ListTests) {
         Write-Host "  tests/$($_.Name)" -ForegroundColor Green
     }
     Exit 0
+}
+
+# 1.8. Run compilation checks (compileall)
+if (-not $SkipCompile) {
+    $CompilePassed = Invoke-Checked "Compilation Check (compileall)" "-m compileall -q ai api app monitoring network scanner traffic"
+    if (-not $CompilePassed) {
+        Write-Error "Compilation check failed." -ErrorAction Continue
+        Exit 1
+    }
+    if ($CompileOnly) {
+        Write-Host "Compilation check passed. Exiting as -CompileOnly was requested." -ForegroundColor Green
+        Exit 0
+    }
+} elseif ($CompileOnly) {
+    Write-Error "Cannot specify both -SkipCompile and -CompileOnly."
+    Exit 1
 }
 
 # 2. Ensure data directory and database schema are initialized

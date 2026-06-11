@@ -211,55 +211,51 @@ class TestPortScans(unittest.TestCase):
     def tearDown(self):
         anomaly._COOLDOWNS = self._orig_cooldowns
 
-    @patch("monitoring.anomaly._is_this_machine")
-    @patch("traffic.interfaces.find_tool")
-    @patch("traffic.analyzer.get_readable_files")
-    @patch("subprocess.run")
-    def test_vertical_scan(self, mock_run, mock_files, mock_find_tool, mock_is_this_machine):
-        mock_is_this_machine.return_value = False
-        mock_find_tool.return_value = "tshark"
-        mock_files.return_value = ["dummy.pcapng"]
-        
-        # VERT_THRESHOLD = 20 distinct ports
-        lines = []
-        for port in range(1, 22):
-            lines.append(f"192.168.1.15\t192.168.1.20\t{port}")
-        stdout_output = "\n".join(lines)
-        
-        mock_proc = MagicMock()
-        mock_proc.stdout = stdout_output
-        mock_run.return_value = mock_proc
+    def test_vertical_scan(self):
+        with patch("monitoring.anomaly._is_this_machine", return_value=False), \
+             patch("monitoring.anomaly.explain_protected_target", return_value=None), \
+             patch("traffic.interfaces.find_tool", return_value="tshark"), \
+             patch("traffic.analyzer.get_readable_files", return_value=["dummy.pcapng"]), \
+             patch("subprocess.run") as mock_run:
+            
+            # VERT_THRESHOLD = 20 distinct ports
+            lines = []
+            for port in range(1, 22):
+                lines.append(f"192.168.1.15\t192.168.1.20\t{port}")
+            stdout_output = "\n".join(lines)
+            
+            mock_proc = MagicMock()
+            mock_proc.stdout = stdout_output
+            mock_run.return_value = mock_proc
 
-        events = anomaly.check_port_scans()
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["type"], "port_scan")
-        self.assertEqual(events[0]["ip"], "192.168.1.15")
-        self.assertIn("probed 21 ports", events[0]["body"])
+            events = anomaly.check_port_scans()
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["type"], "port_scan")
+            self.assertEqual(events[0]["ip"], "192.168.1.15")
+            self.assertIn("probed 21 ports", events[0]["body"])
 
-    @patch("monitoring.anomaly._is_this_machine")
-    @patch("traffic.interfaces.find_tool")
-    @patch("traffic.analyzer.get_readable_files")
-    @patch("subprocess.run")
-    def test_horizontal_scan(self, mock_run, mock_files, mock_find_tool, mock_is_this_machine):
-        mock_is_this_machine.return_value = False
-        mock_find_tool.return_value = "tshark"
-        mock_files.return_value = ["dummy.pcapng"]
+    def test_horizontal_scan(self):
+        with patch("monitoring.anomaly._is_this_machine", return_value=False), \
+             patch("monitoring.anomaly.explain_protected_target", return_value=None), \
+             patch("traffic.interfaces.find_tool", return_value="tshark"), \
+             patch("traffic.analyzer.get_readable_files", return_value=["dummy.pcapng"]), \
+             patch("subprocess.run") as mock_run:
 
-        # HORIZ_THRESHOLD = 15 distinct hosts scanned
-        lines = []
-        for dst_last in range(10, 27):
-            lines.append(f"192.168.1.15\t192.168.1.{dst_last}\t80")
-        stdout_output = "\n".join(lines)
+            # HORIZ_THRESHOLD = 15 distinct hosts scanned
+            lines = []
+            for dst_last in range(10, 27):
+                lines.append(f"192.168.1.15\t192.168.1.{dst_last}\t80")
+            stdout_output = "\n".join(lines)
 
-        mock_proc = MagicMock()
-        mock_proc.stdout = stdout_output
-        mock_run.return_value = mock_proc
+            mock_proc = MagicMock()
+            mock_proc.stdout = stdout_output
+            mock_run.return_value = mock_proc
 
-        events = anomaly.check_port_scans()
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["type"], "port_scan")
-        self.assertEqual(events[0]["ip"], "192.168.1.15")
-        self.assertIn("probed 17 distinct hosts", events[0]["body"])
+            events = anomaly.check_port_scans()
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["type"], "port_scan")
+            self.assertEqual(events[0]["ip"], "192.168.1.15")
+            self.assertIn("probed 17 distinct hosts", events[0]["body"])
 
 
 if __name__ == "__main__":

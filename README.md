@@ -140,7 +140,23 @@ powershell -ExecutionPolicy Bypass -File .\install_task.ps1
 
 ## Verification
 
-Run these from the project root before relying on a change:
+NetMon provides a standardized validation script (`validate.ps1`) to run compilation checks, database setup, and all unit/integration tests. Run it from the project root before committing any change:
+
+```powershell
+# Run the complete validation suite (compilation, unit tests, and autoheal tests)
+powershell -ExecutionPolicy Bypass -File .\validate.ps1
+
+# Options:
+#   -CompileOnly        Run compilation checks only (very fast)
+#   -SkipCompile        Skip compilation checking and proceed directly to tests
+#   -TestFile <path>    Run a specific focused test file (e.g. -TestFile tests/test_anomaly.py)
+#   -ListTests          List all available focused test files
+#   -IncludeSecurity    Include WSL/Kali security lab integration tests (requires WSL/Kali setup)
+```
+
+### Manual Verification Commands
+
+If you prefer to run individual steps manually:
 
 ```powershell
 # 1. Compile — catch syntax/import errors across the Python packages
@@ -149,16 +165,20 @@ Run these from the project root before relying on a change:
 # 2. Run the entire unit test suite
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 
-# 3. Run individual focused test files:
+# 3. Run individual focused test files
+.\.venv\Scripts\python.exe -m unittest tests/test_anomaly.py -v           # Anomaly checking
 .\.venv\Scripts\python.exe -m unittest tests/test_provider.py -v          # AI provider
 .\.venv\Scripts\python.exe -m unittest tests/test_dns_blocker.py -v       # DNS ad-blocker
 .\.venv\Scripts\python.exe -m unittest tests/test_scanner_diff.py -v      # Scanner diffing
 .\.venv\Scripts\python.exe -m unittest tests/test_traffic_analyzer.py -v  # Traffic analysis
 
-# 4. Run Security Lab wrappers/tools integration tests (requires WSL/Kali setup)
+# 4. Run Autoheal uptime guardian tests
+.\.venv\Scripts\python.exe tools/test_autoheal.py
+
+# 5. Run Security Lab wrappers/tools integration tests (requires WSL/Kali setup)
 .\.venv\Scripts\python.exe security_test.py
 
-# 5. Smoke — boot and serve the API without the tray/instance lock,
+# 6. Smoke — boot and serve the API without the tray/instance lock,
 #    then check it responds (Ctrl+C to stop)
 $env:NETMON_SELFTEST = "1"; .\.venv\Scripts\python.exe netmon_app.py
 #   in another shell: curl http://127.0.0.1:8000
