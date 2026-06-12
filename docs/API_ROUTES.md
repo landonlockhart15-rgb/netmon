@@ -32,6 +32,14 @@ The test suite in `tests/test_api_endpoints.py` implements a standardized integr
 1. **Authentication Bypass**: The test suite mocks `app.main.validate_session` to bypass the `AuthMiddleware` cleanly, allowing endpoint verification without a live session state.
 2. **Isolated Database State**: Tests override the `get_db` dependency using FastAPI's `dependency_overrides` mechanism. It binds to an in-memory SQLite database with `StaticPool` to preserve connection state and schema context between requests.
 3. **Seeded Settings**: The test suite pre-populates database tables with default values before running tests.
+4. **Dynamic Route Security Discovery**: A dynamic security test (`test_route_security_discovery`) programmatically scans the live FastAPI route registry (`app.routes`) on every test run. It resolves path parameters and verifies that every endpoint correctly enforces authentication policies (returning `401` for `/api/*` routes, redirecting `303` to `/login` for UI and static files, or passing through for exempt paths).
+
+### Coverage and Verification
+
+The test suite covers:
+* **Authentication Flow**: Validates session setup, teardown, and cookie assignment on `/auth/login` and `/auth/logout` endpoints, as well as access to the `/login` static file.
+* **Device Management**: Verifies metadata patch updates (`PATCH /api/device/{device_id}`) and allow-listing options (`POST /api/device/{device_id}/allow`) to ensure firewall policies map correctly.
+* **Telemetry & Settings**: Ensures status check, settings lookup/updates, and AI explanation functions perform as expected.
 
 ### Running Endpoint Tests
 
@@ -44,3 +52,4 @@ To run all unit tests (including endpoint tests):
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\validate.ps1
 ```
+
