@@ -145,7 +145,144 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertIn("explanation", data)
         self.assertEqual(data["explanation"], "This message indicates it is an Apple device based on OUI prefix.")
 
+    def test_login_page(self):
+        """Test GET /login serves the login page."""
+        response = self.client.get("/login")
+        self.assertEqual(response.status_code, 200)
+
+    @patch("api.auth_routes.check_credentials")
+    def test_auth_login_success(self, mock_check):
+        """Test POST /auth/login with valid credentials redirects with cookie."""
+        mock_check.return_value = True
+        response = self.client.post("/auth/login", data={"username": "admin", "password": "password"}, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers.get("location"), "/")
+        self.assertIn("netmon_session", response.cookies)
+
+    @patch("api.auth_routes.check_credentials")
+    def test_auth_login_failure(self, mock_check):
+        """Test POST /auth/login with invalid credentials redirects back to login."""
+        mock_check.return_value = False
+        response = self.client.post("/auth/login", data={"username": "wrong", "password": "wrong"}, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        self.assertTrue(
+            response.headers.get("location", "").endswith("/login?error=invalid") or
+            response.headers.get("location", "").endswith("/login?error=not_configured")
+        )
+
+    @patch("api.auth_routes.revoke_session")
+    def test_auth_logout(self, mock_revoke):
+        """Test GET /auth/logout invalidates session and redirects."""
+        self.client.cookies.set("netmon_session", "fake_token")
+        response = self.client.get("/auth/logout", follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers.get("location"), "/login")
+        mock_revoke.assert_called_once_with("fake_token")
+
+    def test_update_device(self):
+        """Test PATCH /api/device/{device_id} to update labels/trust."""
+        import json
+        device = Device(id=42, mac="11:22:33:44:55:66", vendor="Dell", label="Original", is_known=False)
+        self.db.add(device)
+        self.db.commit()
+
+        payload = {"label": "Updated", "is_known": True, "allow": {"allowed_ports": [22, 80]}}
+        response = self.client.patch("/api/device/42", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["id"], 42)
+        self.assertEqual(data["label"], "Updated")
+        self.assertEqual(data["is_known"], True)
+        self.assertEqual(data["allow"]["allowed_ports"], [22, 80])
+
+        db_device = self.db.query(Device).filter(Device.id == 42).first()
+        self.assertEqual(db_device.label, "Updated")
+        self.assertEqual(db_device.is_known, True)
+        self.assertEqual(json.loads(db_device.allow_json)["allowed_ports"], [22, 80])
+
+    def test_update_device_not_found(self):
+        """Test PATCH /api/device/{device_id} returns 404 if device not found."""
+        response = self.client.patch("/api/device/999", json={"label": "Ghost"})
+        self.assertEqual(response.status_code, 404)
+
+    def test_add_device_allow_entry(self):
+        """Test POST /api/device/{device_id}/allow adds rules to allowed behavior."""
+        device = Device(id=10, mac="00:aa:bb:cc:dd:ee")
+        self.db.add(device)
+        self.db.commit()
+
+        # Append port 443
+        response = self.client.post("/api/device/10/allow", json={"port": 443})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["allow"]["allowed_ports"], [443])
+
+        # Append country US
+        response = self.client.post("/api/device/10/allow", json={"country": "US"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["allow"]["allowed_countries"], ["US"])
+
+        # Append destination 8.8.8.8
+        response = self.client.post("/api/device/10/allow", json={"destination": "8.8.8.8"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["allow"]["allowed_destinations"], ["8.8.8.8"])
+
+        # Set high_bandwidth
+        response = self.client.post("/api/device/10/allow", json={"high_bandwidth": True})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["allow"]["allowed_high_bandwidth"], True)
+
+    def test_route_security_discovery(self):
+        """
+        Dynamically discover all registered routes in the FastAPI app
+        and verify they conform to the security policies defined in AuthMiddleware:
+          1. Exempt paths (/login, /auth/login, /auth/logout) bypass validation.
+          2. Non-exempt /api/* routes must return 401 JSON.
+          3. Other non-exempt routes (like UI pages/static files) must redirect (303) to /login.
+        """
+        # Create a clean client without the authentication patch
+        unpatched_client = TestClient(app)
+        self.patch_auth.stop()
+        try:
+            exempt_paths = {"/login", "/auth/login", "/auth/logout"}
+            
+            import re
+            def get_concrete_path(route_path: str) -> str:
+                def replacer(match):
+                    param = match.group(1)
+                    if "full_path" in param:
+                        return "index.html"
+                    return "1"
+                return re.sub(r"\{([^}]+)\}", replacer, route_path)
+            
+            for route in app.routes:
+                route_path = getattr(route, "path", None)
+                if not route_path:
+                    continue
+                
+                methods = getattr(route, "methods", None) or ["GET"]
+                concrete_path = get_concrete_path(route_path)
+                
+                for method in methods:
+                    response = unpatched_client.request(method, concrete_path, follow_redirects=False)
+                    
+                    if concrete_path in exempt_paths:
+                        self.assertNotEqual(response.status_code, 401, f"Exempt path {concrete_path} returned 401")
+                    elif concrete_path.startswith("/api/"):
+                        self.assertEqual(
+                            response.status_code, 401,
+                            f"API route {concrete_path} [{method}] was not protected by AuthMiddleware (returned {response.status_code})"
+                        )
+                        self.assertEqual(response.json(), {"detail": "Not authenticated"})
+                    else:
+                        self.assertEqual(
+                            response.status_code, 303,
+                            f"UI/Static route {concrete_path} [{method}] did not redirect to /login (returned {response.status_code})"
+                        )
+                        self.assertEqual(response.headers.get("location"), "/login")
+        finally:
+            self.patch_auth.start()
 
 
 if __name__ == "__main__":
     unittest.main()
+
