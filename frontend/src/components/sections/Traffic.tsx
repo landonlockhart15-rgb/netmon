@@ -1,20 +1,22 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, Square, BrainCircuit, ShieldAlert, ShieldOff, ChevronDown, ChevronUp, Eye, Lock, Unlock, Globe, Radio, Gauge, MonitorSmartphone, Layers } from 'lucide-react'
+import { Play, Square, BrainCircuit, ShieldAlert, ShieldOff, ChevronDown, ChevronUp, Eye, Lock, Unlock, Globe, Radio, Gauge, MonitorSmartphone, Layers, AlertTriangle, CheckCircle2, ArrowRight } from 'lucide-react'
 import {
   getTrafficInterfaces, getTrafficStatus, getTrafficDashboard,
   startCapture, stopCapture, analyzeTraffic,
   getMitmStatus, startMitm, stopMitm,
   getDNSLive, getDevices,
-  type Interface,
+  getAILatest, getAIProgress,
+  type Interface, type AISummary,
 } from '@/lib/api'
 import { humanBytes, formatRelativeTime } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
-import Badge from '@/components/shared/Badge'
+import Badge, { severityVariant } from '@/components/shared/Badge'
 import EmptyState from '@/components/shared/EmptyState'
 import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
+import Markdown from '@/components/shared/Markdown'
 
 interface TrafficStatusResponse { running: boolean; interface: string | null; started_at: string | null }
 interface TrafficDashboardResponse {
@@ -38,6 +40,8 @@ export default function Traffic() {
   const { data: dashboard } = useQuery({ queryKey: ['traffic-dashboard'], queryFn: getTrafficDashboard, refetchInterval: 10_000 })
   const { data: mitmStatusRaw } = useQuery({ queryKey: ['mitm-status'], queryFn: getMitmStatus, refetchInterval: 5_000 })
   const { data: devicesRaw } = useQuery({ queryKey: ['devices', 'current'], queryFn: () => getDevices(true), staleTime: 60_000 })
+  const { data: aiSummary } = useQuery({ queryKey: ['ai-latest'], queryFn: getAILatest, refetchInterval: 120_000 })
+  const { data: aiProgress } = useQuery({ queryKey: ['ai-progress'], queryFn: getAIProgress, refetchInterval: 700 })
 
   const startMutation = useMutation({
     mutationFn: () => startCapture({ interface: selectedIface || undefined }),
@@ -49,7 +53,11 @@ export default function Traffic() {
   })
   const analyzeMutation = useMutation({
     mutationFn: analyzeTraffic,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['traffic-dashboard'] }); qc.invalidateQueries({ queryKey: ['traffic-status'] }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['traffic-dashboard'] })
+      qc.invalidateQueries({ queryKey: ['traffic-status'] })
+      setTimeout(() => qc.invalidateQueries({ queryKey: ['ai-latest'] }), 5000)
+    },
   })
   const startMitmMutation = useMutation({
     mutationFn: () => startMitm({
@@ -145,6 +153,27 @@ export default function Traffic() {
           </div>
         )}
       </Card>
+
+      {/* ── AI Traffic Insights ────────────────────────────────────────── */}
+      {(aiSummary || aiProgress?.running) && (
+        <Card
+          title="AI Traffic Insights"
+          badge="TRAFFIC"
+          action={
+            <Btn
+              variant="ghost"
+              size="sm"
+              loading={analyzeMutation.isPending || !!aiProgress?.running}
+              onClick={() => analyzeMutation.mutate()}
+            >
+              <BrainCircuit size={13} />
+              Re-Analyze
+            </Btn>
+          }
+        >
+          <AIPanel summary={aiSummary as AISummary | undefined} progress={aiProgress} />
+        </Card>
+      )}
 
       {/* ── Deep Capture / ARP Spoof MitM ─────────────────────────────── */}
       <Card
@@ -304,6 +333,103 @@ export default function Traffic() {
 
       {d?.conversations?.length === 0 && !capturing && !mitmActive && (
         <EmptyState icon="◎" text="No traffic data yet" hint="Start passive capture or MitM to see connections." />
+      )}
+    </div>
+  )
+}
+
+function AIPanel({ summary, progress }: {
+  summary?: AISummary
+  progress?: { running?: boolean; partial?: string | null }
+}) {
+  if (progress?.running) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 text-purple-400 text-xs">
+          <BrainCircuit size={12} className="animate-pulse" />
+          AI analyzing…
+        </div>
+        {progress.partial && (
+          <pre className="text-[10px] text-gray-500 whitespace-pre-wrap font-mono leading-relaxed max-h-24 overflow-y-auto">
+            {progress.partial.slice(-600)}
+          </pre>
+        )}
+      </div>
+    )
+  }
+  if (!summary?.summary) {
+    return <EmptyState icon="◎" text="No analysis yet" hint="Start capture and click Analyze to run AI investigation of traffic." />
+  }
+
+  const isTraffic = summary.model?.toLowerCase().includes('traffic') || false
+
+  return (
+    <div className="space-y-4">
+      {!isTraffic && (
+        <div className="rounded-lg bg-white/5 border border-white/10 p-2.5 text-[11px] text-gray-400">
+          💡 Showing last Scan analysis. Start traffic capture and click <strong className="text-purple-300">Analyze</strong> to generate traffic-specific insights.
+        </div>
+      )}
+
+      <div className="flex items-center justify-between">
+        {summary.verdict && (
+          <Badge variant={severityVariant(summary.verdict)}>{summary.verdict}</Badge>
+        )}
+        {summary.model && (
+          <span className="text-[10px] text-gray-500 font-mono">{summary.model}</span>
+        )}
+      </div>
+      
+      <div className="text-xs text-gray-300 leading-relaxed">
+        <Markdown text={summary.summary} />
+      </div>
+
+      {summary.concerning && summary.concerning.length > 0 && (
+        <div className="space-y-1.5 border-t border-white/5 pt-3">
+          <h4 className="text-[10px] font-semibold text-red-400 uppercase tracking-wider flex items-center gap-1.5">
+            <AlertTriangle size={11} className="text-red-400" /> Concerning Observations
+          </h4>
+          <ul className="space-y-1 text-xs text-gray-400 pl-4 list-disc">
+            {summary.concerning.map((item, idx) => (
+              <li key={idx} className="leading-normal">{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {summary.benign && summary.benign.length > 0 && (
+        <div className="space-y-1.5 border-t border-white/5 pt-3">
+          <h4 className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+            <CheckCircle2 size={11} className="text-emerald-400" /> Normal / Expected Activity
+          </h4>
+          <ul className="space-y-1 text-xs text-gray-400 pl-4 list-disc">
+            {summary.benign.map((item, idx) => (
+              <li key={idx} className="leading-normal">{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {summary.next_steps && summary.next_steps.length > 0 && (
+        <div className="space-y-1.5 border-t border-white/5 pt-3">
+          <h4 className="text-[10px] font-semibold text-purple-400 uppercase tracking-wider flex items-center gap-1.5">
+            <ArrowRight size={11} className="text-purple-400" /> Recommended Actions
+          </h4>
+          <ol className="space-y-1 text-xs text-gray-300 pl-4 list-decimal">
+            {summary.next_steps.map((item, idx) => (
+              <li key={idx} className="leading-normal">{item}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {summary.created_at && (
+        <p className="text-[10px] text-gray-600 border-t border-white/5 pt-2 flex justify-between items-center">
+          <span>
+            {summary.provider && <span className="mr-2 text-purple-500 font-mono">{summary.provider}</span>}
+            {formatRelativeTime(summary.created_at)}
+          </span>
+        </p>
       )}
     </div>
   )

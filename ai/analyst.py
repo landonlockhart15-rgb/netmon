@@ -216,10 +216,13 @@ def run_analysis(db: Session, scan_id: int | None = None) -> dict:
         else provider.analyze(context)
 
     # ── 6. Persist to DB ─────────────────────────────────────────────────────
+    model_str = result.get("model")
+    if model_str:
+        model_str = f"{model_str} (combined)"
     summary_row = AISummary(
         scan_id      = scan.id,
         provider     = provider.name,
-        model        = result.get("model"),
+        model        = model_str,
         summary      = result.get("summary"),
         severity     = result.get("severity"),
         benign       = json.dumps(result.get("benign",     [])),
@@ -320,7 +323,7 @@ def run_scan_analysis(db: Session, scan_id: int | None = None) -> dict:
         return _error_result(scan.id, provider.analyze(ctx)["error"])
 
     result = provider.analyze(ctx, prompt=prompt, kind="scan")
-    return _persist(db, result, scan_id=scan.id)
+    return _persist(db, result, scan_id=scan.id, kind="scan")
 
 
 def run_traffic_analysis(db: Session) -> dict:
@@ -365,7 +368,7 @@ def run_traffic_analysis(db: Session) -> dict:
     scan_id = last_scan.id if last_scan else None
 
     result = provider.analyze(ctx, prompt=prompt, kind="traffic")
-    return _persist(db, result, scan_id=scan_id)
+    return _persist(db, result, scan_id=scan_id, kind="traffic")
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -389,7 +392,7 @@ def _refresh_health(db: Session) -> None:
         print(f"[ai] Pre-analysis health check failed: {e}")
 
 
-def _persist(db: Session, result: dict, scan_id: int | None) -> dict:
+def _persist(db: Session, result: dict, scan_id: int | None, kind: str = "scan") -> dict:
     """Save an AI result row and return its serialized form.
 
     If the result has no summary and no error (i.e. JSON parsing failed due to
@@ -402,10 +405,17 @@ def _persist(db: Session, result: dict, scan_id: int | None) -> dict:
         return _error_result(scan_id, "AI response was truncated — try again")
 
     provider = get_provider()
+    model_str = result.get("model")
+    if model_str:
+        if kind == "traffic":
+            model_str = f"{model_str} (traffic)"
+        elif kind == "scan":
+            model_str = f"{model_str} (scan)"
+
     summary_row = AISummary(
         scan_id      = scan_id,
         provider     = provider.name,
-        model        = result.get("model"),
+        model        = model_str,
         summary      = result.get("summary"),
         severity     = result.get("severity"),
         benign       = json.dumps(result.get("benign",     [])),
@@ -433,6 +443,7 @@ def _serialize(row: AISummary) -> dict:
         "model":        row.model,
         "summary":      row.summary,
         "severity":     row.severity,
+        "verdict":      row.severity,
         "benign":       json.loads(row.benign      or "[]"),
         "concerning":   json.loads(row.concerning  or "[]"),
         "next_steps":   json.loads(row.next_steps  or "[]"),
@@ -451,6 +462,7 @@ def _error_result(scan_id: int | None, message: str) -> dict:
         "model":        None,
         "summary":      None,
         "severity":     None,
+        "verdict":      None,
         "benign":       [],
         "concerning":   [],
         "next_steps":   [],

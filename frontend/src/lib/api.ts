@@ -434,6 +434,12 @@ export interface AISummary {
   verdict: string | null
   created_at: string | null
   provider: string | null
+  severity?: string | null
+  benign?: string[]
+  concerning?: string[]
+  next_steps?: string[]
+  model?: string | null
+  error?: string | null
 }
 
 export interface AIProgress {
