@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ScanLine, Wifi, Network, History, BrainCircuit, Radar, MonitorSmartphone, Clock, Timer, Router } from 'lucide-react'
+import { ScanLine, Wifi, Network, History, BrainCircuit, Radar, MonitorSmartphone, Clock, Timer, Router, AlertTriangle, CheckCircle2, ArrowRight } from 'lucide-react'
 import {
   getDevices, getScans, getDiffLatest, getAILatest, getAIProgress,
   getNetworkInfo, runScan, runAIScanAnalysis,
@@ -355,15 +355,65 @@ function AIPanel({ summary, progress }: {
     return <EmptyState icon="◎" text="No analysis yet" hint="Click Analyze to run AI investigation of your network." />
   }
   return (
-    <div className="space-y-2">
-      {summary.verdict && (
-        <Badge variant={severityVariant(summary.verdict)}>{summary.verdict}</Badge>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        {summary.verdict && (
+          <Badge variant={severityVariant(summary.verdict)}>{summary.verdict}</Badge>
+        )}
+        {summary.model && (
+          <span className="text-[10px] text-gray-500 font-mono">{summary.model}</span>
+        )}
+      </div>
+      
+      <div className="text-xs text-gray-300 leading-relaxed">
+        <Markdown text={summary.summary} />
+      </div>
+
+      {summary.concerning && summary.concerning.length > 0 && (
+        <div className="space-y-1.5 border-t border-white/5 pt-3">
+          <h4 className="text-[10px] font-semibold text-red-400 uppercase tracking-wider flex items-center gap-1.5">
+            <AlertTriangle size={11} className="text-red-400" /> Concerning Observations
+          </h4>
+          <ul className="space-y-1 text-xs text-gray-400 pl-4 list-disc">
+            {summary.concerning.map((item, idx) => (
+              <li key={idx} className="leading-normal">{item}</li>
+            ))}
+          </ul>
+        </div>
       )}
-      <Markdown text={summary.summary} />
+
+      {summary.benign && summary.benign.length > 0 && (
+        <div className="space-y-1.5 border-t border-white/5 pt-3">
+          <h4 className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+            <CheckCircle2 size={11} className="text-emerald-400" /> Normal / Expected Activity
+          </h4>
+          <ul className="space-y-1 text-xs text-gray-400 pl-4 list-disc">
+            {summary.benign.map((item, idx) => (
+              <li key={idx} className="leading-normal">{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {summary.next_steps && summary.next_steps.length > 0 && (
+        <div className="space-y-1.5 border-t border-white/5 pt-3">
+          <h4 className="text-[10px] font-semibold text-purple-400 uppercase tracking-wider flex items-center gap-1.5">
+            <ArrowRight size={11} className="text-purple-400" /> Recommended Actions
+          </h4>
+          <ol className="space-y-1 text-xs text-gray-300 pl-4 list-decimal">
+            {summary.next_steps.map((item, idx) => (
+              <li key={idx} className="leading-normal">{item}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+
       {summary.created_at && (
-        <p className="text-[10px] text-gray-600">
-          {summary.provider && <span className="mr-2 text-purple-500">{summary.provider}</span>}
-          {formatRelativeTime(summary.created_at)}
+        <p className="text-[10px] text-gray-600 border-t border-white/5 pt-2 flex justify-between items-center">
+          <span>
+            {summary.provider && <span className="mr-2 text-purple-500 font-mono">{summary.provider}</span>}
+            {formatRelativeTime(summary.created_at)}
+          </span>
         </p>
       )}
     </div>
