@@ -125,6 +125,17 @@ def _get_health_check_settings() -> tuple[int, bool]:
         db.close()
 
 
+def _get_active_discovery_settings() -> tuple[int, bool]:
+    db = SessionLocal()
+    try:
+        interval_s = _get_int(db, "active_discovery_interval_s", 300)
+        netmon_on  = _netmon_enabled(db)
+        enabled    = _get_str(db, "active_discovery_enabled", "true").lower() == "true"
+        return interval_s, netmon_on and enabled
+    finally:
+        db.close()
+
+
 def _should_run_startup_scan() -> tuple[bool, float | None, float]:
     db = SessionLocal()
     try:
@@ -2289,4 +2300,33 @@ async def autonomous_report_loop() -> None:
             await asyncio.sleep(7200)   # every 2 hours
         except asyncio.CancelledError:
             print("[report] Report loop cancelled — shutting down.")
+            break
+
+
+async def active_discovery_loop() -> None:
+    """Periodically triggers active SSDP and mDNS discovery sweeps in the background."""
+    from network.discovery import run_active_discovery_sweep
+    loop = asyncio.get_running_loop()
+    await asyncio.sleep(15)
+    
+    while True:
+        try:
+            interval_s, enabled = await loop.run_in_executor(_executor, _get_active_discovery_settings)
+        except Exception:
+            interval_s, enabled = 300, True
+            
+        interval_s = max(10, min(interval_s, 86400))
+        
+        if enabled:
+            try:
+                await loop.run_in_executor(_executor, run_active_discovery_sweep)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                print(f"[discovery] Active sweep error: {exc}")
+                
+        try:
+            await asyncio.sleep(interval_s)
+        except asyncio.CancelledError:
+            print("[discovery] Active discovery loop cancelled — shutting down.")
             break

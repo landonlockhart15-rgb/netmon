@@ -247,6 +247,9 @@ def seed_default_settings():
         # Auto-scan settings
         "auto_scan_enabled":          "true",
         "auto_scan_interval_h":       "4",
+        # Active discovery settings
+        "active_discovery_enabled":    "true",
+        "active_discovery_interval_s":  "300",
         # Notification settings
         "ntfy_enabled":               "false",
         "ntfy_server":                "https://ntfy.sh",
