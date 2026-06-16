@@ -445,6 +445,9 @@ def get_all_devices(current_only: bool = False, db: Session = Depends(get_db)):
             "open_ports": latest_sd_ports.ports_list if latest_sd_ports else [],
             "os_guess":   dev.os_guess or "",
             "scan_count": scan_count,
+            "dhcp_option55": dev.dhcp_option55 or "",
+            "dhcp_option60": dev.dhcp_option60 or "",
+            "dhcp_hostname": dev.dhcp_hostname or "",
         })
     return result
 

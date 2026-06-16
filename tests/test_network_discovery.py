@@ -21,6 +21,8 @@ from network.discovery import (
     _update_device_hostname,
     _update_device_vendor,
     _resolve_upnp_details,
+    parse_dhcp_packet,
+    _update_device_dhcp,
 )
 
 
@@ -156,6 +158,64 @@ class TestNetworkDiscovery(unittest.TestCase):
             _resolve_upnp_details("192.168.1.1", "file:///etc/passwd")
 
         mock_urlopen.assert_not_called()
+
+    def test_parse_dhcp_packet_valid(self):
+        header = bytearray(236)
+        header[0] = 1  # Boot Request
+        header[1] = 1  # Ethernet
+        header[2] = 6  # MAC length
+        header[28:34] = b"\x00\x11\x22\x33\x44\x55"
+        cookie = b"\x63\x82\x53\x63"
+        options = (
+            b"\x35\x01\x03" +           # Option 53: DHCP Message Type (3)
+            b"\x0c\x07myphone" +         # Option 12: Hostname (myphone)
+            b"\x3c\x08MSFT 5.0" +        # Option 60: Vendor Class Id (MSFT 5.0)
+            b"\x37\x04\x01\x03\x06\x0f" +  # Option 55: PRL (1,3,6,15)
+            b"\xff"                      # End
+        )
+        packet = bytes(header) + cookie + options
+        info = parse_dhcp_packet(packet)
+        self.assertIsNotNone(info)
+        self.assertEqual(info["mac"], "00:11:22:33:44:55")
+        self.assertEqual(info["hostname"], "myphone")
+        self.assertEqual(info["vendor_class"], "MSFT 5.0")
+        self.assertEqual(info["param_list"], "1,3,6,15")
+        self.assertEqual(info["message_type"], 3)
+
+    def test_parse_dhcp_packet_invalid(self):
+        # Too short
+        self.assertIsNone(parse_dhcp_packet(b"\x01\x01\x06" + b"\x00" * 50))
+        # Wrong op
+        header = bytearray(236)
+        header[0] = 2  # Boot Reply, should be ignored
+        packet = bytes(header) + b"\x63\x82\x53\x63" + b"\xff"
+        self.assertIsNone(parse_dhcp_packet(packet))
+
+    def test_update_device_dhcp_new_device(self):
+        info = {
+            "mac": "00:11:22:33:44:55",
+            "hostname": "myphone",
+            "vendor_class": "MSFT 5.0",
+            "param_list": "1,3,6,15",
+            "requested_ip": "192.168.1.100",
+            "message_type": 3
+        }
+
+        # Mock writing log to avoid log side-effects
+        with patch("network.discovery.SessionLocal", return_value=self.session), \
+             patch("monitoring.activity.write_log") as mock_write_log:
+            _update_device_dhcp(info, "192.168.1.100")
+
+        db = self.Session()
+        device_db = db.query(Device).filter(Device.mac == "00:11:22:33:44:55").first()
+        self.assertIsNotNone(device_db)
+        self.assertEqual(device_db.hostname, "myphone")
+        self.assertEqual(device_db.dhcp_hostname, "myphone")
+        self.assertEqual(device_db.dhcp_option60, "MSFT 5.0")
+        self.assertEqual(device_db.dhcp_option55, "1,3,6,15")
+        self.assertEqual(device_db.vendor, "Microsoft")
+        self.assertEqual(device_db.os_guess, "Windows")
+        db.close()
 
 
 if __name__ == "__main__":

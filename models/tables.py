@@ -75,6 +75,11 @@ class Device(Base):
     os_guess    = Column(String, nullable=True)
     os_guess_at = Column(DateTime, nullable=True)
 
+    # DHCP Fingerprint fields
+    dhcp_option55 = Column(String, nullable=True)
+    dhcp_option60 = Column(String, nullable=True)
+    dhcp_hostname = Column(String, nullable=True)
+
     appearances = relationship("ScanDevice", back_populates="device")
 
 

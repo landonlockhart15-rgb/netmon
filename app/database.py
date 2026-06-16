@@ -149,6 +149,20 @@ def run_migrations():
             conn.commit()
             print("[db] Migration: devices.os_guess_at added.")
 
+        # ── devices.dhcp_option55, dhcp_option60, dhcp_hostname ──
+        if "dhcp_option55" not in existing:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN dhcp_option55 TEXT"))
+            conn.commit()
+            print("[db] Migration: devices.dhcp_option55 added.")
+        if "dhcp_option60" not in existing:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN dhcp_option60 TEXT"))
+            conn.commit()
+            print("[db] Migration: devices.dhcp_option60 added.")
+        if "dhcp_hostname" not in existing:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN dhcp_hostname TEXT"))
+            conn.commit()
+            print("[db] Migration: devices.dhcp_hostname added.")
+
         # ── Env-backed secret migration ───────────────────────────────────
         # If NTFY_PASS or SMTP_PASS is now set in the environment but the
         # old plain-text DB value is still hanging around, blank the DB row
