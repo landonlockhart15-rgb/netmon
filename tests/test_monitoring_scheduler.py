@@ -23,6 +23,7 @@ from monitoring.scheduler import (
     _netmon_enabled,
     _run_log_cleanup,
     _run_and_save,
+    _get_active_discovery_settings,
 )
 
 
@@ -75,6 +76,24 @@ class TestSchedulerHelpers(unittest.TestCase):
         s.value = "not-an-int"
         self.session.commit()
         self.assertEqual(_get_int(self.session, "int_key", 42), 42)
+
+    @patch("monitoring.scheduler.AI_HUB_MAINTENANCE_FILE")
+    def test_get_active_discovery_settings(self, mock_path):
+        mock_path.read_text.side_effect = Exception("Not found")
+        # Test default settings
+        with patch("monitoring.scheduler.SessionLocal", return_value=self.session):
+            interval, enabled = _get_active_discovery_settings()
+            self.assertEqual(interval, 300)
+            self.assertTrue(enabled)
+
+        # Test custom interval and disabled
+        self.session.add(Setting(key="active_discovery_interval_s", value="600"))
+        self.session.add(Setting(key="active_discovery_enabled", value="false"))
+        self.session.commit()
+        with patch("monitoring.scheduler.SessionLocal", return_value=self.session):
+            interval, enabled = _get_active_discovery_settings()
+            self.assertEqual(interval, 600)
+            self.assertFalse(enabled)
 
     @patch("monitoring.scheduler.AI_HUB_MAINTENANCE_FILE")
     def test_netmon_enabled_setting_disabled(self, mock_path):
