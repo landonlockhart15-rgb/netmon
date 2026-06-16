@@ -205,7 +205,7 @@ async def lifespan(app: FastAPI):
     for task in (health_task, traffic_task, auto_scan_task, anomaly_task,
                  command_task, report_task, cleanup_task, dns_health_task,
                  port_refresh_task, ssl_cert_task, doh_task, deep_ai_task,
-                 hunt_task, autoheal_task):
+                 hunt_task, autoheal_task, active_discovery_task):
         task.cancel()
         try:
             await task
