@@ -77,7 +77,8 @@ def parse_nmap_xml(xml_string: str) -> List[Dict[str, Any]]:
             if addr_type == "ipv4":
                 device["ip"] = addr.get("addr")
             elif addr_type == "mac":
-                device["mac"] = addr.get("addr")
+                mac_addr = addr.get("addr")
+                device["mac"] = mac_addr.lower() if mac_addr else None
                 # vendor is an attribute on the MAC address element
                 device["vendor"] = addr.get("vendor")
 

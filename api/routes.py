@@ -84,8 +84,9 @@ def _resolve_device(db: Session, d: dict):
     """Find or create the Device row for a parsed nmap host. Returns (device, is_new)."""
     existing = None
 
-    if d["mac"]:
-        existing = db.query(Device).filter(Device.mac == d["mac"]).first()
+    mac = d["mac"].lower() if d["mac"] else None
+    if mac:
+        existing = db.query(Device).filter(Device.mac == mac).first()
 
     if existing is None and d["ip"]:
         prev_sd = (
@@ -103,7 +104,7 @@ def _resolve_device(db: Session, d: dict):
     # didn't return a manufacturer (very common when the device is more than
     # one hop away or has randomized MACs disabled).
     from network.oui import enrich_vendor
-    enriched_vendor = enrich_vendor(d.get("mac") or "", d.get("vendor"))
+    enriched_vendor = enrich_vendor(mac or "", d.get("vendor"))
 
     if existing:
         existing.last_seen = datetime.now(timezone.utc)
@@ -114,7 +115,7 @@ def _resolve_device(db: Session, d: dict):
             existing.vendor = d["vendor"]
         return existing, False
     else:
-        device = Device(mac=d["mac"], vendor=enriched_vendor or d["vendor"], hostname=d["hostname"])
+        device = Device(mac=mac, vendor=enriched_vendor or d["vendor"], hostname=d["hostname"])
         db.add(device)
         db.flush()
         return device, True
