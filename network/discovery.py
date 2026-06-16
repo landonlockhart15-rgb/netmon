@@ -28,6 +28,8 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
+from datetime import datetime, timezone
+
 from app.database import SessionLocal
 from models.tables import Device
 
@@ -224,10 +226,261 @@ def _update_device_vendor(ip: str, vendor: str, source: str) -> None:
         db.close()
 
 
+def parse_dhcp_packet(data: bytes) -> Optional[dict]:
+    """
+    Parse BOOTP/DHCP request/inform packet.
+    Returns a dict with mac, hostname, vendor_class, param_list, requested_ip, message_type
+    or None if invalid/not a client boot request.
+    """
+    if len(data) < 240:
+        return None
+    # Check BOOTP op: 1 = Boot Request (client to server)
+    op = data[0]
+    if op != 1:
+        return None
+    
+    # htype = data[1], hlen = data[2]
+    htype = data[1]
+    hlen = data[2]
+    if htype != 1 or hlen != 6:
+        return None # Only Ethernet MAC support for now
+    
+    # Client MAC address is in chaddr (offset 28 to 34)
+    mac_bytes = data[28:34]
+    mac = ":".join(f"{b:02x}" for b in mac_bytes)
+    
+    # Check magic cookie at offset 236: 99.130.83.99
+    if data[236:240] != b"\x63\x82\x53\x63":
+        return None
+        
+    options = {}
+    cur = 240
+    while cur + 2 <= len(data):
+        opt_code = data[cur]
+        if opt_code == 255:
+            break
+        if opt_code == 0:
+            cur += 1
+            continue
+        opt_len = data[cur + 1]
+        if cur + 2 + opt_len > len(data):
+            break  # malformed option len
+        opt_val = data[cur + 2 : cur + 2 + opt_len]
+        
+        options[opt_code] = opt_val
+        cur += 2 + opt_len
+        
+    # Option 53: DHCP Message Type (1 byte)
+    msg_type = None
+    if 53 in options and len(options[53]) == 1:
+        msg_type = options[53][0]
+        
+    # Option 12: Host Name
+    hostname = None
+    if 12 in options:
+        try:
+            hostname = options[12].decode("utf-8", errors="replace").strip()
+        except Exception:
+            pass
+            
+    # Option 60: Vendor Class Identifier
+    vendor_class = None
+    if 60 in options:
+        try:
+            vendor_class = options[60].decode("utf-8", errors="replace").strip()
+        except Exception:
+            pass
+            
+    # Option 55: Parameter Request List
+    param_list = None
+    if 55 in options:
+        param_list = ",".join(str(b) for b in options[55])
+        
+    # Option 50: Requested IP
+    requested_ip = None
+    if 50 in options and len(options[50]) == 4:
+        requested_ip = ".".join(str(b) for b in options[50])
+        
+    return {
+        "mac": mac,
+        "hostname": hostname,
+        "vendor_class": vendor_class,
+        "param_list": param_list,
+        "requested_ip": requested_ip,
+        "message_type": msg_type
+    }
+
+
+def _update_device_dhcp(info: dict, sender_ip: str) -> None:
+    mac = info["mac"].lower()
+    db = SessionLocal()
+    try:
+        from models.tables import Device, Alert
+        from network.oui import enrich_vendor
+        
+        # Check if the device exists by MAC
+        dev = db.query(Device).filter(Device.mac == mac).first()
+        
+        # Determine vendor/OS guess from option 60 and 55 fingerprints
+        vendor_guess = None
+        os_guess = None
+        
+        vc = info["vendor_class"] or ""
+        prl = info["param_list"] or ""
+        
+        # Option 60 rules
+        vc_lower = vc.lower()
+        if "android" in vc_lower:
+            os_guess = "Android"
+            vendor_guess = "Android Device"
+        elif any(x in vc_lower for x in ("iphone", "ipad", "apple", "ipod")):
+            os_guess = "iOS"
+            vendor_guess = "Apple"
+        elif any(x in vc_lower for x in ("macintosh", "macbook", "os x")):
+            os_guess = "macOS"
+            vendor_guess = "Apple"
+        elif "msft 5.0" in vc_lower:
+            os_guess = "Windows"
+            vendor_guess = "Microsoft"
+        elif "nintendo" in vc_lower:
+            os_guess = "Nintendo OS"
+            vendor_guess = "Nintendo"
+        elif "playstation" in vc_lower:
+            os_guess = "PlayStation OS"
+            vendor_guess = "Sony"
+        elif "xbox" in vc_lower:
+            os_guess = "Xbox OS"
+            vendor_guess = "Microsoft"
+        elif "chromecast" in vc_lower:
+            os_guess = "Cast OS"
+            vendor_guess = "Google"
+        elif "sonos" in vc_lower:
+            os_guess = "Sonos OS"
+            vendor_guess = "Sonos"
+            
+        # Option 55 rules (fallback)
+        if not os_guess and prl:
+            if prl.startswith("1,3,6,15") and any(x in prl for x in ("119", "95", "252")):
+                os_guess = "macOS/iOS"
+                vendor_guess = "Apple"
+            elif any(x in prl for x in ("31", "33", "43", "44", "46", "47")) or "249,252" in prl:
+                os_guess = "Windows"
+                vendor_guess = "Microsoft"
+            elif any(x in prl for x in ("26", "28", "51", "58", "59")):
+                os_guess = "Android"
+                
+        # If still no vendor guess, try OUI lookup
+        enriched_vendor = enrich_vendor(mac, vendor_guess)
+        if enriched_vendor and enriched_vendor.lower() != "unknown":
+            vendor_guess = enriched_vendor
+            
+        now = datetime.now(timezone.utc)
+        
+        if not dev:
+            # Create a new Device entry!
+            dev = Device(
+                mac=mac,
+                vendor=vendor_guess or "Unknown",
+                hostname=info["hostname"] or "",
+                dhcp_hostname=info["hostname"],
+                dhcp_option60=info["vendor_class"],
+                dhcp_option55=info["param_list"],
+                os_guess=os_guess,
+                first_seen=now,
+                last_seen=now
+            )
+            db.add(dev)
+            db.flush() # Populate dev.id
+            
+            # Log the discovery event
+            from monitoring.activity import write_log
+            write_log("info", "system", "new_device_detected",
+                      f"New device fingerprint discovered via DHCP: MAC={mac}, Hostname={dev.hostname or 'unknown'}")
+                      
+            # Add Alert
+            db.add(Alert(
+                alert_type="new_device",
+                message=f"New device (DHCP): {dev.hostname or sender_ip or 'unknown'} (MAC: {mac})",
+                device_id=dev.id,
+            ))
+        else:
+            # Update existing device!
+            dev.last_seen = now
+            if info["hostname"]:
+                dev.hostname = info["hostname"]
+                dev.dhcp_hostname = info["hostname"]
+            if info["vendor_class"]:
+                dev.dhcp_option60 = info["vendor_class"]
+            if info["param_list"]:
+                dev.dhcp_option55 = info["param_list"]
+            if os_guess and not dev.os_guess:
+                dev.os_guess = os_guess
+            if vendor_guess and (not dev.vendor or dev.vendor.lower() in ("", "unknown")):
+                dev.vendor = vendor_guess
+                
+        # Update ScanDevice row if we have IP
+        target_ip = info["requested_ip"] or (sender_ip if sender_ip and sender_ip != "0.0.0.0" else None)
+        if target_ip:
+            from models.tables import Scan, ScanDevice
+            latest_scan = db.query(Scan).filter(Scan.status == "complete").order_by(Scan.id.desc()).first()
+            if latest_scan:
+                sd = db.query(ScanDevice).filter(ScanDevice.scan_id == latest_scan.id, ScanDevice.device_id == dev.id).first()
+                if sd:
+                    sd.ip = target_ip
+                    if info["hostname"]:
+                        sd.hostname = info["hostname"]
+                else:
+                    sd = ScanDevice(
+                        scan_id=latest_scan.id,
+                        device_id=dev.id,
+                        ip=target_ip,
+                        hostname=info["hostname"] or ""
+                    )
+                    db.add(sd)
+                    
+        db.commit()
+    except Exception as exc:
+        print(f"[dhcp] database update error: {exc}")
+    finally:
+        db.close()
+
+
+def _dhcp_listener() -> None:
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("", 67))
+        sock.settimeout(5.0)
+    except OSError as exc:
+        print(f"[dhcp] cannot bind 67 (probably in use or permission denied): {exc}")
+        if sock:
+            sock.close()
+        return
+
+    print("[dhcp] listening on 67")
+    try:
+        while True:
+            try:
+                data, addr = sock.recvfrom(4096)
+                sender_ip = addr[0]
+                info = parse_dhcp_packet(data)
+                if info:
+                    _update_device_dhcp(info, sender_ip)
+            except socket.timeout:
+                continue
+            except Exception as exc:
+                print(f"[dhcp] loop error: {exc}")
+                time.sleep(1.0)
+    finally:
+        sock.close()
+
+
 def start_passive_discovery() -> None:
-    """Start mDNS + SSDP listener threads. Idempotent."""
+    """Start mDNS + SSDP + DHCP listener threads. Idempotent."""
     threading.Thread(target=_mdns_listener, daemon=True, name="netmon-mdns").start()
     threading.Thread(target=_ssdp_listener, daemon=True, name="netmon-ssdp").start()
+    threading.Thread(target=_dhcp_listener, daemon=True, name="netmon-dhcp").start()
 
 
 # ── Active Discovery Sweep ───────────────────────────────────────────────────
