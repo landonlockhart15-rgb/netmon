@@ -26,9 +26,25 @@ import struct
 import threading
 import time
 from typing import Optional
+from urllib.parse import urlparse
 
 from app.database import SessionLocal
 from models.tables import Device
+
+
+def _sanitize_string(s: str, max_len: int = 128) -> str:
+    """Strip control characters, HTML/XML-like tags, and truncate to max_len."""
+    if not s:
+        return ""
+    # Filter printable characters only
+    s = "".join(c for c in s if c.isprintable())
+    # Strip HTML tags
+    s = re.sub(r"<[^>]*>", "", s)
+    # Remove any remaining raw angle brackets to prevent HTML tag tricks
+    s = s.replace("<", "").replace(">", "")
+    # Normalize multiple whitespaces into a single space
+    s = " ".join(s.split())
+    return s[:max_len].strip()
 
 # ── mDNS ─────────────────────────────────────────────────────────────────────
 
@@ -67,6 +83,7 @@ def _decode_dns_name(data: bytes, offset: int) -> tuple[str, int]:
 
 
 def _mdns_listener() -> None:
+    sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -76,30 +93,35 @@ def _mdns_listener() -> None:
         sock.settimeout(5.0)
     except OSError as exc:
         print(f"[mdns] cannot bind 5353 (probably in use): {exc}")
+        if sock:
+            sock.close()
         return
 
     print("[mdns] listening on 5353")
-    while True:
-        try:
-            data, addr = sock.recvfrom(4096)
-            client_ip = addr[0]
-            # Parse the most likely useful PTR/SRV record name.
+    try:
+        while True:
             try:
-                # DNS header is 12 bytes; questions + answers follow.
-                # Decode first question name as a low-cost hint.
-                name, _ = _decode_dns_name(data, 12)
-            except Exception:
+                data, addr = sock.recvfrom(4096)
+                client_ip = addr[0]
+                # Parse the most likely useful PTR/SRV record name.
+                try:
+                    # DNS header is 12 bytes; questions + answers follow.
+                    # Decode first question name as a low-cost hint.
+                    name, _ = _decode_dns_name(data, 12)
+                except Exception:
+                    continue
+                if not name or "." not in name:
+                    continue
+                hostname_hint = name.split(".")[0] if name.endswith(".local") else None
+                if hostname_hint and len(hostname_hint) > 1:
+                    _update_device_hostname(client_ip, hostname_hint, source="mdns")
+            except socket.timeout:
                 continue
-            if not name or "." not in name:
-                continue
-            hostname_hint = name.split(".")[0] if name.endswith(".local") else None
-            if hostname_hint and len(hostname_hint) > 1:
-                _update_device_hostname(client_ip, hostname_hint, source="mdns")
-        except socket.timeout:
-            continue
-        except Exception as exc:
-            print(f"[mdns] loop error: {exc}")
-            time.sleep(1.0)
+            except Exception as exc:
+                print(f"[mdns] loop error: {exc}")
+                time.sleep(1.0)
+    finally:
+        sock.close()
 
 
 # ── SSDP ─────────────────────────────────────────────────────────────────────
@@ -112,6 +134,7 @@ _SSDP_USN_RE    = re.compile(rb"USN:\s*([^\r\n]+)",    re.IGNORECASE)
 
 
 def _ssdp_listener() -> None:
+    sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -121,30 +144,38 @@ def _ssdp_listener() -> None:
         sock.settimeout(5.0)
     except OSError as exc:
         print(f"[ssdp] cannot bind 1900: {exc}")
+        if sock:
+            sock.close()
         return
 
     print("[ssdp] listening on 1900")
-    while True:
-        try:
-            data, addr = sock.recvfrom(4096)
-            client_ip = addr[0]
-            server = _SSDP_SERVER_RE.search(data)
-            if server:
-                hint = server.group(1).strip().decode("utf-8", errors="replace")
-                # Take the most-specific token (last segment usually has the device model).
-                pieces = [p for p in hint.split() if p]
-                vendor_hint = pieces[-1] if pieces else hint
-                _update_device_vendor(client_ip, vendor_hint[:128], source="ssdp")
-        except socket.timeout:
-            continue
-        except Exception as exc:
-            print(f"[ssdp] loop error: {exc}")
-            time.sleep(1.0)
+    try:
+        while True:
+            try:
+                data, addr = sock.recvfrom(4096)
+                client_ip = addr[0]
+                server = _SSDP_SERVER_RE.search(data)
+                if server:
+                    hint = server.group(1).strip().decode("utf-8", errors="replace")
+                    # Take the most-specific token (last segment usually has the device model).
+                    pieces = [p for p in hint.split() if p]
+                    vendor_hint = pieces[-1] if pieces else hint
+                    _update_device_vendor(client_ip, vendor_hint, source="ssdp")
+            except socket.timeout:
+                continue
+            except Exception as exc:
+                print(f"[ssdp] loop error: {exc}")
+                time.sleep(1.0)
+    finally:
+        sock.close()
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 def _update_device_hostname(ip: str, hostname: str, source: str) -> None:
+    hostname = _sanitize_string(hostname, 128)
+    if not hostname:
+        return
     db = SessionLocal()
     try:
         from models.tables import ScanDevice
@@ -156,7 +187,7 @@ def _update_device_hostname(ip: str, hostname: str, source: str) -> None:
         if not sd or not sd.device:
             return
         dev = sd.device
-        if not dev.hostname or dev.hostname.lower() == hostname.lower():
+        if dev.hostname and dev.hostname.lower() == hostname.lower():
             return  # nothing new
         # Prefer mDNS hostnames as they're typically the friendly name.
         if not dev.hostname or len(hostname) > len(dev.hostname or ""):
@@ -169,6 +200,9 @@ def _update_device_hostname(ip: str, hostname: str, source: str) -> None:
 
 
 def _update_device_vendor(ip: str, vendor: str, source: str) -> None:
+    vendor = _sanitize_string(vendor, 128)
+    if not vendor:
+        return
     db = SessionLocal()
     try:
         from models.tables import ScanDevice
@@ -241,6 +275,8 @@ def parse_dns_packet(data: bytes) -> list[str]:
             return ".".join(parts), advance
 
         for _ in range(qdcount):
+            if offset >= len(data):
+                break
             name, offset = decode_name(offset)
             if name:
                 names.append(name)
@@ -276,11 +312,23 @@ def parse_dns_packet(data: bytes) -> list[str]:
 
 def _resolve_upnp_details(ip: str, location_url: str) -> None:
     try:
+        from urllib.parse import urlparse
         import urllib.request as urllib_req
         import re as xml_re
+        
+        parsed = urlparse(location_url)
+        if parsed.scheme not in ("http", "https"):
+            return
+            
+        # SSRF Protection: Ensure location URL host matches the responding device IP exactly.
+        if parsed.hostname != ip:
+            return
+            
         req = urllib_req.Request(location_url, headers={"User-Agent": "NetMon/1.0 home-network-monitor"})
-        with urllib_req.urlopen(req, timeout=3.0) as response:
-            xml_content = response.read().decode("utf-8", errors="replace")
+        with urllib_req.urlopen(req, timeout=2.0) as response:
+            # Prevent DoS by reading at most 1 MB of XML content
+            xml_content_bytes = response.read(1024 * 1024)
+            xml_content = xml_content_bytes.decode("utf-8", errors="replace")
             
         def get_tag(tag_name: str) -> str:
             match = xml_re.search(fr"<{tag_name}[^>]*>([^<]+)</{tag_name}>", xml_content, xml_re.I)
@@ -292,7 +340,7 @@ def _resolve_upnp_details(ip: str, location_url: str) -> None:
         
         if manufacturer:
             vendor_str = f"{manufacturer} {model}".strip() if model else manufacturer
-            _update_device_vendor(ip, vendor_str[:128], source="upnp_xml")
+            _update_device_vendor(ip, vendor_str, source="upnp_xml")
             
         if friendly_name:
             _update_device_hostname(ip, friendly_name, source="upnp_xml")
@@ -309,33 +357,49 @@ def _send_active_ssdp_query() -> None:
                "MX: 2\r\n"
                "ST: ssdp:all\r\n\r\n").encode()
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-        sock.settimeout(3.0)
-        sock.sendto(msg, ("239.255.255.250", 1900))
-        
-        start_time = time.time()
-        while time.time() - start_time < 3.0:
-            try:
-                data, addr = sock.recvfrom(4096)
-                client_ip = addr[0]
-                
-                server_match = _SSDP_SERVER_RE.search(data)
-                if server_match:
-                    hint = server_match.group(1).strip().decode("utf-8", errors="replace")
-                    pieces = [p for p in hint.split() if p]
-                    vendor_hint = pieces[-1] if pieces else hint
-                    _update_device_vendor(client_ip, vendor_hint[:128], source="active_ssdp")
-                
-                location_match = re.search(rb"LOCATION:\s*([^\r\n]+)", data, re.IGNORECASE)
-                if location_match:
-                    location_url = location_match.group(1).strip().decode("utf-8", errors="replace")
-                    _resolve_upnp_details(client_ip, location_url)
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+            sock.settimeout(3.0)
+            sock.sendto(msg, ("239.255.255.250", 1900))
+            
+            processed_ips = set()
+            processed_urls = set()
+            resolved_count = 0
+            max_resolves = 10
+            
+            start_time = time.time()
+            while time.time() - start_time < 3.0:
+                try:
+                    data, addr = sock.recvfrom(4096)
+                    client_ip = addr[0]
                     
-            except socket.timeout:
-                break
-            except Exception:
-                continue
-        sock.close()
+                    if client_ip in processed_ips and len(processed_ips) > 20:
+                        continue
+                    
+                    server_match = _SSDP_SERVER_RE.search(data)
+                    if server_match:
+                        hint = server_match.group(1).strip().decode("utf-8", errors="replace")
+                        pieces = [p for p in hint.split() if p]
+                        vendor_hint = pieces[-1] if pieces else hint
+                        _update_device_vendor(client_ip, vendor_hint, source="active_ssdp")
+                        processed_ips.add(client_ip)
+                    
+                    location_match = re.search(rb"LOCATION:\s*([^\r\n]+)", data, re.IGNORECASE)
+                    if location_match:
+                        location_url = location_match.group(1).strip().decode("utf-8", errors="replace")
+                        if location_url not in processed_urls:
+                            processed_urls.add(location_url)
+                            if resolved_count < max_resolves:
+                                _resolve_upnp_details(client_ip, location_url)
+                                resolved_count += 1
+                                processed_ips.add(client_ip)
+                                
+                except socket.timeout:
+                    break
+                except Exception:
+                    continue
+        finally:
+            sock.close()
     except Exception as exc:
         print(f"[active-ssdp] query error: {exc}")
 
@@ -359,27 +423,35 @@ def _send_active_mdns_query() -> None:
         pkt = tx_id + flags + qdcount + rest + qname + qtype + qclass
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-        sock.settimeout(3.0)
-        sock.sendto(pkt, ("224.0.0.251", 5353))
-        
-        start_time = time.time()
-        while time.time() - start_time < 3.0:
-            try:
-                data, addr = sock.recvfrom(4096)
-                client_ip = addr[0]
-                
-                names = parse_dns_packet(data)
-                for name in names:
-                    if name.endswith(".local"):
-                        hostname_hint = name.split(".")[0]
-                        if hostname_hint and not hostname_hint.startswith("_") and len(hostname_hint) > 1:
-                            _update_device_hostname(client_ip, hostname_hint, source="active_mdns")
-            except socket.timeout:
-                break
-            except Exception:
-                continue
-        sock.close()
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+            sock.settimeout(3.0)
+            sock.sendto(pkt, ("224.0.0.251", 5353))
+            
+            processed_ips = set()
+            
+            start_time = time.time()
+            while time.time() - start_time < 3.0:
+                try:
+                    data, addr = sock.recvfrom(4096)
+                    client_ip = addr[0]
+                    
+                    if client_ip in processed_ips and len(processed_ips) > 20:
+                        continue
+                        
+                    names = parse_dns_packet(data)
+                    for name in names:
+                        if name.endswith(".local"):
+                            hostname_hint = name.split(".")[0]
+                            if hostname_hint and not hostname_hint.startswith("_") and len(hostname_hint) > 1:
+                                _update_device_hostname(client_ip, hostname_hint, source="active_mdns")
+                                processed_ips.add(client_ip)
+                except socket.timeout:
+                    break
+                except Exception:
+                    continue
+        finally:
+            sock.close()
     except Exception as exc:
         print(f"[active-mdns] query error: {exc}")
 
