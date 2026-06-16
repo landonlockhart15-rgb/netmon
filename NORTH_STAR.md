@@ -2,38 +2,51 @@
 
 > Read this before proposing or reviewing any change. It defines what this
 > project is *trying to be*. A change can be correct and still be wrong if it
-> doesn't serve this. Private hobby project — goals are **capability, autonomy,
-> and clarity**, plus learning while building. No revenue or user-growth target.
+> doesn't serve this. Private hobby project — goals are **capability, power, and
+> craft**, plus learning while building. No revenue/user-growth target.
 
 ## What this really is
-A home-network guardian. It watches the network, understands what it sees, and
-acts — it monitors devices and uptime, **explains problems in plain English** (a
-non-technical person should understand what's wrong and why), and **heals
-itself** (Uptime Guardian auto-reboots the Orbi on an outage). AI diagnoses;
-rules decide; the human is informed, not required.
+The **best home-network monitoring system on the market — passive AND offensive.**
+Three fused pillars, all wrapped in AI and a beautiful UI:
+
+1. **Total visibility** — identify **every device on the network using every means
+   possible**: ARP/mDNS/SSDP/DHCP, port & service scans, OS/vendor fingerprinting,
+   passive traffic inference, MAC/OUI lookup, hostname/UPnP, captive probing.
+   Nothing on the network is unknown.
+2. **Security lab (offensive)** — capable of finding **any possible exploit on any
+   possible machine**: vuln scanning, CVE mapping, exposed-service and weak-cred
+   detection, exploit-surface analysis. A real red-team lab for the home network.
+3. **Uptime Guardian** — keeps you online: detects outages, diagnoses cause, and
+   **auto-heals** (e.g. reboots the Orbi), always safely and reversibly.
+
+It is **fused with AI** (plain-English diagnosis and insight) and is meant to be
+**graphically amazing, professional, and smooth.**
 
 ## What "great" looks like
-- **Speaks human, not dev.** Every alert/insight says what it means for the home
-  and what (if anything) to do — never a stack trace or raw metric dump.
-- **Acts autonomously and safely.** Detect → diagnose → fix, with guardrails and
-  a clear record of what it did and why. Always reversible.
-- **Trustworthy.** Few false alarms; when it speaks, it matters.
-- **Insightful.** Surfaces patterns a person wouldn't catch (a flaky device, a
-  recurring 3am drop) before they become a problem.
+- **Sees everything.** Device discovery is exhaustive and identification is
+  confident — make/model/OS/role for every node, by any technique available.
+- **Finds anything.** The security lab surfaces real, current exploits and exposure
+  on any host, with evidence and a clear path to fix.
+- **Keeps you online.** Detect → diagnose → heal, with guardrails and a plain record.
+- **Looks the part.** A polished, smooth, professional UI — topology, devices, and
+  findings rendered beautifully; never clunky.
+- **Speaks human.** AI explains what a finding/outage means and what to do.
 
 ## Build toward
-Smarter diagnosis and root-causing, more self-healing actions (beyond reboot),
-clearer plain-English explanations, proactive pattern detection, a calm and
-legible dashboard. Capability that reduces how often a human must intervene.
+More discovery & fingerprinting techniques; deeper offensive scanning and
+exploit-finding; broader self-healing actions; sharper AI diagnosis; richer topology
+and device intelligence; and continual UI polish (graphics, smoothness, pro feel).
+Both the **backend (scanning/identification/healing engine)** and the **frontend
+(visualization)** should be excellent.
 
 ## Do NOT
-- Bury the user in dev-speak, raw logs, or metric noise.
-- Take a network action that isn't safe and reversible, or act without recording
-  why in plain English.
-- Add a second parallel monitor/insight/explain path when one exists — extend it.
-- Ship test-scaffolding or refactors *as if* they were the product when there's
-  real guardian capability to build.
+- Ship maintenance/test/refactor churn as if it were the product when there's real
+  discovery, offensive-security, healing, or UI capability to build.
+- Add a second parallel monitor/scan/insight path when one exists — extend it.
+- Take a network/host action that isn't safe and reversible, or hide what it did.
+- Bury the user in dev-speak or raw output — AI should translate it.
 
 ## The vibe
-A calm, competent operator watching the house. Quiet until it matters, clear
-when it speaks, and fixes things before you have to ask.
+A relentless, professional home-network operator and red-team lab: it sees every
+device, finds every weakness, keeps you online, explains it in plain English, and
+looks gorgeous doing it.
