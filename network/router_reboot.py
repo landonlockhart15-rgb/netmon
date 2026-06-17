@@ -236,26 +236,31 @@ def _kasa_api(
         finally:
             s.close()
             
+    delete_cmd = '{"count_down":{"delete_all_rules":{}}}'
+    rule_cmd = '{"count_down":{"add_rule":{"enable":1,"delay":10,"act":1,"name":"reboot_on"}}}'
     off_cmd = '{"system":{"set_relay_state":{"state":0}}}'
-    on_cmd = '{"system":{"set_relay_state":{"state":1}}}'
     
     try:
+        # Clear any existing countdown rules first (ignore if it fails/unsupported)
+        try:
+            send_cmd(delete_cmd)
+        except Exception:
+            pass
+            
+        rule_resp = send_cmd(rule_cmd)
+        if "err_code" in rule_resp and '"err_code":0' not in rule_resp.replace(" ", ""):
+            return {"success": False, "method": method, "detail": "",
+                    "error": f"Kasa rejected countdown timer command: {rule_resp[:100]}"}
+                    
         off_resp = send_cmd(off_cmd)
         if "err_code" in off_resp and '"err_code":0' not in off_resp.replace(" ", ""):
             return {"success": False, "method": method, "detail": "",
                     "error": f"Kasa rejected OFF command: {off_resp[:100]}"}
                     
-        time.sleep(10)
-        
-        on_resp = send_cmd(on_cmd)
-        if "err_code" in on_resp and '"err_code":0' not in on_resp.replace(" ", ""):
-            return {"success": False, "method": method, "detail": "",
-                    "error": f"Kasa OFF succeeded, but ON command failed: {on_resp[:100]}. WARNING: Plug may be stuck in OFF state!"}
-                    
         return {
             "success": True,
             "method": method,
-            "detail": f"Kasa power-cycled successfully. OFF response: {off_resp[:80]}, ON response: {on_resp[:80]}",
+            "detail": f"Kasa power-cycle successfully initialized via countdown rule. Rule response: {rule_resp[:80]}, OFF response: {off_resp[:80]}",
             "error": None
         }
     except Exception as exc:

@@ -209,7 +209,8 @@ def test_smartplug_drivers():
         
     mock_sock_inst = MagicMock()
     mock_sock_inst.recv.side_effect = [
-        make_kasa_resp('{"system":{"set_relay_state":{"err_code":0}}}'),
+        make_kasa_resp('{"count_down":{"delete_all_rules":{"err_code":0}}}'),
+        make_kasa_resp('{"count_down":{"add_rule":{"err_code":0}}}'),
         make_kasa_resp('{"system":{"set_relay_state":{"err_code":0}}}')
     ]
     with patch("socket.socket", return_value=mock_sock_inst), patch("time.sleep"):
