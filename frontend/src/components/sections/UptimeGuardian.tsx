@@ -16,6 +16,7 @@ interface Cfg {
   max_per_outage: number; cooldown_s: number; max_per_day: number
   recovery_window_s: number; internet_targets: string[]
   router_ssl?: boolean; router_port?: number | null
+  smartplug_method?: string; smartplug_host?: string; smartplug_user?: string; smartplug_has_password?: boolean
 }
 
 const ACTION_ACCENT: Record<string, Accent> = {
@@ -28,6 +29,7 @@ export default function UptimeGuardian() {
   const { data, isLoading } = useQuery({ queryKey: ['autoheal'], queryFn: getAutoHeal, refetchInterval: 15_000 })
   const [form, setForm] = useState<Record<string, any>>({})
   const [pw, setPw] = useState('')
+  const [spw, setSpw] = useState('')
   const [sim, setSim] = useState<any[] | null>(null)
 
   const cfg: Cfg | undefined = data?.config
@@ -60,6 +62,9 @@ export default function UptimeGuardian() {
         autoheal_reboot_method: cfg.method,
         autoheal_router_ssl: cfg.router_ssl ?? false,
         autoheal_router_port: cfg.router_port ?? '',
+        autoheal_smartplug_method: cfg.smartplug_method ?? 'none',
+        autoheal_smartplug_host: cfg.smartplug_host ?? '',
+        autoheal_smartplug_user: cfg.smartplug_user ?? '',
       })
     }
   }, [cfg]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -68,9 +73,10 @@ export default function UptimeGuardian() {
     mutationFn: () => {
       const body: Record<string, any> = { ...form }
       if (pw.trim()) body.autoheal_router_pass = pw.trim()
+      if (spw.trim()) body.autoheal_smartplug_pass = spw.trim()
       return saveAutoHealConfig(body)
     },
-    onSuccess: () => { setPw(''); qc.invalidateQueries({ queryKey: ['autoheal'] }) },
+    onSuccess: () => { setPw(''); setSpw(''); qc.invalidateQueries({ queryKey: ['autoheal'] }) },
   })
   const rebootMut = useMutation({
     mutationFn: (force: boolean) => autoHealRebootNow(force),
@@ -238,12 +244,81 @@ export default function UptimeGuardian() {
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="Router admin host"><Input value={form.autoheal_router_host ?? ''} onChange={v => set('autoheal_router_host', v)} placeholder="192.168.1.1 (auto)" mono /></Field>
-              <Field label="Router admin user"><Input value={form.autoheal_router_user ?? ''} onChange={v => set('autoheal_router_user', v)} placeholder="admin" /></Field>
-              <Field label={`Router password ${cfg.has_password ? '(set — leave blank to keep)' : '(not set)'}`}>
-                <Input type="password" value={pw} onChange={setPw} placeholder={cfg.has_password ? '••••••••' : 'enter admin password'} />
+              <div className="col-span-1 sm:col-span-2 border-b border-white/5 pb-1">
+                <span className="text-xs font-semibold text-purple-400 uppercase tracking-wider">Primary Reboot Method</span>
+              </div>
+
+              <Field label="Reboot Method">
+                <select value={form.autoheal_reboot_method ?? 'netgear_soap'} onChange={e => set('autoheal_reboot_method', e.target.value)}
+                  className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-purple-500 w-full">
+                  <option value="netgear_soap" className="bg-[#0f0f1a]">Netgear SOAP (Orbi/CBR)</option>
+                  <option value="tasmota" className="bg-[#0f0f1a]">Tasmota Smart Plug (local HTTP)</option>
+                  <option value="shelly" className="bg-[#0f0f1a]">Shelly Smart Plug (local HTTP)</option>
+                  <option value="kasa" className="bg-[#0f0f1a]">TP-Link Kasa Smart Plug (local TCP)</option>
+                </select>
               </Field>
-              <Field label="Router port (blank = 443 with SSL, otherwise auto)"><Input value={form.autoheal_router_port ?? ''} onChange={v => set('autoheal_router_port', v)} placeholder="e.g. 443 or 5000" mono /></Field>
+
+              <Field label={form.autoheal_reboot_method === 'netgear_soap' ? 'Router admin host' : 'Smart plug host (IP/Name)'}>
+                <Input value={form.autoheal_router_host ?? ''} onChange={v => set('autoheal_router_host', v)} placeholder={form.autoheal_reboot_method === 'netgear_soap' ? '192.168.1.1 (auto)' : 'e.g. 192.168.1.100'} mono />
+              </Field>
+
+              {form.autoheal_reboot_method !== 'kasa' && (
+                <Field label={form.autoheal_reboot_method === 'netgear_soap' ? 'Router admin user' : 'Smart plug username'}>
+                  <Input value={form.autoheal_router_user ?? ''} onChange={v => set('autoheal_router_user', v)} placeholder={form.autoheal_reboot_method === 'netgear_soap' ? 'admin' : 'optional'} />
+                </Field>
+              )}
+
+              <Field label={form.autoheal_reboot_method === 'netgear_soap' ? `Router password ${cfg.has_password ? '(set — leave blank to keep)' : '(not set)'}` : `Smart plug password ${cfg.has_password ? '(set — leave blank to keep)' : '(not set)'}`}>
+                <Input type="password" value={pw} onChange={setPw} placeholder={cfg.has_password ? '••••••••' : 'enter password'} />
+              </Field>
+
+              {form.autoheal_reboot_method === 'netgear_soap' && (
+                <Field label="Router port (blank = 443 with SSL, otherwise auto)">
+                  <Input value={form.autoheal_router_port ?? ''} onChange={v => set('autoheal_router_port', v)} placeholder="e.g. 443 or 5000" mono />
+                </Field>
+              )}
+
+              {form.autoheal_reboot_method === 'netgear_soap' && (
+                <>
+                  <div className="col-span-1 sm:col-span-2 border-b border-white/5 pt-2 pb-1">
+                    <span className="text-xs font-semibold text-purple-400 uppercase tracking-wider">Smart Plug Fallback (Power-Cycle Router)</span>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Physically power-cycle the router if the primary SOAP reboot is unresponsive during network lockup.</p>
+                  </div>
+
+                  <Field label="Smart Plug Fallback Method">
+                    <select value={form.autoheal_smartplug_method ?? 'none'} onChange={e => set('autoheal_smartplug_method', e.target.value)}
+                      className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-purple-500 w-full">
+                      <option value="none" className="bg-[#0f0f1a]">None (No fallback)</option>
+                      <option value="tasmota" className="bg-[#0f0f1a]">Tasmota Smart Plug (local HTTP)</option>
+                      <option value="shelly" className="bg-[#0f0f1a]">Shelly Smart Plug (local HTTP)</option>
+                      <option value="kasa" className="bg-[#0f0f1a]">TP-Link Kasa Smart Plug (local TCP)</option>
+                    </select>
+                  </Field>
+
+                  {form.autoheal_smartplug_method && form.autoheal_smartplug_method !== 'none' && (
+                    <>
+                      <Field label="Fallback Plug Host (IP)">
+                        <Input value={form.autoheal_smartplug_host ?? ''} onChange={v => set('autoheal_smartplug_host', v)} placeholder="e.g. 192.168.1.100" mono />
+                      </Field>
+                      
+                      {form.autoheal_smartplug_method !== 'kasa' && (
+                        <Field label="Fallback Plug Username">
+                          <Input value={form.autoheal_smartplug_user ?? ''} onChange={v => set('autoheal_smartplug_user', v)} placeholder="optional" />
+                        </Field>
+                      )}
+
+                      <Field label={`Fallback Plug Password ${cfg.smartplug_has_password ? '(set — leave blank to keep)' : '(not set)'}`}>
+                        <Input type="password" value={spw} onChange={setSpw} placeholder={cfg.smartplug_has_password ? '••••••••' : 'enter password'} />
+                      </Field>
+                    </>
+                  )}
+                </>
+              )}
+
+              <div className="col-span-1 sm:col-span-2 border-b border-white/5 pt-2 pb-1">
+                <span className="text-xs font-semibold text-purple-400 uppercase tracking-wider">Guardian Parameters</span>
+              </div>
+
               <Field label="Internet targets (comma-sep)"><Input value={form.autoheal_internet_targets ?? ''} onChange={v => set('autoheal_internet_targets', v)} mono /></Field>
               <Field label="Confirm checks before acting"><Input type="number" value={form.autoheal_confirm_checks ?? ''} onChange={v => set('autoheal_confirm_checks', v)} /></Field>
               <Field label="Check interval (seconds)"><Input type="number" value={form.autoheal_interval_s ?? ''} onChange={v => set('autoheal_interval_s', v)} /></Field>
@@ -253,7 +328,7 @@ export default function UptimeGuardian() {
               <Field label="Recovery window (seconds)"><Input type="number" value={form.autoheal_recovery_window_s ?? ''} onChange={v => set('autoheal_recovery_window_s', v)} /></Field>
             </div>
             <p className="text-[11px] text-gray-600">
-              Router: Netgear Orbi CBR750 (all-in-one modem + router) — reboot via the Netgear SOAP API. The password is stored server-side and never leaves your machine.
+              Supports Netgear SOAP API or local smart plug (Tasmota, Shelly, TP-Link Kasa) to power-cycle the router. Passwords are stored server-side and never leave your machine.
             </p>
           </div>
         )}

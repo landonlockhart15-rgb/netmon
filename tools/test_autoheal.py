@@ -165,9 +165,63 @@ def test_driver_safety():
     check("driver: unknown method -> graceful error", r["success"] is False and "Unknown" in r["error"])
 
 
+def test_smartplug_drivers():
+    from network.router_reboot import reboot_router
+    from unittest.mock import patch, MagicMock
+    import struct
+
+    # 1. Test Tasmota driver
+    r = reboot_router("", "", "", method="tasmota")
+    check("tasmota: empty host -> error", r["success"] is False and "host" in r["error"])
+    
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = b'{"status":"ok"}'
+    mock_resp.__enter__.return_value = mock_resp
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        r = reboot_router("192.168.1.100", "admin", "secret", method="tasmota")
+        check("tasmota: success mock", r["success"] is True and "Tasmota power-cycle" in r["detail"])
+        
+    # 2. Test Shelly driver
+    r = reboot_router("", "", "", method="shelly")
+    check("shelly: empty host -> error", r["success"] is False and "host" in r["error"])
+    
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = b'{"ison":false}'
+    mock_resp.__enter__.return_value = mock_resp
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        r = reboot_router("192.168.1.100", "admin", "secret", method="shelly")
+        check("shelly: success mock", r["success"] is True and "Shelly Gen 1" in r["detail"])
+
+    # 3. Test Kasa driver
+    r = reboot_router("", "", "", method="kasa")
+    check("kasa: empty host -> error", r["success"] is False and "host" in r["error"])
+    
+    def make_kasa_resp(string: str) -> bytes:
+        key = 171
+        result = bytearray(struct.pack('>I', len(string)))
+        for c in string:
+            a = key ^ ord(c)
+            key = a
+            result.append(a)
+        return bytes(result)
+        
+    mock_sock_inst = MagicMock()
+    mock_sock_inst.recv.side_effect = [
+        make_kasa_resp('{"count_down":{"delete_all_rules":{"err_code":0}}}'),
+        make_kasa_resp('{"count_down":{"add_rule":{"err_code":0}}}'),
+        make_kasa_resp('{"system":{"set_relay_state":{"err_code":0}}}')
+    ]
+    with patch("socket.socket", return_value=mock_sock_inst), patch("time.sleep"):
+        r = reboot_router("192.168.1.100", "", "", method="kasa")
+        check("kasa: success mock", r["success"] is True and "successfully" in r["detail"])
+
+
 if __name__ == "__main__":
     print("decide() — pure decision engine:");      test_decide()
     print("run_cycle() — dry-run orchestration:");   test_run_cycle_dryrun()
     print("router driver — safety:");                test_driver_safety()
+    print("smartplug drivers — safety/mocks:");      test_smartplug_drivers()
     print(f"\n{_pass} passed, {_fail} failed")
     sys.exit(1 if _fail else 0)

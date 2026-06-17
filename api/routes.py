@@ -4833,6 +4833,7 @@ _AUTOHEAL_KEYS = {
     "autoheal_router_ssl", "autoheal_router_port",
     "autoheal_internet_targets", "autoheal_max_reboots_per_outage", "autoheal_cooldown_min",
     "autoheal_max_reboots_per_day", "autoheal_recovery_window_s",
+    "autoheal_smartplug_method", "autoheal_smartplug_host", "autoheal_smartplug_user", "autoheal_smartplug_pass",
 }
 
 
@@ -4844,7 +4845,7 @@ def autoheal_status(db: Session = Depends(get_db)):
     from monitoring.uptime_stats import get_uptime_stats
 
     cfg = get_config(db)
-    safe_cfg = {k: v for k, v in cfg.items() if k != "router_pass"}
+    safe_cfg = {k: v for k, v in cfg.items() if k not in ("router_pass", "smartplug_pass")}
 
     rows = (db.query(ActivityLog)
             .filter(ActivityLog.category == "autoheal")

@@ -91,6 +91,8 @@ def get_config(db) -> dict:
     elif router_ssl:
         router_port = 443
 
+    smartplug_pass = os.getenv("SMARTPLUG_PASS") or _get(db, "autoheal_smartplug_pass", "")
+
     return {
         "enabled":        _get(db, "autoheal_enabled", "false") == "true",
         "dry_run":        _get(db, "autoheal_dry_run", "true") == "true",
@@ -108,6 +110,11 @@ def get_config(db) -> dict:
         "max_per_day":    _int("autoheal_max_reboots_per_day", 4),
         "recovery_window_s": _int("autoheal_recovery_window_s", 240),
         "internet_targets": [t.strip() for t in _get(db, "autoheal_internet_targets", "8.8.8.8,1.1.1.1").split(",") if t.strip()],
+        "smartplug_method": _get(db, "autoheal_smartplug_method", "none"),
+        "smartplug_host":   _get(db, "autoheal_smartplug_host", ""),
+        "smartplug_user":   _get(db, "autoheal_smartplug_user", ""),
+        "smartplug_pass":   smartplug_pass,
+        "smartplug_has_password": bool(smartplug_pass),
     }
 
 
@@ -371,6 +378,26 @@ def run_cycle(db=None, probe_fn=None) -> dict:
                     use_ssl=cfg["router_ssl"],
                     port=cfg["router_port"],
                 )
+                
+                # Check for smart plug fallback if main reboot fails and fallback is configured
+                if not res["success"] and cfg.get("smartplug_method") and cfg["smartplug_method"] != "none":
+                    primary_error = res["error"]
+                    _emit(EV_REBOOT, "warning",
+                          f"Primary reboot ({cfg['method']}) failed: {primary_error}. Attempting smart plug fallback ({cfg['smartplug_method']})...",
+                          {"primary_result": res, "gateway_up": pr["gateway_up"]}, notify=True)
+                    
+                    fallback_res = reboot_router(
+                        cfg["smartplug_host"],
+                        cfg["smartplug_user"],
+                        cfg["smartplug_pass"],
+                        method=cfg["smartplug_method"],
+                        use_ssl=False,
+                        port=None,
+                    )
+                    res = fallback_res
+                    if not res["success"]:
+                        res["error"] = f"Primary failed ({primary_error}) and fallback failed: {res['error']}"
+
                 level = "action" if res["success"] else "warning"
                 summary = ("Rebooted the router to restore connectivity."
                            if res["success"] else f"Router reboot FAILED: {res['error']}")
@@ -431,6 +458,23 @@ def manual_reboot(db=None, force: bool = False) -> dict:
             use_ssl=cfg["router_ssl"],
             port=cfg["router_port"],
         )
+        if not res["success"] and cfg.get("smartplug_method") and cfg["smartplug_method"] != "none":
+            primary_error = res["error"]
+            _emit(EV_REBOOT, "warning",
+                  f"Manual primary reboot ({cfg['method']}) failed: {primary_error}. Attempting smart plug fallback ({cfg['smartplug_method']})...",
+                  {"trigger": "manual", "primary_result": res}, notify=True)
+            fallback_res = reboot_router(
+                cfg["smartplug_host"],
+                cfg["smartplug_user"],
+                cfg["smartplug_pass"],
+                method=cfg["smartplug_method"],
+                use_ssl=False,
+                port=None,
+            )
+            res = fallback_res
+            if not res["success"]:
+                res["error"] = f"Primary failed ({primary_error}) and fallback failed: {res['error']}"
+
         level = "action" if res["success"] else "warning"
         summary = ("Manual router reboot sent." if res["success"]
                    else f"Manual router reboot FAILED: {res['error']}")

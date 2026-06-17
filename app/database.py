@@ -305,6 +305,10 @@ def seed_default_settings():
         "autoheal_cooldown_min":          "10",
         "autoheal_max_reboots_per_day":   "4",
         "autoheal_recovery_window_s":     "240",
+        "autoheal_smartplug_method":      "none",
+        "autoheal_smartplug_host":        "",
+        "autoheal_smartplug_user":        "",
+        "autoheal_smartplug_pass":        "",
     }
 
     db = SessionLocal()
