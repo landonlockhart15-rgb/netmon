@@ -63,6 +63,218 @@ _DRIVERS = {
 }
 
 
+def _tasmota_http(
+    host: str,
+    user: str,
+    password: str,
+    timeout: int = 15,
+    use_ssl: bool = False,
+    port: Optional[int] = None,
+) -> dict:
+    """Power-cycle a router plugged into a Tasmota smart plug via HTTP backlog."""
+    method = "tasmota"
+    if not host:
+        return {"success": False, "method": method, "detail": "",
+                "error": "No smart plug host configured."}
+    
+    import urllib.request
+    import urllib.parse
+    
+    # We use Backlog to turn off, delay 10 seconds, and turn back on.
+    # Delay is in tenths of a second, so Delay 100 = 10 seconds.
+    cmnd = "Backlog Power1 0; Delay 100; Power1 1"
+    
+    params = {"cmnd": cmnd}
+    if user:
+        params["user"] = user
+    if password:
+        params["password"] = password
+        
+    query = urllib.parse.urlencode(params)
+    protocol = "https" if use_ssl else "http"
+    p = port or (443 if use_ssl else 80)
+    url = f"{protocol}://{host}:{p}/cm?{query}"
+    
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            resp_bytes = response.read()
+            resp_str = resp_bytes.decode("utf-8", errors="ignore")
+            if response.status == 200:
+                return {
+                    "success": True,
+                    "method": method,
+                    "detail": f"Tasmota power-cycle backlog command sent to {host}:{p}. Response: {resp_str[:100]}",
+                    "error": None
+                }
+            else:
+                return {
+                    "success": False,
+                    "method": method,
+                    "detail": "",
+                    "error": f"Tasmota returned HTTP status {response.status}"
+                }
+    except Exception as exc:
+        return {"success": False, "method": method, "detail": "",
+                "error": f"Tasmota request failed: {type(exc).__name__}: {exc}"}
+
+
+def _shelly_http(
+    host: str,
+    user: str,
+    password: str,
+    timeout: int = 15,
+    use_ssl: bool = False,
+    port: Optional[int] = None,
+) -> dict:
+    """Power-cycle a router plugged into a Shelly smart plug via HTTP with auto-on timer."""
+    method = "shelly"
+    if not host:
+        return {"success": False, "method": method, "detail": "",
+                "error": "No smart plug host configured."}
+    
+    import urllib.request
+    import urllib.parse
+    
+    protocol = "https" if use_ssl else "http"
+    p = port or (443 if use_ssl else 80)
+    
+    auth_str = ""
+    if user and password:
+        auth_str = f"{urllib.parse.quote(user)}:{urllib.parse.quote(password)}@"
+    elif password:
+        auth_str = f"admin:{urllib.parse.quote(password)}@"
+        
+    url_gen1 = f"{protocol}://{auth_str}{host}:{p}/relay/0?turn=off&timer=10"
+    url_gen2 = f"{protocol}://{auth_str}{host}:{p}/rpc/Switch.Set?id=0&on=false&toggle_after=10"
+    
+    errors = []
+    # Try Gen 1
+    try:
+        req = urllib.request.Request(url_gen1)
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                resp = response.read().decode("utf-8", errors="ignore")
+                return {
+                    "success": True,
+                    "method": method,
+                    "detail": f"Shelly Gen 1 power-cycle command sent to {host}. Response: {resp[:100]}",
+                    "error": None
+                }
+    except Exception as exc:
+        errors.append(f"Gen 1 attempt: {type(exc).__name__}: {exc}")
+        
+    # Try Gen 2
+    try:
+        req = urllib.request.Request(url_gen2)
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                resp = response.read().decode("utf-8", errors="ignore")
+                return {
+                    "success": True,
+                    "method": method,
+                    "detail": f"Shelly Gen 2 power-cycle command sent to {host}. Response: {resp[:100]}",
+                    "error": None
+                }
+    except Exception as exc:
+        errors.append(f"Gen 2 attempt: {type(exc).__name__}: {exc}")
+        
+    return {
+        "success": False,
+        "method": method,
+        "detail": "",
+        "error": f"Shelly power-cycle failed. Errors: {'; '.join(errors)}"
+    }
+
+
+def _kasa_api(
+    host: str,
+    user: str,
+    password: str,
+    timeout: int = 10,
+    use_ssl: bool = False,
+    port: Optional[int] = None,
+) -> dict:
+    """Power-cycle a router plugged into a TP-Link Kasa smart plug via local TCP protocol."""
+    method = "kasa"
+    if not host:
+        return {"success": False, "method": method, "detail": "",
+                "error": "No smart plug host configured."}
+    
+    import socket
+    import struct
+    import time
+    
+    p = port or 9999
+    
+    def encrypt_kasa(cmd: str) -> bytes:
+        key = 171
+        result = bytearray(struct.pack('>I', len(cmd)))
+        for c in cmd:
+            a = key ^ ord(c)
+            key = a
+            result.append(a)
+        return bytes(result)
+        
+    def decrypt_kasa(data: bytes) -> str:
+        key = 171
+        result = []
+        for b in data[4:]:
+            a = key ^ b
+            key = b
+            result.append(chr(a))
+        return "".join(result)
+        
+    def send_cmd(cmd: str) -> str:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        try:
+            s.connect((host, p))
+            s.sendall(encrypt_kasa(cmd))
+            data = s.recv(2048)
+            return decrypt_kasa(data)
+        finally:
+            s.close()
+            
+    off_cmd = '{"system":{"set_relay_state":{"state":0}}}'
+    on_cmd = '{"system":{"set_relay_state":{"state":1}}}'
+    
+    try:
+        off_resp = send_cmd(off_cmd)
+        if "err_code" in off_resp and '"err_code":0' not in off_resp.replace(" ", ""):
+            return {"success": False, "method": method, "detail": "",
+                    "error": f"Kasa rejected OFF command: {off_resp[:100]}"}
+                    
+        time.sleep(10)
+        
+        on_resp = send_cmd(on_cmd)
+        if "err_code" in on_resp and '"err_code":0' not in on_resp.replace(" ", ""):
+            return {"success": False, "method": method, "detail": "",
+                    "error": f"Kasa OFF succeeded, but ON command failed: {on_resp[:100]}. WARNING: Plug may be stuck in OFF state!"}
+                    
+        return {
+            "success": True,
+            "method": method,
+            "detail": f"Kasa power-cycled successfully. OFF response: {off_resp[:80]}, ON response: {on_resp[:80]}",
+            "error": None
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "method": method,
+            "detail": "",
+            "error": f"Kasa power-cycle failed: {type(exc).__name__}: {exc}. WARNING: Plug status uncertain."
+        }
+
+
+_DRIVERS = {
+    "netgear_soap": _netgear_soap,
+    "tasmota": _tasmota_http,
+    "shelly": _shelly_http,
+    "kasa": _kasa_api,
+}
+
+
 def available_methods() -> list[str]:
     return list(_DRIVERS.keys())
 
