@@ -22,8 +22,101 @@ nmap XML structure (simplified):
 Our job: walk this tree and pull out what we care about.
 """
 
+import re
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any
+
+
+def _version_tuple(version: str) -> tuple:
+    return tuple(int(part) for part in re.findall(r"\d+", version or "")[:4])
+
+
+def _version_lt(version: str, target: str) -> bool:
+    found = _version_tuple(version)
+    expected = _version_tuple(target)
+    if not found or not expected:
+        return False
+    width = max(len(found), len(expected))
+    return found + (0,) * (width - len(found)) < expected + (0,) * (width - len(expected))
+
+
+def _version_eq(version: str, target: str) -> bool:
+    found = _version_tuple(version)
+    expected = _version_tuple(target)
+    return bool(found and expected and found[:len(expected)] == expected)
+
+
+def _finding(port: int, service: dict, cve: str, risk: str, title: str, patch: str) -> dict:
+    return {
+        "cve": cve,
+        "risk": risk,
+        "title": title,
+        "service": service.get("service") or "unknown",
+        "product": service.get("product") or "",
+        "version": service.get("version") or "",
+        "port": port,
+        "evidence": service.get("banner") or f"{service.get('product', '')} {service.get('version', '')}".strip(),
+        "recommendation": patch,
+    }
+
+
+def map_service_vulnerabilities(service: dict) -> List[dict]:
+    """
+    Offline, conservative CVE mapper for service banners from nmap -sV.
+
+    This is intentionally small in phase one: only exact or high-confidence
+    product/version signatures are flagged. It is not a replacement for a full
+    CVE feed, but it makes deep scans immediately actionable without internet.
+    """
+    name = (service.get("service") or "").lower()
+    product = (service.get("product") or "").lower()
+    version = service.get("version") or ""
+    port = int(service.get("port") or 0)
+    text = " ".join([name, product, version, service.get("extrainfo") or ""]).lower()
+    findings: List[dict] = []
+
+    if "apache httpd" in text and _version_eq(version, "2.4.49"):
+        findings.append(_finding(
+            port, service, "CVE-2021-41773", "critical",
+            "Apache httpd path traversal / file disclosure",
+            "Upgrade Apache httpd to 2.4.51 or newer.",
+        ))
+    if "apache httpd" in text and _version_eq(version, "2.4.50"):
+        findings.append(_finding(
+            port, service, "CVE-2021-42013", "critical",
+            "Apache httpd incomplete fix for path traversal",
+            "Upgrade Apache httpd to 2.4.51 or newer.",
+        ))
+
+    if "iis" in text and _version_eq(version, "6.0"):
+        findings.append(_finding(
+            port, service, "CVE-2017-7269", "critical",
+            "Microsoft IIS 6.0 WebDAV remote code execution",
+            "Retire IIS 6.0 or migrate to a supported Windows Server/IIS release.",
+        ))
+
+    if "vsftpd" in text and _version_eq(version, "2.3.4"):
+        findings.append(_finding(
+            port, service, "CVE-2011-2523", "critical",
+            "vsftpd 2.3.4 backdoored release",
+            "Replace the package with a trusted current vsftpd build immediately.",
+        ))
+
+    if "proftpd" in text and _version_eq(version, "1.3.3"):
+        findings.append(_finding(
+            port, service, "CVE-2010-4221", "critical",
+            "ProFTPD 1.3.3c backdoored release",
+            "Replace the package with a trusted current ProFTPD build immediately.",
+        ))
+
+    if ("openssh" in text or name == "ssh") and version and _version_lt(version, "7.2"):
+        findings.append(_finding(
+            port, service, "CVE-2016-0777", "high",
+            "Older OpenSSH roaming information leak family",
+            "Upgrade OpenSSH to a supported vendor-patched release.",
+        ))
+
+    return findings
 
 
 def parse_nmap_xml(xml_string: str) -> List[Dict[str, Any]]:
@@ -68,6 +161,8 @@ def parse_nmap_xml(xml_string: str) -> List[Dict[str, Any]]:
             "vendor": None,
             "hostname": None,
             "open_ports": [],
+            "services": [],
+            "vulnerabilities": [],
         }
 
         # --- Parse IP and MAC addresses ---
@@ -101,7 +196,23 @@ def parse_nmap_xml(xml_string: str) -> List[Dict[str, Any]]:
                 if state_el is not None and state_el.get("state") == "open":
                     port_num = port.get("portid")
                     if port_num and port_num.isdigit():
-                        device["open_ports"].append(int(port_num))
+                        parsed_port = int(port_num)
+                        device["open_ports"].append(parsed_port)
+                        service_el = port.find("service")
+                        service = {
+                            "port": parsed_port,
+                            "protocol": port.get("protocol") or "tcp",
+                            "service": service_el.get("name") if service_el is not None else "",
+                            "product": service_el.get("product") if service_el is not None else "",
+                            "version": service_el.get("version") if service_el is not None else "",
+                            "extrainfo": service_el.get("extrainfo") if service_el is not None else "",
+                            "banner": "",
+                        }
+                        service["banner"] = " ".join(
+                            str(service.get(k) or "") for k in ("service", "product", "version", "extrainfo")
+                        ).strip()
+                        device["services"].append(service)
+                        device["vulnerabilities"].extend(map_service_vulnerabilities(service))
 
         # Only add the device if we at least got an IP address
         if device["ip"]:

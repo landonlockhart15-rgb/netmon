@@ -16,9 +16,10 @@ import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
 import Markdown from '@/components/shared/Markdown'
 
-type Tab = 'vulnerability' | 'password' | 'exploit' | 'wifi' | 'exposure'
+type Tab = 'cve' | 'vulnerability' | 'password' | 'exploit' | 'wifi' | 'exposure'
 
 const TABS: { id: Tab; label: string }[] = [
+  { id: 'cve', label: 'CVE Mapping' },
   { id: 'vulnerability', label: 'Vulnerability Scan' },
   { id: 'password',      label: 'Password Test' },
   { id: 'exploit',       label: 'Exploit Test' },
@@ -39,7 +40,7 @@ async function uploadSecFile(file: File, fileType: string): Promise<number> {
 
 export default function SecurityLab() {
   const qc = useQueryClient()
-  const [tab, setTab] = useState<Tab>('vulnerability')
+  const [tab, setTab] = useState<Tab>('cve')
   const [activeRunId, setActiveRunId] = useState<number | null>(null)
   const [streamOutput, setStreamOutput] = useState('')
   const [chatHistory, setChatHistory] = useState<{ role: string; content: string }[]>([])
@@ -59,6 +60,16 @@ export default function SecurityLab() {
   const { data: historyRaw, refetch: refetchHistory } = useQuery({
     queryKey: ['seclab-history'],
     queryFn: () => getSecLabHistory({ limit: 20 }),
+    refetchInterval: activeRunId ? 5000 : 30_000,
+  })
+
+  const cveQuery = useQuery({
+    queryKey: ['cve-mapping'],
+    queryFn: async () => {
+      const res = await fetch('/api/security/cve-mapping', { credentials: 'same-origin' })
+      if (!res.ok) throw new Error(`CVE mapping failed: ${res.status}`)
+      return res.json()
+    },
     refetchInterval: activeRunId ? 5000 : 30_000,
   })
 
@@ -214,7 +225,7 @@ export default function SecurityLab() {
         pulse={activeRunning}
         eyebrow={activeRunning ? 'Tool running…' : wslAvailable ? 'Kali toolkit ready' : 'Setup required'}
         title="Security Lab"
-        subtitle="Authorized offensive testing against your own network — vulnerability, password, exploit, WiFi, and exposure tools."
+        subtitle="Authorized offensive testing against your own network — CVE mapping, vulnerability, password, exploit, WiFi, and exposure tools."
         tiles={
           <>
             <StatTile icon={<Terminal size={11} />} label="Engine" accent={wslAvailable ? 'emerald' : 'amber'} glow value={<span className="text-base">{wslAvailable ? 'Ready' : 'Setup'}</span>} sub="WSL · Kali" />
@@ -252,6 +263,8 @@ export default function SecurityLab() {
           </button>
         ))}
       </div>
+
+      {tab === 'cve' && <CveMappingPanel data={cveQuery.data} loading={cveQuery.isFetching} onRefresh={() => cveQuery.refetch()} />}
 
       {tab === 'vulnerability' && <NiktoPanel onStart={(target, opts) => runAction(async () => {
         const r = await startNikto({ target, ...opts, authorization_confirmed: true })
@@ -414,6 +427,104 @@ export default function SecurityLab() {
 }
 
 // ── Tool panels ──────────────────────────────────────────────────────────────
+
+function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boolean; onRefresh: () => void }) {
+  const [scanLoading, setScanLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const findings: any[] = data?.findings ?? []
+  const runMappingScan = async () => {
+    setError(null)
+    setScanLoading(true)
+    try {
+      const res = await fetch('/api/scan', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quick: false }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      onRefresh()
+    } catch (e: any) {
+      setError(e?.message ?? String(e))
+    } finally {
+      setScanLoading(false)
+    }
+  }
+
+  return (
+    <Card title="CVE Mapping" badge={findings.length ? String(findings.length) : undefined}
+      action={
+        <div className="flex gap-2">
+          <Btn variant="ghost" size="sm" loading={loading} onClick={onRefresh}>Refresh</Btn>
+          <Btn variant="primary" size="sm" loading={scanLoading} onClick={runMappingScan}>
+            <Play size={13} /> Run Mapping Scan
+          </Btn>
+        </div>
+      }>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4">
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+          <p className="text-[10px] uppercase tracking-wider text-gray-600">Latest scan</p>
+          <p className="text-sm text-gray-200 mt-1">#{data?.scan?.id ?? '—'}</p>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+          <p className="text-[10px] uppercase tracking-wider text-gray-600">Service banners</p>
+          <p className="text-sm text-gray-200 mt-1">{data?.scanned_devices ?? 0} device{data?.scanned_devices === 1 ? '' : 's'}</p>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+          <p className="text-[10px] uppercase tracking-wider text-gray-600">Matched CVEs</p>
+          <p className="text-sm text-gray-200 mt-1">{findings.length}</p>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-xs text-red-300 break-words">
+          {error}
+        </div>
+      )}
+
+      {findings.length === 0 ? (
+        <EmptyState icon="◎" text="No CVE matches yet" hint="Run a mapping scan to collect service banners and check the offline CVE signatures." />
+      ) : (
+        <div className="overflow-x-auto -mx-4 -mb-4">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-gray-600 border-b border-white/5">
+                <th className="px-4 py-2">Risk</th>
+                <th className="px-4 py-2">CVE</th>
+                <th className="px-4 py-2">Device</th>
+                <th className="px-4 py-2">Service</th>
+                <th className="px-4 py-2">Patch</th>
+              </tr>
+            </thead>
+            <tbody>
+              {findings.map((f, i) => (
+                <tr key={`${f.device_id}-${f.cve}-${f.port}-${i}`} className="border-b border-white/5 align-top">
+                  <td className="px-4 py-2"><Badge variant={severityVariant(f.risk)}>{f.risk}</Badge></td>
+                  <td className="px-4 py-2">
+                    <div className="font-medium text-gray-200">{f.cve}</div>
+                    <div className="text-gray-500 mt-0.5">{f.title}</div>
+                  </td>
+                  <td className="px-4 py-2">
+                    <div className="text-gray-200">{f.label || f.hostname || f.ip || 'Unknown'}</div>
+                    <div className="font-mono text-blue-400 mt-0.5">{f.ip || '—'}</div>
+                  </td>
+                  <td className="px-4 py-2">
+                    <div className="text-gray-200">{f.service}:{f.port}</div>
+                    <div className="text-gray-500 mt-0.5 max-w-[220px] truncate">{f.evidence || `${f.product ?? ''} ${f.version ?? ''}`}</div>
+                  </td>
+                  <td className="px-4 py-2 text-gray-400 max-w-[280px]">{f.recommendation}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="text-[11px] text-gray-600 mt-3">
+        Phase one uses a conservative offline banner matcher. Treat matches as triage signals and confirm with vendor advisories before making production changes.
+      </p>
+    </Card>
+  )
+}
 
 function NiktoPanel({ onStart }: { onStart: (target: string, opts: { auto?: boolean; ports?: string }) => void }) {
   const [target, setTarget] = useState('')
