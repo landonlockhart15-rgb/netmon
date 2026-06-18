@@ -93,6 +93,8 @@ class ScanDevice(Base):
     ip         = Column(String, nullable=True)
     hostname   = Column(String, nullable=True)   # historical snapshot (added Phase 3)
     open_ports = Column(Text, default="[]")
+    services_json = Column(Text, nullable=True)
+    cves_json     = Column(Text, nullable=True)
 
     scan   = relationship("Scan",   back_populates="devices")
     device = relationship("Device", back_populates="appearances")
@@ -100,6 +102,14 @@ class ScanDevice(Base):
     @property
     def ports_list(self):
         return json.loads(self.open_ports or "[]")
+
+    @property
+    def services_list(self):
+        return json.loads(self.services_json or "[]")
+
+    @property
+    def cves_list(self):
+        return json.loads(self.cves_json or "[]")
 
 
 class ChangeEvent(Base):

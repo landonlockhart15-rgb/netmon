@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.main import app
 from app.database import get_db, Base
 from models.tables import Setting, Device, ScanDevice, Scan
+from scanner.parser import parse_nmap_xml
 
 
 class TestAPIEndpoints(unittest.TestCase):
@@ -117,6 +118,41 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(len(data["devices"]), 1)
         self.assertEqual(data["devices"][0]["ip"], "192.168.1.50")
         self.assertEqual(data["devices"][0]["vendor"], "Apple")
+
+    def test_parse_nmap_xml_maps_banner_cves(self):
+        xml = """<?xml version="1.0"?>
+        <nmaprun><host>
+          <status state="up"/>
+          <address addr="192.168.1.10" addrtype="ipv4"/>
+          <ports><port protocol="tcp" portid="80">
+            <state state="open"/>
+            <service name="http" product="Apache httpd" version="2.4.49"/>
+          </port></ports>
+        </host></nmaprun>"""
+        devices = parse_nmap_xml(xml)
+        self.assertEqual(devices[0]["services"][0]["product"], "Apache httpd")
+        self.assertEqual(devices[0]["vulnerabilities"][0]["cve"], "CVE-2021-41773")
+
+    def test_cve_mapping_endpoint(self):
+        scan = Scan(id=1, status="complete")
+        device = Device(id=1, mac="00:11:22:33:44:55", vendor="Lab")
+        scan_device = ScanDevice(
+            id=1, scan_id=1, device_id=1, ip="192.168.1.10",
+            hostname="lab-web", open_ports="[80]",
+            services_json='[{"port":80,"service":"http","product":"Apache httpd","version":"2.4.49"}]',
+            cves_json='[{"cve":"CVE-2021-41773","risk":"critical","title":"Apache httpd path traversal","port":80,"service":"http","recommendation":"Upgrade Apache httpd to 2.4.51 or newer."}]',
+        )
+        self.db.add(scan)
+        self.db.add(device)
+        self.db.add(scan_device)
+        self.db.commit()
+
+        response = self.client.get("/api/security/cve-mapping")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["finding_count"], 1)
+        self.assertEqual(data["findings"][0]["cve"], "CVE-2021-41773")
+        self.assertEqual(data["findings"][0]["ip"], "192.168.1.10")
 
     @patch("ai.provider.get_investigation_provider")
     def test_explain_chat_turn(self, mock_get_provider):

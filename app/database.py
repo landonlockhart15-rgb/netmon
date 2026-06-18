@@ -62,6 +62,14 @@ def run_migrations():
             conn.execute(text("ALTER TABLE scan_devices ADD COLUMN hostname TEXT"))
             conn.commit()
             print("[db] Migration: scan_devices.hostname added.")
+        if "services_json" not in existing:
+            conn.execute(text("ALTER TABLE scan_devices ADD COLUMN services_json TEXT"))
+            conn.commit()
+            print("[db] Migration: scan_devices.services_json added.")
+        if "cves_json" not in existing:
+            conn.execute(text("ALTER TABLE scan_devices ADD COLUMN cves_json TEXT"))
+            conn.commit()
+            print("[db] Migration: scan_devices.cves_json added.")
 
         # ── capture_sessions table (added Phase 7) ────────────────────────
         # create_all handles new tables; only ADD COLUMN migrations go here.

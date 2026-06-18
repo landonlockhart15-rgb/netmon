@@ -133,6 +133,31 @@ def _get_setting_float(db: Session, key: str, default: float) -> float:
         return default
 
 
+def _json_list(value: str | None) -> list:
+    try:
+        parsed = json.loads(value or "[]")
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def _latest_scan_device_with_cves(db: Session, device_id: int):
+    return (
+        db.query(ScanDevice)
+        .filter(
+            ScanDevice.device_id == device_id,
+            ScanDevice.cves_json.notin_(["[]", ""]),
+            ScanDevice.cves_json.isnot(None),
+        )
+        .order_by(desc(ScanDevice.id))
+        .first()
+    )
+
+
+def _risk_rank(risk: str | None) -> int:
+    return {"critical": 4, "high": 3, "medium": 2, "low": 1}.get((risk or "").lower(), 0)
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # SCAN  (unchanged from Phase 3)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -202,6 +227,8 @@ def trigger_scan(body: dict = None, db: Session = Depends(get_db)):
                 scan_id=scan.id, device_id=device.id,
                 ip=d["ip"], hostname=d["hostname"],
                 open_ports=json.dumps(d["open_ports"]),
+                services_json=json.dumps(d.get("services") or []),
+                cves_json=json.dumps(d.get("vulnerabilities") or []),
             ))
 
         ended_at   = datetime.now(timezone.utc)
@@ -314,11 +341,15 @@ def get_devices(db: Session = Depends(get_db)):
             )
             if last_with_ports:
                 ports = last_with_ports.ports_list
+        cve_row = _latest_scan_device_with_cves(db, dev.id)
+        vulnerabilities = cve_row.cves_list if cve_row else []
         devices.append({
             "ip": sd.ip, "mac": dev.mac or "unknown",
             "vendor": dev.vendor or "unknown",
             "hostname": sd.hostname or dev.hostname or "",
             "label": dev.label or "", "open_ports": ports,
+            "vulnerability_count": len(vulnerabilities),
+            "max_cve_risk": max((v.get("risk") for v in vulnerabilities), key=_risk_rank, default=None),
             "os_guess": dev.os_guess or "",
             "first_seen": _iso(dev.first_seen),
             "last_seen":  _iso(dev.last_seen)  if dev.last_seen  else None,
@@ -433,6 +464,8 @@ def get_all_devices(current_only: bool = False, db: Session = Depends(get_db)):
             .filter(ScanDevice.device_id == dev.id)
             .scalar()
         ) or 0
+        cve_row = _latest_scan_device_with_cves(db, dev.id)
+        vulnerabilities = cve_row.cves_list if cve_row else []
         result.append({
             "id":         dev.id,
             "mac":        dev.mac or "unknown",
@@ -444,6 +477,8 @@ def get_all_devices(current_only: bool = False, db: Session = Depends(get_db)):
             "last_seen":  _iso(dev.last_seen)  if dev.last_seen  else None,
             "latest_ip":  latest_sd.ip if latest_sd else None,
             "open_ports": latest_sd_ports.ports_list if latest_sd_ports else [],
+            "vulnerability_count": len(vulnerabilities),
+            "max_cve_risk": max((v.get("risk") for v in vulnerabilities), key=_risk_rank, default=None),
             "os_guess":   dev.os_guess or "",
             "scan_count": scan_count,
             "dhcp_option55": dev.dhcp_option55 or "",
@@ -555,6 +590,73 @@ def get_device_history(device_id: int, db: Session = Depends(get_db)):
             }
             for sd in appearances
         ],
+    }
+
+
+@router.get("/api/security/cve-mapping")
+def get_cve_mapping(current_only: bool = True, db: Session = Depends(get_db)):
+    """
+    Return offline CVE matches from the latest service-version scan data.
+
+    Phase one uses conservative banner/version signatures generated during
+    nmap -sV scans. It does not contact an external CVE service.
+    """
+    if current_only:
+        latest_scan, scan_ids = current_scan_ids(db)
+        if latest_scan:
+            device_ids = [
+                row[0] for row in (
+                    db.query(ScanDevice.device_id)
+                    .filter(ScanDevice.scan_id.in_(scan_ids))
+                    .distinct()
+                    .all()
+                )
+            ]
+            devices = db.query(Device).filter(Device.id.in_(device_ids)).all() if device_ids else []
+        else:
+            devices = []
+    else:
+        latest_scan = db.query(Scan).filter(Scan.status == "complete").order_by(desc(Scan.id)).first()
+        devices = db.query(Device).order_by(desc(Device.last_seen)).all()
+
+    findings = []
+    scanned_devices = 0
+    for dev in devices:
+        latest_sd = db.query(ScanDevice).filter(ScanDevice.device_id == dev.id).order_by(desc(ScanDevice.id)).first()
+        latest_services = (
+            db.query(ScanDevice)
+            .filter(
+                ScanDevice.device_id == dev.id,
+                ScanDevice.services_json.notin_(["[]", ""]),
+                ScanDevice.services_json.isnot(None),
+            )
+            .order_by(desc(ScanDevice.id))
+            .first()
+        )
+        cve_row = _latest_scan_device_with_cves(db, dev.id)
+        services = latest_services.services_list if latest_services else []
+        cves = cve_row.cves_list if cve_row else []
+        if services:
+            scanned_devices += 1
+        for cve in cves:
+            findings.append({
+                **cve,
+                "device_id": dev.id,
+                "ip": (cve_row.ip if cve_row else None) or (latest_sd.ip if latest_sd else None),
+                "hostname": (latest_sd.hostname if latest_sd else None) or dev.hostname or "",
+                "label": dev.label or "",
+                "scan_id": cve_row.scan_id if cve_row else None,
+            })
+
+    findings.sort(key=lambda f: (_risk_rank(f.get("risk")), f.get("cve") or ""), reverse=True)
+    return {
+        "scan": {
+            "id": latest_scan.id if latest_scan else None,
+            "started_at": _iso(latest_scan.started_at) if latest_scan else None,
+        },
+        "scanned_devices": scanned_devices,
+        "finding_count": len(findings),
+        "findings": findings,
     }
 
 
