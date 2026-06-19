@@ -80,10 +80,11 @@ def test_decide():
 
 
 def test_run_cycle_dryrun():
-    from app.database import SessionLocal
+    from app.database import Base, engine, SessionLocal
     from models.tables import Setting, ActivityLog
     import monitoring.autoheal as ah
 
+    Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     saved = {}
     test_start = datetime.now(timezone.utc)
