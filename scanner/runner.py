@@ -47,7 +47,7 @@ def find_nmap() -> Optional[str]:
     return None
 
 
-def run_scan(target: str, quick: bool = False) -> str:
+def run_scan(target: str, quick: bool = False, vulners: bool = False) -> str:
     """
     Run an nmap scan against `target` and return the raw XML output as a string.
 
@@ -56,6 +56,12 @@ def run_scan(target: str, quick: bool = False) -> str:
         quick:  If True, run a fast ping-only scan (-sn) — finds live hosts without
                 port scanning. Used for hourly device discovery. If False (default),
                 run a full service-version scan (-sV) to detect open ports.
+        vulners: If True (deep scans only), also run nmap's `vulners` NSE script.
+                 vulners takes the CPE/version strings from -sV and queries
+                 vulners.com to map them to known CVEs. It needs internet access
+                 and adds time per host, so it is opt-in and ignored when quick.
+                 The extra CVE data is emitted in the same XML as <script id="vulners">
+                 elements, which scanner.parser turns into vulnerability findings.
 
     Returns:
         Raw nmap XML output as a string.
@@ -92,10 +98,21 @@ def run_scan(target: str, quick: bool = False) -> str:
             "-sV",               # Detect service versions on open ports
             "--open",            # Only report open ports
             "--top-ports", "200",  # Scan top 200 common ports (not all 1000)
-            "--host-timeout", "120s",  # 4× the old limit — enough for -sV on 200 ports
             "-oX", "-",          # Output XML to stdout
-            target,
         ]
+        if vulners:
+            # vulners maps each detected service's CPE/version to known CVEs by
+            # querying vulners.com. mincvss=0 keeps every CVE (we rank severity
+            # ourselves in the parser). It adds a network round-trip per service,
+            # so give hosts more headroom than the plain -sV budget.
+            command += [
+                "--script", "vulners",
+                "--script-args", "mincvss=0",
+                "--host-timeout", "300s",
+            ]
+        else:
+            command += ["--host-timeout", "120s"]  # 4× the old limit — enough for -sV on 200 ports
+        command += [target]
 
     print(f"[scanner] Running: {' '.join(command)}")
 
