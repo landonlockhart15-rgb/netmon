@@ -207,8 +207,20 @@ def trigger_scan(body: dict = None, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(scan)
 
+    # vulners is a deep-scan-only enrichment (CVE mapping via the nmap NSE
+    # script). It needs internet and adds time per host, so it is opt-in: the
+    # request can force it, otherwise we honor the persisted setting. Quick ping
+    # sweeps never run it.
+    vulners = False
+    if not quick:
+        if "vulners" in body:
+            vulners = bool(body.get("vulners"))
+        else:
+            _vs = db.query(Setting).filter(Setting.key == "vulners_enabled").first()
+            vulners = bool(_vs and _vs.value == "true")
+
     try:
-        xml_output     = run_scan(target, quick=quick)
+        xml_output     = run_scan(target, quick=quick, vulners=vulners)
         parsed_devices = parse_nmap_xml(xml_output)
 
         new_device_count = 0

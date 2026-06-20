@@ -60,6 +60,90 @@ def _finding(port: int, service: dict, cve: str, risk: str, title: str, patch: s
     }
 
 
+def _cvss_to_risk(cvss: float) -> str:
+    """Map a CVSS base score to our four-level risk vocabulary."""
+    if cvss >= 9.0:
+        return "critical"
+    if cvss >= 7.0:
+        return "high"
+    if cvss >= 4.0:
+        return "medium"
+    return "low"
+
+
+def parse_vulners_scripts(port_el, service: dict) -> List[dict]:
+    """
+    Turn nmap `--script vulners` output for one port into vulnerability findings.
+
+    The vulners NSE script takes the CPE/version that -sV detected and queries
+    vulners.com for matching CVEs. nmap embeds the result as a <script id="vulners">
+    element under the <port>, whose structured tables look like:
+
+        <script id="vulners">
+          <table key="cpe:/a:openbsd:openssh:7.2p2">
+            <table>
+              <elem key="id">CVE-2016-10009</elem>
+              <elem key="cvss">7.5</elem>
+              <elem key="type">cve</elem>
+              <elem key="is_exploit">true</elem>
+            </table>
+            ...
+
+    We keep only CVE rows (vulners also returns exploit-db / packetstorm ids) and
+    emit one finding per CVE in the same shape as map_service_vulnerabilities, so
+    downstream storage and UI treat both sources identically.
+
+    Returns an empty list when the script is absent — i.e. when the scan was run
+    without the vulners flag — so this is a no-op for ordinary deep scans.
+    """
+    if port_el is None:
+        return []
+
+    port = int(service.get("port") or 0)
+    product = service.get("product") or ""
+    version = service.get("version") or ""
+    findings: List[dict] = []
+    seen: set = set()
+
+    for script_el in port_el.findall("script"):
+        if script_el.get("id") != "vulners":
+            continue
+        # Each vuln is a <table> whose direct <elem> children carry id/cvss/type.
+        for table in script_el.iter("table"):
+            row = {
+                elem.get("key"): (elem.text or "").strip()
+                for elem in table.findall("elem")
+            }
+            cve = (row.get("id") or "").strip()
+            kind = (row.get("type") or "").lower()
+            # vulners mixes CVEs with exploit-db / other feed ids; keep CVEs only.
+            if not cve.upper().startswith("CVE-") and kind != "cve":
+                continue
+            cve = cve.upper()
+            if cve in seen:
+                continue
+            seen.add(cve)
+
+            try:
+                cvss = float(row.get("cvss") or 0.0)
+            except ValueError:
+                cvss = 0.0
+
+            label = (f"{product} {version}".strip() or service.get("service") or "service")
+            finding = _finding(
+                port, service, cve, _cvss_to_risk(cvss),
+                f"{label} — {cve} (CVSS {cvss:g})" if cvss else f"{label} — {cve}",
+                f"Update {label} to a patched release; review {cve} "
+                f"at https://vulners.com/cve/{cve}.",
+            )
+            finding["cvss"] = cvss
+            finding["source"] = "vulners"
+            finding["exploit_available"] = (row.get("is_exploit") or "").lower() == "true"
+            findings.append(finding)
+
+    return findings
+
+
 def map_service_vulnerabilities(service: dict) -> List[dict]:
     """
     Offline, conservative CVE mapper for service banners from nmap -sV.
@@ -212,7 +296,20 @@ def parse_nmap_xml(xml_string: str) -> List[Dict[str, Any]]:
                             str(service.get(k) or "") for k in ("service", "product", "version", "extrainfo")
                         ).strip()
                         device["services"].append(service)
-                        device["vulnerabilities"].extend(map_service_vulnerabilities(service))
+                        # Offline signature mapper runs always; vulners findings
+                        # are merged on top, skipping any CVE already flagged so
+                        # the two sources never double-list the same CVE.
+                        offline = map_service_vulnerabilities(service)
+                        device["vulnerabilities"].extend(offline)
+                        seen_cves = {
+                            (v.get("cve") or "").upper()
+                            for v in offline if v.get("cve")
+                        }
+                        for vuln in parse_vulners_scripts(port, service):
+                            if (vuln.get("cve") or "").upper() in seen_cves:
+                                continue
+                            seen_cves.add((vuln.get("cve") or "").upper())
+                            device["vulnerabilities"].append(vuln)
 
         # Only add the device if we at least got an IP address
         if device["ip"]:

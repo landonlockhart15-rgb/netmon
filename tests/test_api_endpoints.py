@@ -133,6 +133,66 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(devices[0]["services"][0]["product"], "Apache httpd")
         self.assertEqual(devices[0]["vulnerabilities"][0]["cve"], "CVE-2021-41773")
 
+    def test_parse_nmap_xml_maps_vulners_cves(self):
+        # nmap --script vulners embeds CVEs as a <script id="vulners"> table.
+        xml = """<?xml version="1.0"?>
+        <nmaprun><host>
+          <status state="up"/>
+          <address addr="192.168.1.11" addrtype="ipv4"/>
+          <ports><port protocol="tcp" portid="22">
+            <state state="open"/>
+            <service name="ssh" product="OpenSSH" version="8.2p1"/>
+            <script id="vulners" output="ignored">
+              <table key="cpe:/a:openbsd:openssh:8.2p1">
+                <table>
+                  <elem key="id">CVE-2020-15778</elem>
+                  <elem key="cvss">7.8</elem>
+                  <elem key="type">cve</elem>
+                  <elem key="is_exploit">true</elem>
+                </table>
+                <table>
+                  <elem key="id">EDB-ID:12345</elem>
+                  <elem key="cvss">7.8</elem>
+                  <elem key="type">exploitdb</elem>
+                </table>
+              </table>
+            </script>
+          </port></ports>
+        </host></nmaprun>"""
+        devices = parse_nmap_xml(xml)
+        vulns = devices[0]["vulnerabilities"]
+        # Exactly one CVE kept (the exploit-db row is filtered out).
+        self.assertEqual(len(vulns), 1)
+        self.assertEqual(vulns[0]["cve"], "CVE-2020-15778")
+        self.assertEqual(vulns[0]["risk"], "high")
+        self.assertEqual(vulns[0]["source"], "vulners")
+        self.assertTrue(vulns[0]["exploit_available"])
+
+    def test_parse_nmap_xml_vulners_dedupes_offline_cve(self):
+        # When vulners reports a CVE the offline mapper already flags, it must
+        # not be listed twice.
+        xml = """<?xml version="1.0"?>
+        <nmaprun><host>
+          <status state="up"/>
+          <address addr="192.168.1.12" addrtype="ipv4"/>
+          <ports><port protocol="tcp" portid="80">
+            <state state="open"/>
+            <service name="http" product="Apache httpd" version="2.4.49"/>
+            <script id="vulners">
+              <table key="cpe:/a:apache:http_server:2.4.49">
+                <table>
+                  <elem key="id">CVE-2021-41773</elem>
+                  <elem key="cvss">9.8</elem>
+                  <elem key="type">cve</elem>
+                </table>
+              </table>
+            </script>
+          </port></ports>
+        </host></nmaprun>"""
+        devices = parse_nmap_xml(xml)
+        cves = [v["cve"] for v in devices[0]["vulnerabilities"]]
+        self.assertEqual(cves.count("CVE-2021-41773"), 1)
+
     def test_cve_mapping_endpoint(self):
         scan = Scan(id=1, status="complete")
         device = Device(id=1, mac="00:11:22:33:44:55", vendor="Lab")
