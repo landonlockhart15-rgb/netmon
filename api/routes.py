@@ -3590,6 +3590,18 @@ def device_activity(device_ip: str, db: Session = Depends(get_db)):
     # Save what we learn back to the device record
     _learn_from_activity(device_ip, result, db)
 
+    # Retrieve the updated device to include the inferred role and vendor in the response
+    device = (db.query(Device)
+              .join(ScanDevice, ScanDevice.device_id == Device.id)
+              .filter(ScanDevice.ip == device_ip)
+              .order_by(desc(ScanDevice.id)).first())
+    if device:
+        result["inferred_role"] = device.label or ""
+        result["inferred_vendor"] = device.vendor or ""
+    else:
+        result["inferred_role"] = ""
+        result["inferred_vendor"] = ""
+
     return result
 
 
@@ -3613,11 +3625,22 @@ def _learn_from_activity(device_ip: str, activity: dict, db) -> None:
             device.vendor = inferred_vendor
             changed = True
 
-        # Infer OS/device type from DNS patterns
-        inferred_type = _infer_type_from_domains(domains)
-        if inferred_type and not device.label:
-            device.label = inferred_type
+        # Infer device role using the passive traffic analyzer (headers, flow patterns, DNS/UA)
+        from traffic.role_inference import extract_flow_stats, infer_device_role, CAPTURE_DIR
+        try:
+            flow_stats = extract_flow_stats(device_ip, CAPTURE_DIR, max_files=10)
+        except Exception:
+            flow_stats = {}
+        inferred_role = infer_device_role(device_ip, activity, flow_stats)
+        if inferred_role and not device.label:
+            device.label = inferred_role
             changed = True
+        elif not device.label:
+            # Fallback to DNS patterns
+            inferred_type = _infer_type_from_domains(domains)
+            if inferred_type:
+                device.label = inferred_type
+                changed = True
 
         # Store top domains in allow_json as 'learned_domains' for future use
         if domains:
