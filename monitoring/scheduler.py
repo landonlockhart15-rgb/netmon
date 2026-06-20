@@ -297,25 +297,6 @@ def _run_traffic_analysis() -> None:
         db.add(summary)
         db.commit()
 
-        # Passively infer roles for active talkers that don't have a label yet
-        for talker in result.get("top_talkers", []):
-            ip = talker.get("ip")
-            if ip:
-                try:
-                    from models.tables import Device, ScanDevice
-                    from sqlalchemy import desc as _desc
-                    device = (db.query(Device)
-                              .join(ScanDevice, ScanDevice.device_id == Device.id)
-                              .filter(ScanDevice.ip == ip)
-                              .order_by(_desc(ScanDevice.id)).first())
-                    if device and not device.label:
-                        from traffic.analyzer import get_device_activity
-                        from api.routes import _learn_from_activity
-                        activity = get_device_activity(ip, CAPTURE_DIR, max_files=3)
-                        _learn_from_activity(ip, activity, db)
-                except Exception:
-                    pass
-
         pkts = result.get("total_packets", 0)
         dns  = result.get("dns_count", 0)
         err  = result.get("error") or ""
