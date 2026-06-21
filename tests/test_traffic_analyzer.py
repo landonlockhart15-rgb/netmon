@@ -114,5 +114,17 @@ class CleanupOldCaptures(unittest.TestCase):
             self.assertFalse(old_file.exists())
 
 
+class TestGetDeviceActivityValidation(unittest.TestCase):
+    def test_get_device_activity_invalid_ip(self):
+        from traffic.analyzer import get_device_activity
+        # Invalid/malicious IPs should immediately fail validation
+        expected_error = {"error": "Invalid IP address", "http_requests": [], "tls_sessions": [], "dns_queries": []}
+        self.assertEqual(get_device_activity("invalid-ip"), expected_error)
+        self.assertEqual(get_device_activity("192.168.1.300"), expected_error)
+        self.assertEqual(get_device_activity("1.2.3.4; command_injection"), expected_error)
+        self.assertEqual(get_device_activity(None), expected_error)
+
+
 if __name__ == "__main__":
     unittest.main()
+

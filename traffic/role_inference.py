@@ -5,6 +5,7 @@ Analyzes packet headers (TTL, TCP Window Size) and flow patterns (volume, averag
 destination ports, domain query history) using tshark.
 """
 
+import ipaddress
 import re
 import subprocess
 from pathlib import Path
@@ -19,6 +20,14 @@ def extract_flow_stats(device_ip: str, capture_dir: Path = CAPTURE_DIR, max_file
     Run tshark on recent pcap files to extract packet header fields and flow patterns.
     Safe to fail silent and return empty stats if tshark is unavailable.
     """
+    if not isinstance(device_ip, str):
+        return {}
+
+    try:
+        ipaddress.ip_address(device_ip.strip())
+    except ValueError:
+        return {}
+
     tshark = find_tool("tshark")
     if not tshark:
         return {}
