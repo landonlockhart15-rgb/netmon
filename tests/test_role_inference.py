@@ -89,6 +89,15 @@ class TestRoleInference(unittest.TestCase):
         # 2. No matching info
         self.assertEqual(infer_device_role("192.168.1.23", {}, {}), "")
 
+    def test_extract_flow_stats_validation(self):
+        from traffic.role_inference import extract_flow_stats
+        # Invalid/malicious IPs should immediately fail validation and return {}
+        self.assertEqual(extract_flow_stats("invalid-ip"), {})
+        self.assertEqual(extract_flow_stats("192.168.1.300"), {})
+        self.assertEqual(extract_flow_stats("1.2.3.4; command_injection"), {})
+        self.assertEqual(extract_flow_stats(None), {})
+
+
 
 if __name__ == "__main__":
     unittest.main()

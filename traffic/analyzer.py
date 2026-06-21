@@ -19,6 +19,7 @@ Visibility note:
   Results reflect what reaches this host's NIC — not the full network.
 """
 
+import ipaddress
 import re
 import subprocess
 from pathlib import Path
@@ -310,6 +311,14 @@ def get_device_activity(
       dns_queries:    [{time, domain}]
       summary:        {total_http, total_tls, total_dns, top_domains}
     """
+    if not isinstance(device_ip, str):
+        return {"error": "Invalid IP address", "http_requests": [], "tls_sessions": [], "dns_queries": []}
+
+    try:
+        ipaddress.ip_address(device_ip.strip())
+    except ValueError:
+        return {"error": "Invalid IP address", "http_requests": [], "tls_sessions": [], "dns_queries": []}
+
     tshark = find_tool("tshark")
     if not tshark:
         return {"error": "tshark not found", "http_requests": [], "tls_sessions": [], "dns_queries": []}
