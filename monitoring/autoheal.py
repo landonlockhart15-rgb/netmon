@@ -39,6 +39,7 @@ EV_OUTAGE      = "outage_detected"
 EV_RESET       = "reboot_counter_reset"
 # Attempts that count against caps/cooldown (real + dry-run, so dry-run behaves identically)
 _ATTEMPT_EVENTS = (EV_REBOOT, EV_DRYRUN)
+_STORY_EVENTS = {EV_OUTAGE, EV_DRYRUN, EV_REBOOT, EV_RECOVERED, EV_GIVEUP, EV_RESET}
 
 # Short-term, in-process outage tracking. Persisted reboot history (ActivityLog)
 # is the source of truth for caps; this just tracks the *current* outage so we
@@ -296,6 +297,89 @@ def attempt_stats(db, now: Optional[datetime] = None) -> dict:
         "last_reboot_at": _aware(last_reboot.created_at) if last_reboot else None,
         "counter_reset_at": reset_at,
     }
+
+
+def _duration_label(seconds: Optional[float]) -> Optional[str]:
+    if seconds is None:
+        return None
+    try:
+        seconds = max(0, int(round(float(seconds))))
+    except (TypeError, ValueError):
+        return None
+    if seconds < 90:
+        return f"{seconds}s"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{minutes:.1f}m"
+    return f"{minutes / 60:.1f}h"
+
+
+def _storyline_for_event(event: str, summary: str, detail: dict | str | None, prior_steps: list[str] | None = None) -> str:
+    """Convert autoheal audit rows into a compact human-readable storyline."""
+    steps = list(prior_steps or [])
+    detail_dict = detail if isinstance(detail, dict) else {}
+    gateway_up = detail_dict.get("gateway_up")
+    router_state = "responsive" if gateway_up is True else "unresponsive" if gateway_up is False else None
+
+    if event == EV_OUTAGE:
+        steps = ["Detected internet drop"]
+        if router_state:
+            steps.append(f"Identified router as {router_state}")
+    elif event == EV_DRYRUN:
+        if not steps:
+            steps = ["Detected sustained internet drop"]
+            if router_state:
+                steps.append(f"Identified router as {router_state}")
+        steps.append("Prepared safe reboot in dry-run")
+    elif event == EV_REBOOT:
+        if not steps:
+            steps = ["Detected sustained internet drop"]
+            if router_state:
+                steps.append(f"Identified router as {router_state}")
+        result = detail_dict.get("result")
+        success = result.get("success") if isinstance(result, dict) else None
+        steps.append("Initiated safe reboot" if success is not False else "Router reboot attempt failed")
+    elif event == EV_RECOVERED:
+        if not steps:
+            steps = ["Connection recovered"]
+        label = _duration_label(detail_dict.get("downtime_s"))
+        steps.append(f"Connection restored in {label}" if label else "Connection restored")
+    elif event == EV_GIVEUP:
+        if not steps:
+            steps = ["Detected sustained internet drop"]
+        steps.append("Stopped automatic rebooting after safety limits")
+    elif event == EV_RESET:
+        steps = ["Reboot safety counter reset"]
+    else:
+        return summary
+
+    return " -> ".join(steps)
+
+
+def build_storyline(events: list[dict]) -> list[dict]:
+    """
+    Add narrative text to autoheal event dicts without discarding raw fields.
+    Input is expected newest-first, matching /api/autoheal.
+    """
+    chronological = list(reversed(events))
+    story_steps: list[str] = []
+    story_by_id: dict[int, str] = {}
+
+    for event in chronological:
+        name = event.get("event")
+        if name not in _STORY_EVENTS:
+            story_by_id[event["id"]] = event.get("summary", "")
+            continue
+        if name == EV_OUTAGE:
+            story_steps = []
+        story = _storyline_for_event(name, event.get("summary", ""), event.get("detail"), story_steps)
+        story_by_id[event["id"]] = story
+        story_steps = story.split(" -> ") if name != EV_RESET else []
+        if name in (EV_RECOVERED, EV_GIVEUP):
+            story_steps = []
+
+    return [{**event, "storyline": story_by_id.get(event["id"], event.get("summary", ""))}
+            for event in events]
 
 
 # ── Orchestration ─────────────────────────────────────────────────────────────

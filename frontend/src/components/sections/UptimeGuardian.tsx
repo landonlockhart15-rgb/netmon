@@ -335,7 +335,7 @@ export default function UptimeGuardian() {
       </Card>
 
       {/* Event feed */}
-      <Card title="Recent Activity" badge={events.length ? String(events.length) : undefined}>
+      <Card title="Storyline" badge={events.length ? String(events.length) : undefined}>
         {events.length === 0 ? (
           <EmptyState icon="◎" text="No auto-heal events yet" hint="Outage detections, reboots, and recoveries will appear here." />
         ) : (
@@ -344,7 +344,7 @@ export default function UptimeGuardian() {
               <div key={e.id} className="flex items-start gap-3 rounded-lg border border-white/5 bg-[#0f0f1a] px-3 py-2 text-xs">
                 <span className={cn('mt-0.5 h-1.5 w-1.5 rounded-full flex-shrink-0',
                   e.level === 'warning' ? 'bg-amber-400' : e.level === 'action' ? 'bg-purple-400' : 'bg-emerald-400')} />
-                <span className="flex-1 text-gray-300">{e.summary}</span>
+                <span className="flex-1 text-gray-300">{e.storyline || e.summary}</span>
                 <span className="text-gray-600 flex-shrink-0">{formatRelativeTime(e.created_at)}</span>
               </div>
             ))}

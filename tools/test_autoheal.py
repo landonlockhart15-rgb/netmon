@@ -80,10 +80,12 @@ def test_decide():
 
 
 def test_run_cycle_dryrun():
-    from app.database import SessionLocal
+    from app.database import Base, SessionLocal, engine, run_migrations
     from models.tables import Setting, ActivityLog
     import monitoring.autoheal as ah
 
+    Base.metadata.create_all(bind=engine)
+    run_migrations()
     db = SessionLocal()
     saved = {}
     test_start = datetime.now(timezone.utc)
@@ -157,6 +159,161 @@ def test_run_cycle_dryrun():
         ah._reset_state()
 
 
+def test_storyline():
+    import monitoring.autoheal as ah
+
+    # 1. Base normal storyline construction (as originally tested)
+    events = [
+        {"id": 3, "event": ah.EV_RECOVERED, "level": "info", "summary": "Internet is back online.",
+         "detail": {"downtime_s": 45}, "created_at": "2026-06-21T12:00:45Z"},
+        {"id": 2, "event": ah.EV_DRYRUN, "level": "action", "summary": "DRY-RUN: would reboot.",
+         "detail": {"gateway_up": False}, "created_at": "2026-06-21T12:00:10Z"},
+        {"id": 1, "event": ah.EV_OUTAGE, "level": "warning", "summary": "Internet outage detected.",
+         "detail": {"gateway_up": False}, "created_at": "2026-06-21T12:00:00Z"},
+    ]
+    story = ah.build_storyline(events)
+    check("storyline replaces raw reboot log",
+          story[0]["storyline"] == "Detected internet drop -> Identified router as unresponsive -> Prepared safe reboot in dry-run -> Connection restored in 45s")
+
+    # 2. Reboot Success vs Failure variants
+    # Success reboot
+    events_reboot_success = [
+        {"id": 2, "event": ah.EV_REBOOT, "level": "action", "summary": "Reboot",
+         "detail": {"gateway_up": False, "result": {"success": True}}},
+        {"id": 1, "event": ah.EV_OUTAGE, "level": "warning", "summary": "Outage",
+         "detail": {"gateway_up": False}},
+    ]
+    story_succ = ah.build_storyline(events_reboot_success)
+    check("storyline handles successful reboot",
+          story_succ[0]["storyline"] == "Detected internet drop -> Identified router as unresponsive -> Initiated safe reboot")
+
+    # Failed reboot
+    events_reboot_fail = [
+        {"id": 2, "event": ah.EV_REBOOT, "level": "action", "summary": "Reboot",
+         "detail": {"gateway_up": False, "result": {"success": False}}},
+        {"id": 1, "event": ah.EV_OUTAGE, "level": "warning", "summary": "Outage",
+         "detail": {"gateway_up": False}},
+    ]
+    story_fail = ah.build_storyline(events_reboot_fail)
+    check("storyline handles failed reboot",
+          story_fail[0]["storyline"] == "Detected internet drop -> Identified router as unresponsive -> Router reboot attempt failed")
+
+    # Reboot with missing success or malformed result dict
+    events_reboot_malformed = [
+        {"id": 2, "event": ah.EV_REBOOT, "level": "action", "summary": "Reboot",
+         "detail": {"gateway_up": False, "result": "not_a_dict"}},
+        {"id": 1, "event": ah.EV_OUTAGE, "level": "warning", "summary": "Outage",
+         "detail": {"gateway_up": False}},
+    ]
+    story_malformed = ah.build_storyline(events_reboot_malformed)
+    check("storyline handles malformed reboot result gracefully",
+          story_malformed[0]["storyline"] == "Detected internet drop -> Identified router as unresponsive -> Initiated safe reboot")
+
+    # 3. Empty input list
+    check("storyline handles empty list", ah.build_storyline([]) == [])
+
+    # 4. Missing fields in event dicts
+    # Missing event or unknown event name fallback
+    story_unknown = ah.build_storyline([{"id": 10, "summary": "Custom summary"}])
+    check("storyline handles unknown event by falling back to summary",
+          story_unknown[0]["storyline"] == "Custom summary")
+
+    story_no_summary = ah.build_storyline([{"id": 11, "event": "some_unknown"}])
+    check("storyline handles missing summary by returning empty string",
+          story_no_summary[0]["storyline"] == "")
+
+    # Missing detail field (defaults to {})
+    story_no_detail = ah.build_storyline([
+        {"id": 2, "event": ah.EV_RECOVERED, "summary": "recovered"},
+        {"id": 1, "event": ah.EV_OUTAGE, "summary": "outage"}
+    ])
+    check("storyline handles missing detail for EV_OUTAGE",
+          story_no_detail[1]["storyline"] == "Detected internet drop")
+    check("storyline handles missing detail for EV_RECOVERED",
+          story_no_detail[0]["storyline"] == "Detected internet drop -> Connection restored")
+
+    # Missing id key (should raise KeyError)
+    try:
+        ah.build_storyline([{"event": ah.EV_OUTAGE}])
+        check("missing id passes (unexpected)", False)
+    except KeyError:
+        check("missing id raises KeyError", True)
+
+    # 5. Gateway state variants
+    story_gw_true = ah.build_storyline([{"id": 1, "event": ah.EV_OUTAGE, "detail": {"gateway_up": True}}])
+    check("gateway_up True storyline",
+          story_gw_true[0]["storyline"] == "Detected internet drop -> Identified router as responsive")
+
+    story_gw_malformed = ah.build_storyline([{"id": 1, "event": ah.EV_OUTAGE, "detail": {"gateway_up": "yes"}}])
+    check("gateway_up non-boolean storyline",
+          story_gw_malformed[0]["storyline"] == "Detected internet drop")
+
+    # 6. Downtime duration label boundary conditions
+    # Normal/boundary seconds
+    r_30s = ah.build_storyline([{"id": 1, "event": ah.EV_RECOVERED, "detail": {"downtime_s": 30}}])
+    check("downtime < 90s uses raw seconds", "Connection restored in 30s" in r_30s[0]["storyline"])
+    
+    r_89s = ah.build_storyline([{"id": 1, "event": ah.EV_RECOVERED, "detail": {"downtime_s": 89.4}}])
+    check("downtime 89.4s rounds to 89s", "Connection restored in 89s" in r_89s[0]["storyline"])
+
+    r_90s = ah.build_storyline([{"id": 1, "event": ah.EV_RECOVERED, "detail": {"downtime_s": 90}}])
+    check("downtime 90s formatting (minutes)", "Connection restored in 1.5m" in r_90s[0]["storyline"])
+
+    r_7200s = ah.build_storyline([{"id": 1, "event": ah.EV_RECOVERED, "detail": {"downtime_s": 7200}}])
+    check("downtime 7200s formatting (hours)", "Connection restored in 2.0h" in r_7200s[0]["storyline"])
+
+    r_negative = ah.build_storyline([{"id": 1, "event": ah.EV_RECOVERED, "detail": {"downtime_s": -100}}])
+    check("downtime negative value defaults to 0s", "Connection restored in 0s" in r_negative[0]["storyline"])
+
+    r_string = ah.build_storyline([{"id": 1, "event": ah.EV_RECOVERED, "detail": {"downtime_s": "45.8"}}])
+    check("downtime string float parsed and rounded", "Connection restored in 46s" in r_string[0]["storyline"])
+
+    r_invalid_str = ah.build_storyline([{"id": 1, "event": ah.EV_RECOVERED, "detail": {"downtime_s": "abc"}}])
+    check("downtime invalid string fallback", r_invalid_str[0]["storyline"] == "Connection recovered -> Connection restored")
+
+    # NaN downtime
+    r_nan = ah.build_storyline([{"id": 1, "event": ah.EV_RECOVERED, "detail": {"downtime_s": float("nan")}}])
+    check("downtime NaN value fallback", r_nan[0]["storyline"] == "Connection recovered -> Connection restored")
+
+    # INF downtime (probes OverflowError vulnerability)
+    try:
+        ah.build_storyline([{"id": 1, "event": ah.EV_RECOVERED, "detail": {"downtime_s": float("inf")}}])
+        check("downtime INF does not crash (unexpected)", False)
+    except OverflowError:
+        check("downtime INF causes OverflowError (identified vulnerability)", True)
+
+    # 7. Concurrency / Ordering and Reset Events
+    # Sequence of multiple outages, reset, giveup, etc.
+    events_seq = [
+        {"id": 6, "event": ah.EV_RECOVERED, "summary": "Back", "detail": {"downtime_s": 30}},
+        {"id": 5, "event": ah.EV_OUTAGE, "summary": "Outage 2", "detail": {"gateway_up": True}},
+        {"id": 4, "event": ah.EV_RESET, "summary": "Reset"},
+        {"id": 3, "event": ah.EV_GIVEUP, "summary": "Giveup"},
+        {"id": 2, "event": ah.EV_REBOOT, "summary": "Reboot 1", "detail": {"gateway_up": False, "result": {"success": True}}},
+        {"id": 1, "event": ah.EV_OUTAGE, "summary": "Outage 1", "detail": {"gateway_up": False}},
+    ]
+    story_seq = ah.build_storyline(events_seq)
+    check("outage 1 storyline matches expected",
+          story_seq[5]["storyline"] == "Detected internet drop -> Identified router as unresponsive")
+    check("reboot 1 storyline carries over outage 1 state",
+          story_seq[4]["storyline"] == "Detected internet drop -> Identified router as unresponsive -> Initiated safe reboot")
+    check("giveup storyline carries over reboot 1 state and appends giveup text",
+          story_seq[3]["storyline"] == "Detected internet drop -> Identified router as unresponsive -> Initiated safe reboot -> Stopped automatic rebooting after safety limits")
+    check("reset storyline is independent and does not carry over state",
+          story_seq[2]["storyline"] == "Reboot safety counter reset")
+    check("outage 2 resets state and doesn't carry over outage 1",
+          story_seq[1]["storyline"] == "Detected internet drop -> Identified router as responsive")
+    check("recovered 2 storyline carries over outage 2 state",
+          story_seq[0]["storyline"] == "Detected internet drop -> Identified router as responsive -> Connection restored in 30s")
+
+    # Oldest-first chronological sorting mismatch vulnerability
+    events_oldest_first = list(reversed(events))
+    story_mismatch = ah.build_storyline(events_oldest_first)
+    check("oldest-first list breaks storyline combination due to reverse assumption",
+          story_mismatch[0]["storyline"] == "Detected internet drop -> Identified router as unresponsive" and
+          story_mismatch[2]["storyline"] == "Connection recovered -> Connection restored in 45s")
+
+
 def test_driver_safety():
     from network.router_reboot import reboot_router
     r = reboot_router("192.168.1.1", "admin", "", method="netgear_soap")
@@ -221,6 +378,7 @@ def test_smartplug_drivers():
 if __name__ == "__main__":
     print("decide() — pure decision engine:");      test_decide()
     print("run_cycle() — dry-run orchestration:");   test_run_cycle_dryrun()
+    print("storyline — narrative activity feed:");    test_storyline()
     print("router driver — safety:");                test_driver_safety()
     print("smartplug drivers — safety/mocks:");      test_smartplug_drivers()
     print(f"\n{_pass} passed, {_fail} failed")
