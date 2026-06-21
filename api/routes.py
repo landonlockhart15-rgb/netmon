@@ -4978,7 +4978,7 @@ _AUTOHEAL_KEYS = {
 def autoheal_status(db: Session = Depends(get_db)):
     """Uptime Guardian status — config (password redacted), live outage state,
     recent events, and reboot stats."""
-    from monitoring.autoheal import get_config, _STATE, attempt_stats
+    from monitoring.autoheal import get_config, _STATE, attempt_stats, build_storyline
     from monitoring.uptime_stats import get_uptime_stats
 
     cfg = get_config(db)
@@ -4996,8 +4996,11 @@ def autoheal_status(db: Session = Depends(get_db)):
         except Exception:
             return r.detail
 
-    events = [{"id": r.id, "event": r.event, "level": r.level, "summary": r.summary,
-               "detail": _detail(r), "created_at": _iso(r.created_at)} for r in rows]
+    events = build_storyline([
+        {"id": r.id, "event": r.event, "level": r.level, "summary": r.summary,
+         "detail": _detail(r), "created_at": _iso(r.created_at)}
+        for r in rows
+    ])
 
     stats = attempt_stats(db)
     uptime = get_uptime_stats(db)
