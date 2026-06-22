@@ -547,6 +547,7 @@ export interface Conversation {
   dst_port: number
   protocol: string
   bytes: number
+  packets?: number
 }
 
 export interface Connection {

@@ -3665,6 +3665,8 @@ def traffic_dashboard(db: Session = Depends(get_db)):
                     conversations.append({
                         "src":      t.get("ip"),
                         "dst":      d.get("ip"),
+                        "src_ip":   t.get("ip"),
+                        "dst_ip":   d.get("ip"),
                         "bytes":    min(t.get("bytes", 0), d.get("bytes", 0)),
                         "packets":  min(t.get("packets", 0), d.get("packets", 0)),
                         "country":  None,
@@ -3676,8 +3678,8 @@ def traffic_dashboard(db: Session = Depends(get_db)):
     try:
         from network.geo import country_for_ip
         for c in conversations:
-            if c.get("dst"):
-                c["country"] = country_for_ip(c["dst"])
+            if c.get("dst_ip"):
+                c["country"] = country_for_ip(c["dst_ip"])
     except Exception:
         pass
 
@@ -3702,6 +3704,7 @@ def traffic_dashboard(db: Session = Depends(get_db)):
     return {
         "capture": {
             "running":   bool(status.get("running")),
+            "capturing": bool(status.get("running")),
             "interface": status.get("interface"),
             "started_at": _iso(status.get("started_at")) if status.get("started_at") else None,
         },

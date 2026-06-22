@@ -133,6 +133,7 @@ class CaptureEngine:
             running = self._is_running()
             return {
                 "running":    running,
+                "capturing":  running,
                 "session_id": self._session_id,
                 "interface":  self._interface,
                 "started_at": (
