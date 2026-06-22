@@ -214,6 +214,36 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(data["findings"][0]["cve"], "CVE-2021-41773")
         self.assertEqual(data["findings"][0]["ip"], "192.168.1.10")
 
+    def test_attack_tree_endpoint_maps_iot_to_nas_path(self):
+        scan = Scan(id=1, status="complete")
+        iot = Device(id=1, mac="00:11:22:33:44:55", vendor="Wyze", label="Garage Camera", is_known=False)
+        nas = Device(id=2, mac="00:11:22:33:44:66", vendor="Synology", label="Family NAS", is_known=True)
+        iot_sd = ScanDevice(
+            id=1, scan_id=1, device_id=1, ip="192.168.1.20",
+            hostname="garage-cam", open_ports="[80, 23]",
+            cves_json='[{"cve":"CVE-2020-0001","risk":"high","port":80,"service":"http"}]',
+        )
+        nas_sd = ScanDevice(
+            id=2, scan_id=1, device_id=2, ip="192.168.1.30",
+            hostname="nas", open_ports="[445, 5000]",
+        )
+        self.db.add(scan)
+        self.db.add(iot)
+        self.db.add(nas)
+        self.db.add(iot_sd)
+        self.db.add(nas_sd)
+        self.db.commit()
+
+        response = self.client.get("/api/security/attack-tree")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["path_count"], 1)
+        path = data["paths"][0]
+        self.assertEqual(path["source"]["ip"], "192.168.1.20")
+        self.assertEqual(path["target"]["ip"], "192.168.1.30")
+        self.assertGreaterEqual(len(path["steps"]), 3)
+        self.assertGreaterEqual(len(path["mitigations"]), 1)
+
     @patch("ai.provider.get_investigation_provider")
     def test_explain_chat_turn(self, mock_get_provider):
         """Test POST /api/device/{device_id}/chat/{turn_id}/explain route."""

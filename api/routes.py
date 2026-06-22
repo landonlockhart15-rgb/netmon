@@ -158,6 +158,100 @@ def _risk_rank(risk: str | None) -> int:
     return {"critical": 4, "high": 3, "medium": 2, "low": 1}.get((risk or "").lower(), 0)
 
 
+_IOT_TERMS = ("iot", "camera", "cam", "bulb", "plug", "sensor", "thermostat", "tuya", "kasa", "wyze", "ring", "nest", "echo", "alexa", "printer", "roku", "tv")
+_HIGH_VALUE_TERMS = ("nas", "work", "pc", "desktop", "laptop", "server", "synology", "qnap", "truenas", "freenas", "windows", "macbook", "imac")
+_ADMIN_PORTS = {22, 23, 80, 443, 8080, 8443, 8000, 8888}
+_TARGET_PORTS = {22, 445, 548, 3389, 5000, 5001, 5900, 8080, 8443}
+
+
+def _device_text(dev: Device, sd: ScanDevice | None) -> str:
+    return " ".join([
+        dev.label or "", dev.hostname or "", dev.vendor or "", dev.os_guess or "",
+        sd.hostname if sd else "",
+    ]).lower()
+
+
+def _device_name(dev: Device, sd: ScanDevice | None) -> str:
+    return dev.label or (sd.hostname if sd else None) or dev.hostname or (sd.ip if sd else None) or f"Device #{dev.id}"
+
+
+def _port_set(sd: ScanDevice | None) -> set[int]:
+    ports = sd.ports_list if sd else []
+    return {int(p) for p in ports if str(p).isdigit()}
+
+
+def _latest_scan_device(db: Session, device_id: int):
+    return (
+        db.query(ScanDevice)
+        .filter(ScanDevice.device_id == device_id)
+        .order_by(desc(ScanDevice.id))
+        .first()
+    )
+
+
+def _attack_tree_device_summary(db: Session, dev: Device) -> dict:
+    sd = _latest_scan_device(db, dev.id)
+    cve_row = _latest_scan_device_with_cves(db, dev.id)
+    cves = cve_row.cves_list if cve_row else []
+    ports = _port_set(sd)
+    text = _device_text(dev, sd)
+    iot_signals = [term for term in _IOT_TERMS if term in text]
+    target_signals = [term for term in _HIGH_VALUE_TERMS if term in text]
+    source_score = 0
+    if iot_signals:
+        source_score += 3
+    if not dev.is_known:
+        source_score += 2
+    source_score += min(len(ports & _ADMIN_PORTS), 2)
+    source_score += min(sum(1 for v in cves if _risk_rank(v.get("risk")) >= 3), 3)
+
+    target_score = 0
+    if target_signals:
+        target_score += 4
+    target_score += min(len(ports & _TARGET_PORTS), 4)
+    target_score += min(sum(1 for v in cves if _risk_rank(v.get("risk")) >= 3), 2)
+
+    return {
+        "device": dev,
+        "scan_device": sd,
+        "name": _device_name(dev, sd),
+        "ip": sd.ip if sd else None,
+        "ports": sorted(ports),
+        "cves": cves,
+        "iot_signals": iot_signals[:3],
+        "target_signals": target_signals[:3],
+        "source_score": source_score,
+        "target_score": target_score,
+    }
+
+
+def _attack_risk(score: int) -> str:
+    if score >= 8:
+        return "critical"
+    if score >= 6:
+        return "high"
+    if score >= 4:
+        return "medium"
+    return "low"
+
+
+def _attack_step_reasons(summary: dict, source: bool) -> list[str]:
+    reasons = []
+    if source and summary["iot_signals"]:
+        reasons.append("IoT-like identity: " + ", ".join(summary["iot_signals"]))
+    if (not source) and summary["target_signals"]:
+        reasons.append("High-value identity: " + ", ".join(summary["target_signals"]))
+    if source and not summary["device"].is_known:
+        reasons.append("Device is not trusted yet")
+    interesting_ports = sorted(set(summary["ports"]) & (_ADMIN_PORTS if source else _TARGET_PORTS))
+    if interesting_ports:
+        reasons.append("Relevant open ports: " + ", ".join(str(p) for p in interesting_ports[:5]))
+    severe = [v for v in summary["cves"] if _risk_rank(v.get("risk")) >= 3]
+    if severe:
+        reasons.append("High-risk CVE evidence: " + ", ".join(v.get("cve", "CVE") for v in severe[:3]))
+    return reasons
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # SCAN  (unchanged from Phase 3)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -669,6 +763,102 @@ def get_cve_mapping(current_only: bool = True, db: Session = Depends(get_db)):
         "scanned_devices": scanned_devices,
         "finding_count": len(findings),
         "findings": findings,
+    }
+
+
+@router.get("/api/security/attack-tree")
+def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
+    """
+    Build read-only attack-tree candidates from existing scan evidence.
+
+    This does not run exploit tools. It highlights plausible pivot paths from a
+    low-security IoT foothold to high-value local targets so the user can decide
+    where segmentation, patching, or password hardening matters most.
+    """
+    latest_scan = db.query(Scan).filter(Scan.status == "complete").order_by(desc(Scan.id)).first()
+    if current_only:
+        _, scan_ids = current_scan_ids(db)
+        device_ids = [
+            row[0] for row in (
+                db.query(ScanDevice.device_id)
+                .filter(ScanDevice.scan_id.in_(scan_ids))
+                .distinct()
+                .all()
+            )
+        ] if scan_ids else []
+        devices = db.query(Device).filter(Device.id.in_(device_ids)).all() if device_ids else []
+    else:
+        devices = db.query(Device).order_by(desc(Device.last_seen)).all()
+
+    summaries = [_attack_tree_device_summary(db, dev) for dev in devices]
+    sources = [s for s in summaries if s["source_score"] >= 3]
+    targets = [s for s in summaries if s["target_score"] >= 3]
+    if not sources:
+        sources = sorted(summaries, key=lambda s: s["source_score"], reverse=True)[:2]
+    if not targets:
+        targets = sorted(summaries, key=lambda s: s["target_score"], reverse=True)[:3]
+
+    paths = []
+    for src in sources:
+        for target in targets:
+            if src["device"].id == target["device"].id:
+                continue
+            score = src["source_score"] + target["target_score"]
+            risk = _attack_risk(score)
+            src_reasons = _attack_step_reasons(src, source=True)
+            target_reasons = _attack_step_reasons(target, source=False)
+            paths.append({
+                "id": f"{src['device'].id}-{target['device'].id}",
+                "risk": risk,
+                "score": score,
+                "source": {
+                    "device_id": src["device"].id,
+                    "name": src["name"],
+                    "ip": src["ip"],
+                    "reasons": src_reasons,
+                },
+                "target": {
+                    "device_id": target["device"].id,
+                    "name": target["name"],
+                    "ip": target["ip"],
+                    "reasons": target_reasons,
+                },
+                "steps": [
+                    {
+                        "title": "Initial foothold",
+                        "detail": f"Attacker compromises {src['name']} using weak management exposure or known CVE evidence.",
+                    },
+                    {
+                        "title": "Local network pivot",
+                        "detail": "From the same LAN, the attacker scans for file sharing, remote admin, or web consoles.",
+                    },
+                    {
+                        "title": "High-value access",
+                        "detail": f"Attacker targets {target['name']} because it exposes valuable services or looks like storage/workstation infrastructure.",
+                    },
+                ],
+                "mitigations": [
+                    "Move IoT devices to a guest or VLAN segment that cannot initiate connections to workstations or NAS devices.",
+                    "Patch or disable vulnerable/admin services shown in the CVE and open-port evidence.",
+                    "Require unique strong credentials and disable default web, SSH, SMB, or RDP access where it is not needed.",
+                ],
+            })
+
+    paths.sort(key=lambda p: (p["score"], p["source"]["name"], p["target"]["name"]), reverse=True)
+    return {
+        "scan": {
+            "id": latest_scan.id if latest_scan else None,
+            "started_at": _iso(latest_scan.started_at) if latest_scan else None,
+        },
+        "device_count": len(summaries),
+        "source_count": len(sources),
+        "target_count": len(targets),
+        "path_count": len(paths[:6]),
+        "paths": paths[:6],
+        "assumptions": [
+            "Paths are inferred from labels, vendors, OS hints, open ports, trust state, and CVE evidence.",
+            "The tree is a planning aid only; it does not prove compromise and does not execute exploit code.",
+        ],
     }
 
 

@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal, FlaskConical, Wrench } from 'lucide-react'
+import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal, FlaskConical, Wrench, GitFork } from 'lucide-react'
 import {
   checkWSL, getSecLabHistory,
   startNikto, startHydra, startJohn, startMetasploit,
@@ -16,10 +16,11 @@ import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
 import Markdown from '@/components/shared/Markdown'
 
-type Tab = 'cve' | 'vulnerability' | 'password' | 'exploit' | 'wifi' | 'exposure'
+type Tab = 'cve' | 'attack_tree' | 'vulnerability' | 'password' | 'exploit' | 'wifi' | 'exposure'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'cve', label: 'CVE Mapping' },
+  { id: 'attack_tree', label: 'Attack Tree' },
   { id: 'vulnerability', label: 'Vulnerability Scan' },
   { id: 'password',      label: 'Password Test' },
   { id: 'exploit',       label: 'Exploit Test' },
@@ -68,6 +69,16 @@ export default function SecurityLab() {
     queryFn: async () => {
       const res = await fetch('/api/security/cve-mapping', { credentials: 'same-origin' })
       if (!res.ok) throw new Error(`CVE mapping failed: ${res.status}`)
+      return res.json()
+    },
+    refetchInterval: activeRunId ? 5000 : 30_000,
+  })
+
+  const attackTreeQuery = useQuery({
+    queryKey: ['attack-tree'],
+    queryFn: async () => {
+      const res = await fetch('/api/security/attack-tree', { credentials: 'same-origin' })
+      if (!res.ok) throw new Error(`Attack tree failed: ${res.status}`)
       return res.json()
     },
     refetchInterval: activeRunId ? 5000 : 30_000,
@@ -265,6 +276,14 @@ export default function SecurityLab() {
       </div>
 
       {tab === 'cve' && <CveMappingPanel data={cveQuery.data} loading={cveQuery.isFetching} onRefresh={() => cveQuery.refetch()} />}
+
+      {tab === 'attack_tree' && (
+        <AttackTreePanel
+          data={attackTreeQuery.data}
+          loading={attackTreeQuery.isFetching}
+          onRefresh={() => attackTreeQuery.refetch()}
+        />
+      )}
 
       {tab === 'vulnerability' && <NiktoPanel onStart={(target, opts) => runAction(async () => {
         const r = await startNikto({ target, ...opts, authorization_confirmed: true })
@@ -523,6 +542,115 @@ function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boo
         Phase one uses a conservative offline banner matcher. Treat matches as triage signals and confirm with vendor advisories before making production changes.
       </p>
     </Card>
+  )
+}
+
+function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boolean; onRefresh: () => void }) {
+  const paths: any[] = data?.paths ?? []
+  const topPath = paths[0]
+  return (
+    <Card title="Attack Tree" badge={paths.length ? String(paths.length) : undefined}
+      action={<Btn variant="ghost" size="sm" loading={loading} onClick={onRefresh}>Refresh</Btn>}>
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 mb-4">
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+          <p className="text-[10px] uppercase tracking-wider text-gray-600">Latest scan</p>
+          <p className="text-sm text-gray-200 mt-1">#{data?.scan?.id ?? '—'}</p>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+          <p className="text-[10px] uppercase tracking-wider text-gray-600">Devices mapped</p>
+          <p className="text-sm text-gray-200 mt-1">{data?.device_count ?? 0}</p>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+          <p className="text-[10px] uppercase tracking-wider text-gray-600">Footholds</p>
+          <p className="text-sm text-gray-200 mt-1">{data?.source_count ?? 0}</p>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+          <p className="text-[10px] uppercase tracking-wider text-gray-600">Targets</p>
+          <p className="text-sm text-gray-200 mt-1">{data?.target_count ?? 0}</p>
+        </div>
+      </div>
+
+      {paths.length === 0 ? (
+        <EmptyState icon="◎" text="No attack paths yet" hint="Run a device scan with service detection, then label IoT, NAS, and work devices for better path mapping." />
+      ) : (
+        <div className="space-y-4">
+          {topPath && (
+            <div className="rounded-lg border border-white/10 bg-black/20 p-4">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-2 text-gray-200">
+                  <GitFork size={15} className="text-purple-300" />
+                  <span className="text-sm font-medium">Most likely pivot path</span>
+                </div>
+                <Badge variant={severityVariant(topPath.risk)}>{topPath.risk}</Badge>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {topPath.steps.map((step: any, i: number) => (
+                  <div key={step.title} className="relative rounded-lg border border-white/10 bg-white/[0.03] p-3 min-h-[112px]">
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="h-6 w-6 rounded-full bg-purple-500/15 border border-purple-500/30 text-purple-200 flex items-center justify-center text-xs">{i + 1}</div>
+                      <p className="text-xs font-medium text-gray-200">{step.title}</p>
+                    </div>
+                    <p className="text-xs text-gray-400 leading-relaxed">{step.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {paths.map(path => (
+              <div key={path.id} className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                <div className="flex flex-col md:flex-row md:items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm text-gray-100">{path.source.name}</span>
+                      <span className="text-gray-600">→</span>
+                      <span className="text-sm text-gray-100">{path.target.name}</span>
+                      <Badge variant={severityVariant(path.risk)}>{path.risk}</Badge>
+                    </div>
+                    <div className="font-mono text-[11px] text-blue-400 mt-1">
+                      {path.source.ip ?? 'unknown'} → {path.target.ip ?? 'unknown'}
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-500">Score {path.score}</div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 text-xs">
+                  <ReasonList title="Foothold signals" reasons={path.source.reasons} />
+                  <ReasonList title="Target signals" reasons={path.target.reasons} />
+                </div>
+                <div className="mt-3 pt-3 border-t border-white/5">
+                  <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">First mitigations</p>
+                  <ul className="space-y-1 text-xs text-gray-400 list-disc pl-4">
+                    {path.mitigations.slice(0, 3).map((m: string) => <li key={m}>{m}</li>)}
+                  </ul>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {data?.assumptions?.length > 0 && (
+            <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 text-[11px] text-blue-200/80 space-y-1">
+              {data.assumptions.map((a: string) => <p key={a}>{a}</p>)}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+function ReasonList({ title, reasons }: { title: string; reasons: string[] }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">{title}</p>
+      {reasons?.length ? (
+        <ul className="space-y-1 text-gray-400 list-disc pl-4">
+          {reasons.map(r => <li key={r}>{r}</li>)}
+        </ul>
+      ) : (
+        <p className="text-gray-600">No strong signal found.</p>
+      )}
+    </div>
   )
 }
 
