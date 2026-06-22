@@ -25,6 +25,10 @@ from api.routes import (
     _get_setting_str,
     _get_setting_float,
     _resolve_device,
+    _latest_scan_device,
+    _attack_tree_device_summary,
+    _attack_risk,
+    _attack_step_reasons,
 )
 
 
