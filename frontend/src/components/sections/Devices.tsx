@@ -10,8 +10,9 @@ import EmptyState from '@/components/shared/EmptyState'
 import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
 import DeviceModal from '@/components/shared/DeviceModal'
+import TopologyMap from '@/components/shared/TopologyMap'
 
-type View = 'list' | 'grid'
+type View = 'list' | 'grid' | 'topology'
 type Filter = 'current' | 'all'
 
 export default function Devices() {
@@ -125,8 +126,10 @@ export default function Devices() {
           <EmptyState icon="◉" text={search ? 'No matches' : 'No devices found'} hint="Run a scan to discover devices." />
         ) : view === 'list' ? (
           <ListView devices={filtered} onSelect={setSelectedDevice} />
-        ) : (
+        ) : view === 'grid' ? (
           <GridView devices={filtered} onSelect={setSelectedDevice} />
+        ) : (
+          <TopologyMap devices={filtered} onSelect={setSelectedDevice} />
         )}
       </Card>
 
@@ -154,12 +157,19 @@ function ViewToggle({ value, onChange }: { value: View; onChange: (v: View) => v
   return (
     <div className="flex rounded-md overflow-hidden border border-white/10">
       <button onClick={() => onChange('list')}
+        title="List View"
         className={cn('p-2 transition-colors', value === 'list' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-gray-200')}>
         <List size={14} />
       </button>
       <button onClick={() => onChange('grid')}
+        title="Grid View"
         className={cn('p-2 transition-colors', value === 'grid' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-gray-200')}>
         <LayoutGrid size={14} />
+      </button>
+      <button onClick={() => onChange('topology')}
+        title="Topology Map"
+        className={cn('p-2 transition-colors', value === 'topology' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-gray-200')}>
+        <Network size={14} />
       </button>
     </div>
   )
