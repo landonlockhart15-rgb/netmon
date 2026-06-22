@@ -176,7 +176,7 @@ def _device_name(dev: Device, sd: ScanDevice | None) -> str:
 
 
 def _port_set(sd: ScanDevice | None) -> set[int]:
-    ports = sd.ports_list if sd else []
+    ports = _json_list(sd.open_ports) if sd else []
     return {int(p) for p in ports if str(p).isdigit()}
 
 
@@ -192,7 +192,7 @@ def _latest_scan_device(db: Session, device_id: int):
 def _attack_tree_device_summary(db: Session, dev: Device) -> dict:
     sd = _latest_scan_device(db, dev.id)
     cve_row = _latest_scan_device_with_cves(db, dev.id)
-    cves = cve_row.cves_list if cve_row else []
+    cves = _json_list(cve_row.cves_json) if cve_row else []
     ports = _port_set(sd)
     text = _device_text(dev, sd)
     iot_signals = [term for term in _IOT_TERMS if term in text]

@@ -9,12 +9,23 @@ import sys
 import unittest
 from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, patch
+"""
+Focused unit tests for api/routes.py helper functions.
+
+Run from the project root:
+    python -m unittest tests/test_api_routes.py -v
+"""
+import os
+import sys
+import unittest
+from datetime import datetime, timezone, timedelta
+from unittest.mock import MagicMock, patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.tables import Base, Device, Setting
+from models.tables import Base, Device, Scan, ScanDevice, Setting
 from api.routes import (
     _iso,
     _infer_vendor_from_ua,
@@ -29,6 +40,8 @@ from api.routes import (
     _attack_tree_device_summary,
     _attack_risk,
     _attack_step_reasons,
+    _json_list,
+    _port_set,
 )
 
 
@@ -282,6 +295,131 @@ class TestDatabaseHelpers(unittest.TestCase):
         device2, is_new2 = _resolve_device(self.session, d_dict)
         self.assertFalse(is_new2)
         self.assertEqual(device2.id, device.id)
+
+    def test_attack_tree_summary_ignores_malformed_json(self):
+        scan = Scan(id=1, status="complete")
+        device = Device(id=1, mac="aa:bb:cc:dd:ee:22", vendor="Wyze", label="Garage Camera")
+        scan_device = ScanDevice(
+            id=1,
+            scan_id=1,
+            device_id=1,
+            ip="192.168.1.22",
+            hostname="garage-cam",
+            open_ports="not-json",
+            cves_json="not-json",
+        )
+        self.session.add(scan)
+        self.session.add(device)
+        self.session.add(scan_device)
+        self.session.commit()
+
+        summary = _attack_tree_device_summary(self.session, device)
+
+        self.assertEqual(summary["ports"], [])
+        self.assertEqual(summary["cves"], [])
+        self.assertGreaterEqual(summary["source_score"], 3)
+
+    def test_attack_tree_summary_accepts_numeric_port_strings(self):
+        scan = Scan(id=1, status="complete")
+        device = Device(id=1, mac="aa:bb:cc:dd:ee:33", vendor="Synology", label="Family NAS")
+        scan_device = ScanDevice(
+            id=1,
+            scan_id=1,
+            device_id=1,
+            ip="192.168.1.33",
+            hostname="nas",
+            open_ports='["445", "5000", "not-a-port"]',
+        )
+        self.session.add(scan)
+        self.session.add(device)
+        self.session.add(scan_device)
+        self.session.commit()
+
+        summary = _attack_tree_device_summary(self.session, device)
+
+        self.assertEqual(summary["ports"], [445, 5000])
+        self.assertGreaterEqual(summary["target_score"], 6)
+
+    def test_json_list_direct(self):
+        # Test None input
+        self.assertEqual(_json_list(None), [])
+        # Test empty string input
+        self.assertEqual(_json_list(""), [])
+        # Test non-string inputs
+        self.assertEqual(_json_list(123), [])
+        self.assertEqual(_json_list([1, 2]), [])
+        self.assertEqual(_json_list({"a": 1}), [])
+        # Test malformed JSON
+        self.assertEqual(_json_list("{invalid"), [])
+        self.assertEqual(_json_list("[1, 2,"), [])
+        # Test valid JSON list
+        self.assertEqual(_json_list("[1, 2, 3]"), [1, 2, 3])
+        # Test valid JSON non-list
+        self.assertEqual(_json_list('{"a": 1}'), [])
+        self.assertEqual(_json_list('123'), [])
+        self.assertEqual(_json_list('true'), [])
+
+    def test_port_set_direct(self):
+        # None scan device
+        self.assertEqual(_port_set(None), set())
+        # Scan device with open_ports=None
+        sd1 = ScanDevice(open_ports=None)
+        self.assertEqual(_port_set(sd1), set())
+        # Scan device with open_ports=""
+        sd2 = ScanDevice(open_ports="")
+        self.assertEqual(_port_set(sd2), set())
+        # Scan device with open_ports="[]"
+        sd3 = ScanDevice(open_ports="[]")
+        self.assertEqual(_port_set(sd3), set())
+        # Scan device with malformed JSON
+        sd4 = ScanDevice(open_ports="[1, 2")
+        self.assertEqual(_port_set(sd4), set())
+        # Scan device with mixed inputs
+        sd5 = ScanDevice(open_ports='[80, "22", null, true, {"port": 443}, [53], -443, 80.5, "999999"]')
+        self.assertEqual(_port_set(sd5), {80, 22, 999999})
+        # Scan device with very large port string
+        sd6 = ScanDevice(open_ports='["12345678901234567890"]')
+        self.assertEqual(_port_set(sd6), {12345678901234567890})
+
+    def test_attack_tree_summary_cves_not_a_dict_raises_error(self):
+        scan = Scan(id=1, status="complete")
+        device = Device(id=1, mac="aa:bb:cc:dd:ee:44", vendor="Wyze", label="Garage Camera")
+        scan_device = ScanDevice(
+            id=1,
+            scan_id=1,
+            device_id=1,
+            ip="192.168.1.22",
+            hostname="garage-cam",
+            cves_json='["CVE-2023-1234"]',
+        )
+        self.session.add(scan)
+        self.session.add(device)
+        self.session.add(scan_device)
+        self.session.commit()
+
+        # Iterating over string element in cves will call v.get("risk"), raising AttributeError
+        with self.assertRaises(AttributeError):
+            _attack_tree_device_summary(self.session, device)
+
+    def test_attack_tree_summary_cve_risk_not_a_string_raises_error(self):
+        scan = Scan(id=1, status="complete")
+        device = Device(id=1, mac="aa:bb:cc:dd:ee:55", vendor="Wyze", label="Garage Camera")
+        scan_device = ScanDevice(
+            id=1,
+            scan_id=1,
+            device_id=1,
+            ip="192.168.1.22",
+            hostname="garage-cam",
+            cves_json='[{"cve": "CVE-2023-1234", "risk": 3}]',
+        )
+        self.session.add(scan)
+        self.session.add(device)
+        self.session.add(scan_device)
+        self.session.commit()
+
+        # risk.lower() will raise AttributeError because risk is an integer
+        with self.assertRaises(AttributeError):
+            _attack_tree_device_summary(self.session, device)
 
 
 if __name__ == "__main__":
