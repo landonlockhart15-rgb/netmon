@@ -357,6 +357,26 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["allow"]["allowed_high_bandwidth"], True)
 
+    @patch("ai.provider.get_investigation_provider")
+    def test_contextual_insight(self, mock_get_provider):
+        """Test POST /api/ai/contextual-insight route."""
+        self.db.add(Setting(key="ai_enabled", value="true"))
+        self.db.commit()
+
+        mock_provider = MagicMock()
+        mock_provider.name = "gemini"
+        mock_provider.analyze.return_value = {
+            "raw_response": "What happened: An offline event was detected. Why it matters: This means the local gateway is unreachable.",
+            "error": None
+        }
+        mock_get_provider.return_value = mock_provider
+
+        response = self.client.post("/api/ai/contextual-insight", json={"text": "Connection down", "context": "outage"})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("explanation", data)
+        self.assertEqual(data["explanation"], "What happened: An offline event was detected. Why it matters: This means the local gateway is unreachable.")
+
     def test_route_security_discovery(self):
         """
         Dynamically discover all registered routes in the FastAPI app

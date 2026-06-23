@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { CheckCheck, Bell, BellRing, Inbox, Search, Trash2, MonitorSmartphone, Eraser, BrainCircuit, Loader2 } from 'lucide-react'
-import { getAlerts, readAlert, readAllAlerts, deleteAlert, clearReadAlerts, explainAlert } from '@/lib/api'
+import { getAlerts, readAlert, readAllAlerts, deleteAlert, clearReadAlerts, explainAlert, getContextualInsight } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
@@ -208,6 +208,9 @@ function AlertRow({ alert: a, onRead, onDelete, onView }: {
   const [explanation, setExplanation] = useState<string | null>(null)
   const [explaining, setExplaining] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [insight, setInsight] = useState<string | null>(null)
+  const [insightLoading, setInsightLoading] = useState(false)
+  const [insightError, setInsightError] = useState<string | null>(null)
 
   const handleExplain = async () => {
     if (explanation) {
@@ -223,6 +226,23 @@ function AlertRow({ alert: a, onRead, onDelete, onView }: {
       setError(e.message || 'Failed to generate explanation')
     } finally {
       setExplaining(false)
+    }
+  }
+
+  const handleInsight = async () => {
+    if (insight) {
+      setInsight(null)
+      return
+    }
+    setInsightLoading(true)
+    setInsightError(null)
+    try {
+      const res = await getContextualInsight(a.message, `type: ${a.alert_type}, device_id: ${a.device_id || 'none'}`)
+      setInsight(res.explanation)
+    } catch (e: any) {
+      setInsightError(e.message || 'Failed to generate insight')
+    } finally {
+      setInsightLoading(false)
     }
   }
 
@@ -245,8 +265,21 @@ function AlertRow({ alert: a, onRead, onDelete, onView }: {
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
           <button
+            onClick={handleInsight}
+            title="Contextual Insight"
+            disabled={insightLoading}
+            className={cn(
+              'p-1.5 rounded transition-colors',
+              insight
+                ? 'text-purple-400 bg-purple-500/10 hover:text-purple-300'
+                : 'text-gray-500 hover:text-purple-400 hover:bg-white/5'
+            )}
+          >
+            {insightLoading ? <Loader2 size={14} className="animate-spin" /> : <BrainCircuit size={14} />}
+          </button>
+          <button
             onClick={handleExplain}
-            title="Explain with AI"
+            title="Explain with AI (Detail)"
             disabled={explaining}
             className={cn(
               'p-1.5 rounded transition-colors',
@@ -255,7 +288,7 @@ function AlertRow({ alert: a, onRead, onDelete, onView }: {
                 : 'text-gray-500 hover:text-purple-400 hover:bg-white/5'
             )}
           >
-            {explaining ? <Loader2 size={14} className="animate-spin" /> : <BrainCircuit size={14} />}
+            {explaining ? <Loader2 size={14} className="animate-spin" /> : <BrainCircuit size={14} className="opacity-60" />}
           </button>
           {onView && (
             <button onClick={onView} title="View device"
@@ -276,17 +309,33 @@ function AlertRow({ alert: a, onRead, onDelete, onView }: {
         </div>
       </div>
 
-      {(explaining || explanation || error) && (
+      {(explaining || explanation || error || insightLoading || insight || insightError) && (
         <div className="mt-3 pt-3 border-t border-white/5 text-xs space-y-2">
           {explaining && (
             <div className="flex items-center gap-2 text-purple-400 animate-pulse font-medium py-1">
               <BrainCircuit size={12} className="animate-pulse" />
-              <span>AI is generating explanation…</span>
+              <span>AI is generating detailed explanation…</span>
+            </div>
+          )}
+          {insightLoading && (
+            <div className="flex items-center gap-2 text-purple-400 animate-pulse font-medium py-1">
+              <BrainCircuit size={12} className="animate-pulse" />
+              <span>AI is generating contextual insight…</span>
             </div>
           )}
           {error && (
             <div className="text-red-400 font-medium py-1">
               Error: {error}
+            </div>
+          )}
+          {insightError && (
+            <div className="text-red-400 font-medium py-1">
+              Error: {insightError}
+            </div>
+          )}
+          {insight && (
+            <div className="prose prose-invert max-w-none font-normal leading-relaxed text-gray-300 bg-purple-950/10 rounded-lg p-3 border border-purple-500/10 shadow-inner">
+              <Markdown text={insight} />
             </div>
           )}
           {explanation && (

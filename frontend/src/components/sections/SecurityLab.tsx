@@ -1,11 +1,11 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal, FlaskConical, Wrench, GitFork } from 'lucide-react'
+import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal, FlaskConical, Wrench, GitFork, BrainCircuit, Loader2 } from 'lucide-react'
 import {
   checkWSL, getSecLabHistory,
   startNikto, startHydra, startJohn, startMetasploit,
   startWifiCapture, startAircrack, shodanCheck,
-  securityChat, cancelSecurityRun,
+  securityChat, cancelSecurityRun, getContextualInsight,
 } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
@@ -447,6 +447,89 @@ export default function SecurityLab() {
 
 // ── Tool panels ──────────────────────────────────────────────────────────────
 
+function CveFindingRow({ f, idx }: { f: any; idx: number }) {
+  const [insight, setInsight] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleInsight = async () => {
+    if (insight) {
+      setInsight(null)
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const summaryText = `Vulnerability ${f.cve}: ${f.title} detected on ${f.label || f.hostname || f.ip} running service ${f.service} on port ${f.port}.`
+      const contextText = `Evidence: ${f.evidence || 'none'}. Recommendation: ${f.recommendation || 'none'}. Risk: ${f.risk}.`
+      const res = await getContextualInsight(summaryText, contextText)
+      setInsight(res.explanation)
+    } catch (e: any) {
+      setError(e.message || 'Failed to generate insight')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <>
+      <tr className="border-b border-white/5 align-top">
+        <td className="px-4 py-2"><Badge variant={severityVariant(f.risk)}>{f.risk}</Badge></td>
+        <td className="px-4 py-2">
+          <div className="font-medium text-gray-200">{f.cve}</div>
+          <div className="text-gray-500 mt-0.5">{f.title}</div>
+        </td>
+        <td className="px-4 py-2">
+          <div className="text-gray-200">{f.label || f.hostname || f.ip || 'Unknown'}</div>
+          <div className="font-mono text-blue-400 mt-0.5">{f.ip || '—'}</div>
+        </td>
+        <td className="px-4 py-2">
+          <div className="text-gray-200">{f.service}:{f.port}</div>
+          <div className="text-gray-500 mt-0.5 max-w-[220px] truncate">{f.evidence || `${f.product ?? ''} ${f.version ?? ''}`}</div>
+        </td>
+        <td className="px-4 py-2 text-gray-400 max-w-[280px]">{f.recommendation}</td>
+        <td className="px-4 py-2 text-right">
+          <button
+            onClick={handleInsight}
+            title="Contextual Insight"
+            disabled={loading}
+            className={cn(
+              'p-1.5 rounded transition-colors',
+              insight
+                ? 'text-purple-400 bg-purple-500/10 hover:text-purple-300'
+                : 'text-gray-500 hover:text-purple-400 hover:bg-white/5'
+            )}
+          >
+            {loading ? <Loader2 size={13} className="animate-spin" /> : <BrainCircuit size={13} />}
+          </button>
+        </td>
+      </tr>
+      {(loading || insight || error) && (
+        <tr className="border-b border-white/5 bg-[#0f0f1a]/50">
+          <td colSpan={6} className="px-4 py-3 text-xs">
+            {loading && (
+              <div className="flex items-center gap-2 text-purple-400 animate-pulse font-medium">
+                <BrainCircuit size={12} className="animate-pulse" />
+                <span>AI is generating insight…</span>
+              </div>
+            )}
+            {error && (
+              <div className="text-red-400 font-medium">
+                Error: {error}
+              </div>
+            )}
+            {insight && (
+              <div className="prose prose-invert max-w-none font-normal leading-relaxed text-gray-300 bg-purple-950/10 rounded-lg p-3 border border-purple-500/10 shadow-inner">
+                <Markdown text={insight} />
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
 function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boolean; onRefresh: () => void }) {
   const [scanLoading, setScanLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -513,26 +596,12 @@ function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boo
                 <th className="px-4 py-2">Device</th>
                 <th className="px-4 py-2">Service</th>
                 <th className="px-4 py-2">Patch</th>
+                <th className="px-4 py-2 text-right">Insight</th>
               </tr>
             </thead>
             <tbody>
               {findings.map((f, i) => (
-                <tr key={`${f.device_id}-${f.cve}-${f.port}-${i}`} className="border-b border-white/5 align-top">
-                  <td className="px-4 py-2"><Badge variant={severityVariant(f.risk)}>{f.risk}</Badge></td>
-                  <td className="px-4 py-2">
-                    <div className="font-medium text-gray-200">{f.cve}</div>
-                    <div className="text-gray-500 mt-0.5">{f.title}</div>
-                  </td>
-                  <td className="px-4 py-2">
-                    <div className="text-gray-200">{f.label || f.hostname || f.ip || 'Unknown'}</div>
-                    <div className="font-mono text-blue-400 mt-0.5">{f.ip || '—'}</div>
-                  </td>
-                  <td className="px-4 py-2">
-                    <div className="text-gray-200">{f.service}:{f.port}</div>
-                    <div className="text-gray-500 mt-0.5 max-w-[220px] truncate">{f.evidence || `${f.product ?? ''} ${f.version ?? ''}`}</div>
-                  </td>
-                  <td className="px-4 py-2 text-gray-400 max-w-[280px]">{f.recommendation}</td>
-                </tr>
+                <CveFindingRow key={`${f.device_id}-${f.cve}-${f.port}-${i}`} f={f} idx={i} />
               ))}
             </tbody>
           </table>

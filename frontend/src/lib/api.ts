@@ -177,6 +177,11 @@ export const deleteAlert = (id: number) => apiFetch<void>(`/api/alerts/${id}`, {
 export const clearReadAlerts = () => apiFetch<{ deleted: number }>('/api/alerts/clear-read', { method: 'DELETE' })
 export const explainAlert = (id: number) =>
   apiFetch<{ explanation: string }>(`/api/alerts/${id}/explain`, { method: 'POST' })
+export const getContextualInsight = (text: string, context?: string) =>
+  apiFetch<{ explanation: string }>('/api/ai/contextual-insight', {
+    method: 'POST',
+    body: JSON.stringify({ text, context }),
+  })
 
 // ── Logs ─────────────────────────────────────────────────────────────────────
 

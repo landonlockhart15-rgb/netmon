@@ -3,16 +3,17 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Shield as ShieldIcon, ShieldCheck, ShieldAlert, Siren,
   Radar, Activity, Waves, Globe, Moon, Network, BrainCircuit, ScrollText, Bell,
-  Trash2, RotateCcw, Lock, MonitorSmartphone, Clock, Ban,
+  Trash2, RotateCcw, Lock, MonitorSmartphone, Clock, Ban, Loader2,
 } from 'lucide-react'
 import {
   getShield, getAutonomousActions, dismissShieldEvent, dismissAllShield,
-  clearDNSLogs, revertAction,
+  clearDNSLogs, revertAction, getContextualInsight,
 } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Btn from '@/components/shared/Btn'
 import Badge, { severityVariant } from '@/components/shared/Badge'
 import StatTile, { ACCENT, type Accent } from '@/components/shared/StatTile'
+import Markdown from '@/components/shared/Markdown'
 
 type ActionStatus = 'active' | 'reverted' | 'all'
 type Tab = 'threats' | 'blocks' | 'actions' | 'dns'
@@ -385,6 +386,27 @@ function FeedEmpty({ text, hint }: { text: string; hint?: string }) {
 }
 
 function ThreatRow({ e, onDismiss }: { e: ShieldEvent; onDismiss: () => void }) {
+  const [insight, setInsight] = useState<string | null>(null)
+  const [explaining, setExplaining] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleExplain = async () => {
+    if (insight) {
+      setInsight(null)
+      return
+    }
+    setExplaining(true)
+    setError(null)
+    try {
+      const res = await getContextualInsight(e.summary, `category: ${e.category}, level: ${e.level}, ip: ${e.device_ip || 'none'}`)
+      setInsight(res.explanation)
+    } catch (err: any) {
+      setError(err.message || 'Failed to generate contextual insight')
+    } finally {
+      setExplaining(false)
+    }
+  }
+
   return (
     <div className="rounded-lg border border-white/10 bg-[#0f0f1a] p-3">
       <div className="flex items-start gap-2">
@@ -400,11 +422,48 @@ function ThreatRow({ e, onDismiss }: { e: ShieldEvent; onDismiss: () => void }) 
             <span>{formatRelativeTime(e.created_at)}</span>
           </div>
         </div>
-        <button onClick={onDismiss}
-          className="text-xs text-gray-600 hover:text-gray-300 transition-colors flex-shrink-0">
-          Dismiss
-        </button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            onClick={handleExplain}
+            title="Contextual Insight"
+            disabled={explaining}
+            className={cn(
+              'p-1 rounded text-xs transition-colors flex items-center gap-1',
+              insight
+                ? 'text-purple-400 bg-purple-500/10 hover:text-purple-300'
+                : 'text-gray-500 hover:text-purple-400 hover:bg-white/5'
+            )}
+          >
+            {explaining ? <Loader2 size={12} className="animate-spin" /> : <BrainCircuit size={12} />}
+            <span>Insight</span>
+          </button>
+          <button onClick={onDismiss}
+            className="text-xs text-gray-600 hover:text-gray-300 transition-colors">
+            Dismiss
+          </button>
+        </div>
       </div>
+
+      {(explaining || insight || error) && (
+        <div className="mt-3 pt-3 border-t border-white/5 text-xs space-y-2">
+          {explaining && (
+            <div className="flex items-center gap-2 text-purple-400 animate-pulse font-medium py-1">
+              <BrainCircuit size={12} className="animate-pulse" />
+              <span>AI is generating insight…</span>
+            </div>
+          )}
+          {error && (
+            <div className="text-red-400 font-medium py-1">
+              Error: {error}
+            </div>
+          )}
+          {insight && (
+            <div className="prose prose-invert max-w-none font-normal leading-relaxed text-gray-300 bg-purple-950/10 rounded-lg p-3 border border-purple-500/10 shadow-inner">
+              <Markdown text={insight} />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
