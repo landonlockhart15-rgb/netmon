@@ -382,6 +382,198 @@ def build_storyline(events: list[dict]) -> list[dict]:
             for event in events]
 
 
+_AI_NARRATIVE_CACHE: dict[str, str] = {}
+_AI_NARRATIVE_GENERATING: set[str] = set()
+
+def group_events_into_incidents(events: list[dict], db) -> list[dict]:
+    """
+    Groups chronological autoheal events into logical incidents.
+    Input events list is newest-first (as returned by build_storyline).
+    """
+    chronological = list(reversed(events))
+    groups = []
+    current_group = []
+    
+    for ev in chronological:
+        name = ev.get("event")
+        if name == EV_RESET:
+            if current_group:
+                groups.append(current_group)
+                current_group = []
+            groups.append([ev])
+        elif name == EV_OUTAGE:
+            if current_group:
+                groups.append(current_group)
+            current_group = [ev]
+        else:
+            if not current_group:
+                if name in _STORY_EVENTS:
+                    current_group = [ev]
+            else:
+                if name in _STORY_EVENTS:
+                    current_group.append(ev)
+            if name in (EV_RECOVERED, EV_GIVEUP):
+                if current_group:
+                    groups.append(current_group)
+                    current_group = []
+                
+    if current_group:
+        groups.append(current_group)
+        
+    incidents = []
+    for grp in groups:
+        if not grp:
+            continue
+        inc_id = grp[-1]["id"]
+        
+        types = [e.get("event") for e in grp]
+        is_reset = any(t == EV_RESET for t in types)
+        
+        start_time = grp[0].get("created_at")
+        end_time = grp[-1].get("created_at") if len(grp) > 1 else start_time
+        
+        downtime_s = None
+        recovered_ev = next((e for e in grp if e.get("event") == EV_RECOVERED), None)
+        if recovered_ev and recovered_ev.get("detail"):
+            detail = recovered_ev["detail"]
+            if isinstance(detail, dict):
+                downtime_s = detail.get("downtime_s")
+                
+        status = "unknown"
+        if is_reset:
+            status = "reset"
+        elif EV_RECOVERED in types:
+            status = "resolved"
+        elif EV_GIVEUP in types:
+            status = "failed"
+        elif any(t in _ATTEMPT_EVENTS for t in types):
+            status = "rebooting"
+        else:
+            status = "outage"
+            
+        storyline = grp[-1].get("storyline", grp[-1].get("summary", ""))
+        
+        # Determine gateway status and reboot method
+        gateways = [e["detail"].get("gateway_up") for e in grp if e.get("detail") and isinstance(e["detail"], dict) and "gateway_up" in e["detail"]]
+        gateway_status = gateways[-1] if gateways else None
+        
+        reboot_methods = [e["detail"].get("method") for e in grp if e.get("detail") and isinstance(e["detail"], dict) and "method" in e["detail"]]
+        reboot_method = reboot_methods[-1] if reboot_methods else None
+        
+        ai_narrative = get_ai_narrative_for_incident(grp, db)
+        
+        incidents.append({
+            "id": inc_id,
+            "type": "reset" if is_reset else "outage",
+            "status": status,
+            "start_time": start_time,
+            "end_time": None if status in ("outage", "rebooting") else end_time,
+            "downtime_s": downtime_s,
+            "gateway_up": gateway_status,
+            "reboot_method": reboot_method,
+            "storyline": storyline,
+            "ai_narrative": ai_narrative,
+            "events": grp
+        })
+        
+    return list(reversed(incidents))
+
+
+def get_ai_narrative_for_incident(grp: list[dict], db) -> str:
+    if len(grp) == 1 and grp[0].get("event") == EV_RESET:
+        return ""
+        
+    grp_key = ",".join(str(e["id"]) for e in grp)
+    
+    if grp_key in _AI_NARRATIVE_CACHE:
+        return _AI_NARRATIVE_CACHE[grp_key]
+        
+    ai_enabled = _get(db, "ai_enabled", "false") == "true"
+    if not ai_enabled:
+        return ""
+        
+    if grp_key in _AI_NARRATIVE_GENERATING:
+        return "Generating AI narrative..."
+        
+    _AI_NARRATIVE_GENERATING.add(grp_key)
+    
+    import threading
+    
+    def worker():
+        try:
+            narrative = generate_ai_narrative_sync(grp)
+            _AI_NARRATIVE_CACHE[grp_key] = narrative
+        except Exception as e:
+            print(f"[autoheal] AI narrative generation failed: {e}")
+            _AI_NARRATIVE_CACHE[grp_key] = ""
+        finally:
+            _AI_NARRATIVE_GENERATING.discard(grp_key)
+            
+    threading.Thread(target=worker, daemon=True).start()
+    
+    return "Generating AI narrative..."
+
+
+def generate_ai_narrative_sync(grp: list[dict]) -> str:
+    try:
+        from ai.provider import chain_chat
+    except ImportError:
+        return ""
+        
+    event_lines = []
+    for e in grp:
+        evt = e.get("event")
+        time_str = e.get("created_at")
+        summary = e.get("summary", "")
+        detail = e.get("detail") or {}
+        
+        detail_str = ""
+        if isinstance(detail, dict):
+            if "gateway_up" in detail:
+                detail_str += f" (Gateway reachable: {detail['gateway_up']})"
+            if "downtime_s" in detail:
+                detail_str += f" (Downtime: {detail['downtime_s']}s)"
+            if "method" in detail:
+                detail_str += f" (Method: {detail['method']})"
+            if "result" in detail:
+                res = detail["result"]
+                succ = res.get("success") if isinstance(res, dict) else None
+                detail_str += f" (Reboot success: {succ})"
+                
+        event_lines.append(f"- {time_str}: Event: {evt}. Summary: '{summary}'. Details: {detail_str}")
+        
+    events_block = "\n".join(event_lines)
+    
+    prompt = f"""You are Antigravity NetMon's network self-healing assistant.
+We have collected a sequence of automated logs representing a network outage and recovery incident.
+Please analyze the sequence of events and write a clean, user-friendly narrative log explaining exactly what happened, why it was fixed (or what happened with the fix attempt), and what the 'healing' action did.
+
+Constraint:
+- The response MUST be a concise 2-sentence paragraph.
+- Use friendly, clear language, suitable for a home dashboard.
+- Avoid raw JSON, database keys, or internal event codes. Use words like "Internet Outage", "Router reboot", "Recovery".
+- Do not repeat information redundantly.
+
+Here are the incident events:
+{events_block}
+
+AI Narrative:"""
+
+    messages = [
+        {"role": "system", "content": "You are a professional network administrator explaining automated healing actions in a concise, user-friendly way."},
+        {"role": "user", "content": prompt}
+    ]
+    
+    response = chain_chat(messages, max_tokens=150)
+    
+    if "AI unavailable" in response or not response.strip():
+        return ""
+        
+    narrative = response.strip().strip('"').strip("'").strip()
+    return narrative
+
+
+
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
 def run_cycle(db=None, probe_fn=None) -> dict:

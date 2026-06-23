@@ -375,11 +375,44 @@ def test_smartplug_drivers():
         check("kasa: success mock", r["success"] is True and "successfully" in r["detail"])
 
 
+def test_grouped_incidents():
+    import monitoring.autoheal as ah
+    from unittest.mock import MagicMock
+
+    events = [
+        {"id": 3, "event": ah.EV_RECOVERED, "level": "info", "summary": "Internet is back online.",
+         "detail": {"downtime_s": 45, "gateway_up": True}, "created_at": "2026-06-21T12:00:45Z", "storyline": "Storyline 3"},
+        {"id": 2, "event": ah.EV_DRYRUN, "level": "action", "summary": "DRY-RUN: would reboot.",
+         "detail": {"gateway_up": False}, "created_at": "2026-06-21T12:00:10Z", "storyline": "Storyline 2"},
+        {"id": 1, "event": ah.EV_OUTAGE, "level": "warning", "summary": "Internet outage detected.",
+         "detail": {"gateway_up": False}, "created_at": "2026-06-21T12:00:00Z", "storyline": "Storyline 1"},
+    ]
+
+    db = MagicMock()
+    original_get = ah._get
+    try:
+        ah._get = MagicMock(return_value="false")
+        incidents = ah.group_events_into_incidents(events, db)
+        check("correct number of incidents grouped", len(incidents) == 1)
+        if len(incidents) == 1:
+            inc = incidents[0]
+            check("incident type correct", inc["type"] == "outage")
+            check("incident status correct", inc["status"] == "resolved")
+            check("incident start_time correct", inc["start_time"] == "2026-06-21T12:00:00Z")
+            check("incident end_time correct", inc["end_time"] == "2026-06-21T12:00:45Z")
+            check("incident downtime_s correct", inc["downtime_s"] == 45)
+            check("incident events count correct", len(inc["events"]) == 3)
+    finally:
+        ah._get = original_get
+
+
 if __name__ == "__main__":
     print("decide() — pure decision engine:");      test_decide()
     print("run_cycle() — dry-run orchestration:");   test_run_cycle_dryrun()
     print("storyline — narrative activity feed:");    test_storyline()
     print("router driver — safety:");                test_driver_safety()
     print("smartplug drivers — safety/mocks:");      test_smartplug_drivers()
+    print("grouped incidents:");                     test_grouped_incidents()
     print(f"\n{_pass} passed, {_fail} failed")
     sys.exit(1 if _fail else 0)
+

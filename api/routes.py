@@ -5213,7 +5213,7 @@ _AUTOHEAL_KEYS = {
 def autoheal_status(db: Session = Depends(get_db)):
     """Uptime Guardian status — config (password redacted), live outage state,
     recent events, and reboot stats."""
-    from monitoring.autoheal import get_config, _STATE, attempt_stats, build_storyline
+    from monitoring.autoheal import get_config, _STATE, attempt_stats, build_storyline, group_events_into_incidents
     from monitoring.uptime_stats import get_uptime_stats
 
     cfg = get_config(db)
@@ -5237,6 +5237,8 @@ def autoheal_status(db: Session = Depends(get_db)):
         for r in rows
     ])
 
+    incidents = group_events_into_incidents(events, db)
+
     stats = attempt_stats(db)
     uptime = get_uptime_stats(db)
 
@@ -5253,6 +5255,7 @@ def autoheal_status(db: Session = Depends(get_db)):
                   "counter_reset_at": _iso(stats["counter_reset_at"]) if stats["counter_reset_at"] else None,
                   "uptime": uptime},
         "events": events,
+        "incidents": incidents,
     }
 
 
