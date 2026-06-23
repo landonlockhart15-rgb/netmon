@@ -31,6 +31,10 @@ It is **fused with AI** (plain-English diagnosis and insight) and is meant to be
 - **Looks the part.** A polished, smooth, professional UI — topology, devices, and
   findings rendered beautifully; never clunky.
 - **Speaks human.** AI explains what a finding/outage means and what to do.
+- **Token-frugal AI — a priority.** The plain-English diagnosis and insight lean
+  on capable free/local models first; paid subscription models (Claude, Codex,
+  GPT) are a deliberate last resort, used only when a finding genuinely needs
+  them. Great AI explanation should cost as little paid token as possible.
 
 ## Build toward
 More discovery & fingerprinting techniques; deeper offensive scanning and
@@ -45,6 +49,8 @@ Both the **backend (scanning/identification/healing engine)** and the **frontend
 - Add a second parallel monitor/scan/insight path when one exists — extend it.
 - Take a network/host action that isn't safe and reversible, or hide what it did.
 - Bury the user in dev-speak or raw output — AI should translate it.
+- Reach for a paid/subscription model for AI diagnosis when a free or local one
+  would do. Paid is the exception, never the default explainer.
 
 ## The vibe
 A relentless, professional home-network operator and red-team lab: it sees every
