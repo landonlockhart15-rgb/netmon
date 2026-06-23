@@ -36,6 +36,7 @@ export default function UptimeGuardian() {
   const state = data?.state
   const stats = data?.stats
   const events: any[] = data?.events ?? []
+  const incidents: any[] = data?.incidents ?? []
   const rebootsUsed = Number(stats?.reboots_today ?? 0)
   const maxReboots = Number(cfg?.max_per_day ?? 0)
   const rebootsRemaining = Math.max(maxReboots - rebootsUsed, 0)
@@ -334,20 +335,95 @@ export default function UptimeGuardian() {
         )}
       </Card>
 
-      {/* Event feed */}
-      <Card title="Storyline" badge={events.length ? String(events.length) : undefined}>
-        {events.length === 0 ? (
+      {/* Event feed -> AI Narrated Timeline */}
+      <Card title="AI-Narrated Self-Healing Timeline" badge={incidents.length ? String(incidents.length) : undefined}>
+        {incidents.length === 0 ? (
           <EmptyState icon="◎" text="No auto-heal events yet" hint="Outage detections, reboots, and recoveries will appear here." />
         ) : (
-          <div className="space-y-1.5">
-            {events.map(e => (
-              <div key={e.id} className="flex items-start gap-3 rounded-lg border border-white/5 bg-[#0f0f1a] px-3 py-2 text-xs">
-                <span className={cn('mt-0.5 h-1.5 w-1.5 rounded-full flex-shrink-0',
-                  e.level === 'warning' ? 'bg-amber-400' : e.level === 'action' ? 'bg-purple-400' : 'bg-emerald-400')} />
-                <span className="flex-1 text-gray-300">{e.storyline || e.summary}</span>
-                <span className="text-gray-600 flex-shrink-0">{formatRelativeTime(e.created_at)}</span>
-              </div>
-            ))}
+          <div className="space-y-4">
+            {incidents.map((inc) => {
+              const isReset = inc.type === 'reset'
+              const isResolved = inc.status === 'resolved'
+              const isFailed = inc.status === 'failed'
+              const isRebooting = inc.status === 'rebooting'
+              const isOngoing = inc.status === 'outage'
+              
+              let statusLabel = 'Outage Detected'
+              let dotColor = 'bg-amber-400'
+              if (isReset) {
+                statusLabel = 'Safety Counter Reset'
+                dotColor = 'bg-blue-400'
+              } else if (isResolved) {
+                statusLabel = 'Internet Restored'
+                dotColor = 'bg-emerald-400'
+              } else if (isFailed) {
+                statusLabel = 'Outage Recovery Failed (Safety Limit)'
+                dotColor = 'bg-red-400'
+              } else if (isRebooting) {
+                statusLabel = 'Reboot Action Triggered'
+                dotColor = 'bg-purple-400'
+              } else if (isOngoing) {
+                statusLabel = 'Outage Active'
+                dotColor = 'bg-red-500 animate-pulse'
+              }
+
+              return (
+                <div key={inc.id} className="relative pl-6 border-l border-white/10 last:border-0 pb-2">
+                  {/* Timeline Dot */}
+                  <span className={cn('absolute -left-1.5 top-1.5 h-3 w-3 rounded-full border border-[#0f0f1a]', dotColor)} />
+
+                  {/* Header info */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="font-semibold text-gray-200">{statusLabel}</span>
+                    <span className="text-gray-500 font-mono text-[10px]">
+                      {formatRelativeTime(inc.start_time)}
+                      {inc.downtime_s != null && ` (downtime: ${formatDowntime(inc.downtime_s)})`}
+                    </span>
+                  </div>
+
+                  {/* AI Narrative Section */}
+                  {inc.ai_narrative ? (
+                    <div className="mt-1.5 rounded-lg border border-purple-500/20 bg-purple-500/5 px-3 py-2 text-xs">
+                      <div className="flex items-center gap-1.5 text-[10px] font-semibold text-purple-400 uppercase tracking-wider mb-1">
+                        <PlugZap size={10} className="text-purple-400" />
+                        <span>Guardian Report</span>
+                        {inc.ai_narrative === 'Generating AI narrative...' && (
+                          <span className="inline-block h-1.5 w-1.5 animate-ping rounded-full bg-purple-400" />
+                        )}
+                      </div>
+                      <p className={cn(
+                        'text-gray-300 italic leading-relaxed',
+                        inc.ai_narrative === 'Generating AI narrative...' && 'animate-pulse text-gray-500'
+                      )}>
+                        {inc.ai_narrative}
+                      </p>
+                    </div>
+                  ) : (
+                    /* Fallback when AI is off/failed: show storyline directly */
+                    <p className="mt-1 text-gray-400 text-xs leading-relaxed">
+                      {inc.storyline}
+                    </p>
+                  )}
+
+                  {/* Expandable Technical steps if AI narrative is shown or if they want full info */}
+                  {inc.ai_narrative && (
+                    <details className="group mt-2">
+                      <summary className="cursor-pointer text-[10px] text-gray-500 hover:text-gray-300 select-none flex items-center gap-1 font-mono">
+                        <span className="transition-transform group-open:rotate-90">▶</span> Technical sequence details
+                      </summary>
+                      <div className="mt-1.5 pl-3 border-l border-white/5 space-y-1">
+                        {inc.events.map((e: any) => (
+                          <div key={e.id} className="text-[11px] text-gray-400 flex items-center justify-between gap-4">
+                            <span>• {e.summary}</span>
+                            <span className="text-gray-600 font-mono text-[9px] flex-shrink-0">{formatRelativeTime(e.created_at)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
       </Card>
@@ -420,4 +496,11 @@ function QualityStat({ label, value, count }: { label: string; value?: number | 
 
 function formatPct(value?: number | null) {
   return value == null ? '—' : `${Number(value).toFixed(3).replace(/\.?0+$/, '')}%`
+}
+
+function formatDowntime(seconds: number) {
+  if (seconds < 90) return `${Math.round(seconds)}s`
+  const minutes = seconds / 60
+  if (minutes < 60) return `${minutes.toFixed(1)}m`
+  return `${(minutes / 60).toFixed(1)}h`
 }
