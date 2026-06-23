@@ -97,6 +97,33 @@ class TestRoleInference(unittest.TestCase):
         self.assertEqual(extract_flow_stats("1.2.3.4; command_injection"), {})
         self.assertEqual(extract_flow_stats(None), {})
 
+    def test_extract_flow_stats_parsing(self):
+        from unittest.mock import patch
+        from pathlib import Path
+        from traffic.role_inference import extract_flow_stats
+
+        with patch('traffic.role_inference.find_tool') as mock_find_tool, \
+             patch('traffic.role_inference.get_readable_files') as mock_get_files, \
+             patch('subprocess.run') as mock_run:
+            
+            mock_find_tool.return_value = "tshark"
+            mock_get_files.return_value = [Path("dummy.pcap")]
+            
+            # Fields in order:
+            # ip.ttl, tcp.window_size, tcp.flags.syn, tcp.flags.ack, tcp.dstport, udp.dstport, frame.len
+            mock_run.return_value.stdout = (
+                "64\t14600\t1\t0\t443\t\t1200\n"
+                "64\t15000\t0\t1\t443\t\t60\n"
+                "128\t\t\t\t\t53\t80\n"
+                "64,64\t14600\t1\t0\t443,443\t\t1200\n"
+            )
+            
+            stats = extract_flow_stats("192.168.1.10", max_files=1)
+            
+            self.assertEqual(stats["ttls"], [64, 64, 128, 64])
+            self.assertEqual(stats["window_sizes"], [14600, 14600])  # only TCP SYN (syn=1, ack=0)
+            self.assertEqual(stats["destination_ports"], [443, 443, 53, 443])
+            self.assertEqual(stats["packet_lengths"], [1200, 60, 80, 1200])
 
 
 if __name__ == "__main__":
