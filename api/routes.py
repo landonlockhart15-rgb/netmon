@@ -3056,6 +3056,48 @@ def explain_alert(alert_id: int, db: Session = Depends(get_db)):
     return {"explanation": explanation.strip()}
 
 
+@router.post("/api/ai/contextual-insight")
+def get_contextual_insight(body: dict, db: Session = Depends(get_db)):
+    """
+    Generate a 2-sentence summary: 'What happened' and 'Why it matters' for any finding or alert.
+    """
+    from ai.provider import get_investigation_provider
+
+    ai_enabled = _get_setting_str(db, "ai_enabled", "false").lower() == "true"
+    if not ai_enabled:
+        raise HTTPException(status_code=400, detail="AI is disabled in Settings")
+
+    text = body.get("text", "")
+    context = body.get("context", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    provider = get_investigation_provider()
+    if provider.name == "none":
+        raise HTTPException(status_code=400, detail="AI is not configured.")
+
+    prompt = (
+        "You are NetMon Security Assistant. You must analyze the following security finding or health alert "
+        "and generate a response containing exactly two sentences.\n"
+        "Sentence 1 must start with 'What happened: ' and explain what the event/finding means.\n"
+        "Sentence 2 must start with 'Why it matters: ' and explain why this is important, why they should care, or what the impact is.\n\n"
+        "Keep it concise, friendly, and non-technical. Do not use technical jargon.\n\n"
+        f"Item details: {text}\n"
+        f"Additional context: {context}\n"
+    )
+
+    result = provider.analyze({}, prompt=prompt, kind="contextual_insight")
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail=f"AI error: {result['error']}")
+
+    explanation = result.get("raw_response") or result.get("summary") or ""
+    if not explanation.strip():
+        raise HTTPException(status_code=500, detail="AI returned an empty explanation.")
+
+    return {"explanation": explanation.strip()}
+
+
+
 
 
 # ═════════════════════════════════════════════════════════════════════════════
