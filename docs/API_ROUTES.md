@@ -21,6 +21,47 @@ This document outlines the API endpoints exposed by the NetMon API backend and d
 * **GET `/api/settings`**: Retrieves a flat key-value dictionary of all configuration parameters.
 * **POST `/api/settings`**: Updates configuration parameters. Ignored if keys are locked by environment variables (e.g. `ntfy_pass`).
 
+### AI Insights (introduced in commit 951e618 as `/api/ai/contextual-insight`)
+* **POST `/api/ai/contextual-insight`**: Generates a 2-sentence summary explaining "What happened" and "Why it matters" for a given network security finding or health alert.
+
+  #### Usage
+  - **HTTP Method**: `POST`
+  - **Endpoint**: `/api/ai/contextual-insight`
+  - **Content-Type**: `application/json`
+  - **Request Body**:
+    - `text` (string, required): The main text of the alert or finding to analyze (1 to 5000 characters). Must not be empty or whitespace-only.
+    - `context` (string, optional): Additional contextual information (e.g. system status, hostname, previous events) to assist the AI model (0 to 5000 characters).
+  - **Response Body**:
+    - `explanation` (string): The generated 2-sentence insight.
+  - **Example Request**:
+    ```json
+    {
+      "text": "Connection down",
+      "context": "outage"
+    }
+    ```
+  - **Example Response**:
+    ```json
+    {
+      "explanation": "What happened: An offline event was detected. Why it matters: This means the local gateway is unreachable."
+    }
+    ```
+
+  #### Security
+  - **Authentication**: Access to this endpoint requires a valid user session. Unauthenticated requests return `401 Unauthorized` (managed by `AuthMiddleware`).
+  - **Input Validation**:
+    - The request body must be a valid JSON object.
+    - `text` is required, must be a string, and cannot be empty or whitespace-only.
+    - Strict boundary limit of 5000 characters is enforced on both `text` and `context` inputs to mitigate buffer overruns, parsing performance hits, and payload injection attacks.
+  - **Error Sanitation**:
+    - Exceptions thrown by the configured AI provider are caught and sanitized. Internal stack traces or credentials are never leaked to the client; instead, the endpoint returns a `500 Internal Server Error` with a safe, descriptive message.
+
+  #### System Performance
+  - **FastAPI Threading**: The route is implemented as a standard synchronous function (`def get_contextual_insight`). FastAPI executes synchronous endpoints on an external thread pool, preventing long-running AI provider I/O operations from blocking the main event loop.
+  - **Activation Gate**: If AI features are disabled via the system setting `ai_enabled` (set to `"false"`), the endpoint returns a `400 Bad Request` immediately, avoiding any network overhead.
+  - **Provider Dependency**: If the investigation provider is set to `"none"`, the endpoint returns a `400 Bad Request` immediately.
+  - **Payload Size Limits**: The 5000-character payload limits keep memory footprint and external network request sizes minimal.
+
 ---
 
 ## Standardized Test Suite
