@@ -200,17 +200,27 @@ def refresh(force: bool = False) -> int:
         return len(merged)
 
 
+def is_whitelisted(domain: str) -> bool:
+    """
+    Return True if *domain* or any of its parent domains is on the whitelist.
+    """
+    d = domain.lower().rstrip(".")
+    parts = d.split(".")
+    for i in range(len(parts) - 1):
+        if ".".join(parts[i:]) in WHITELIST:
+            return True
+    return False
+
+
 def is_blocked(domain: str) -> bool:
     """
     Return True if *domain* or any of its parent domains is on the blocklist.
     Whitelist takes priority — whitelisted domains always pass through.
     """
+    if is_whitelisted(domain):
+        return False
     d = domain.lower().rstrip(".")
     parts = d.split(".")
-    # Check whitelist first — any parent domain match = always allow
-    for i in range(len(parts) - 1):
-        if ".".join(parts[i:]) in WHITELIST:
-            return False
     # Check blocklist
     for i in range(len(parts) - 1):
         if ".".join(parts[i:]) in _blocked:
