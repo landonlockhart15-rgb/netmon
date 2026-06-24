@@ -3067,10 +3067,28 @@ def get_contextual_insight(body: dict, db: Session = Depends(get_db)):
     if not ai_enabled:
         raise HTTPException(status_code=400, detail="AI is disabled in Settings")
 
-    text = body.get("text", "")
-    context = body.get("context", "")
-    if not text:
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+
+    text = body.get("text")
+    if text is None:
         raise HTTPException(status_code=400, detail="text is required")
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="text must be a string")
+    text = text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text cannot be empty")
+    if len(text) > 5000:
+        raise HTTPException(status_code=400, detail="text parameter exceeds maximum length of 5000 characters")
+
+    context = body.get("context", "")
+    if context is None:
+        context = ""
+    if not isinstance(context, str):
+        raise HTTPException(status_code=400, detail="context must be a string")
+    context = context.strip()
+    if len(context) > 5000:
+        raise HTTPException(status_code=400, detail="context parameter exceeds maximum length of 5000 characters")
 
     provider = get_investigation_provider()
     if provider.name == "none":
@@ -3086,15 +3104,26 @@ def get_contextual_insight(body: dict, db: Session = Depends(get_db)):
         f"Additional context: {context}\n"
     )
 
-    result = provider.analyze({}, prompt=prompt, kind="contextual_insight")
+    try:
+        result = provider.analyze({}, prompt=prompt, kind="contextual_insight")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI analysis failed to execute: {str(e)}")
+
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=500, detail="AI provider returned an invalid response format.")
+
     if result.get("error"):
         raise HTTPException(status_code=500, detail=f"AI error: {result['error']}")
 
     explanation = result.get("raw_response") or result.get("summary") or ""
-    if not explanation.strip():
+    if not isinstance(explanation, str):
+        raise HTTPException(status_code=500, detail="AI provider returned a non-string explanation.")
+
+    explanation = explanation.strip()
+    if not explanation:
         raise HTTPException(status_code=500, detail="AI returned an empty explanation.")
 
-    return {"explanation": explanation.strip()}
+    return {"explanation": explanation}
 
 
 
