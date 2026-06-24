@@ -35,6 +35,57 @@ def _log_blocked(client_ip: str, domain: str) -> None:
         pass  # never let logging break DNS
 
 
+def _log_threat_intel_block(client_ip: str, domain: str, desc: str, hits: list) -> None:
+    """Raise a high-severity threat alert in the ActivityLog and notify channels."""
+    try:
+        from monitoring.activity import write_log
+        from monitoring.notifier import alert as notify
+        
+        device_id = None
+        if client_ip and client_ip != "unknown":
+            try:
+                from app.database import SessionLocal
+                from models.tables import Device, ScanDevice
+                db = SessionLocal()
+                try:
+                    sd = db.query(ScanDevice).join(Device).filter(ScanDevice.ip == client_ip).order_by(ScanDevice.id.desc()).first()
+                    if sd:
+                        device_id = sd.device_id
+                finally:
+                    db.close()
+            except Exception:
+                pass
+        
+        summary = f"Threat blocked: {domain} (from {client_ip}) — {desc}"
+        detail = {
+            "domain": domain,
+            "client_ip": client_ip,
+            "hits": [{"feed": h.feed_name, "severity": h.severity} for h in hits],
+            "action": "blocked (NXDOMAIN)"
+        }
+        
+        # Level "critical" and Category "threat" will raise it in the dashboard.
+        write_log(
+            level="critical",
+            category="threat",
+            event="dns_threat_blocked",
+            summary=summary,
+            detail=detail,
+            device_ip=client_ip,
+            device_id=device_id,
+        )
+        
+        # Trigger notification
+        notify(
+            title="Threat Blocked: Malicious DNS Query",
+            body=f"Client: {client_ip}\nDomain: {domain}\nThreat: {desc}",
+            level="critical",
+            force_push=True,
+        )
+    except Exception:
+        pass  # never let logging break DNS
+
+
 # ── Resolver ──────────────────────────────────────────────────────────────────
 
 class BlockingResolver(BaseResolver):
@@ -48,6 +99,30 @@ class BlockingResolver(BaseResolver):
         reply     = request.reply()
         client_ip = getattr(handler, "client_address", ("unknown",))[0]
 
+        # 1. Check whitelist first
+        if bl.is_whitelisted(qname):
+            pass
+        else:
+            # 2. Check threat intelligence feeds (botnet C2, malware, phishing)
+            try:
+                from ai.threat_intel import check_domain, is_confirmed_malicious, summary as ti_summary
+                hits = check_domain(qname)
+                if hits and is_confirmed_malicious(hits):
+                    bl.record_query(qname, blocked=True)
+                    desc = ti_summary(hits)
+                    # Log security alert in background
+                    threading.Thread(
+                        target=_log_threat_intel_block,
+                        args=(client_ip, qname, desc, hits),
+                        daemon=True,
+                        name="dns-threat-log"
+                    ).start()
+                    reply.header.rcode = RCODE.NXDOMAIN
+                    return reply
+            except Exception as exc:
+                print(f"[dns_blocker] threat intel check failed for {qname}: {exc}")
+
+        # 3. Check standard blocklist
         if bl.is_blocked(qname):
             bl.record_query(qname, blocked=True)
             # Log to DB in background — don't slow down DNS response
