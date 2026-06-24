@@ -377,6 +377,87 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertIn("explanation", data)
         self.assertEqual(data["explanation"], "What happened: An offline event was detected. Why it matters: This means the local gateway is unreachable.")
 
+    @patch("ai.provider.get_investigation_provider")
+    def test_contextual_insight_validation(self, mock_get_provider):
+        """Test POST /api/ai/contextual-insight validation rules."""
+        self.db.add(Setting(key="ai_enabled", value="true"))
+        self.db.commit()
+
+        mock_provider = MagicMock()
+        mock_provider.name = "gemini"
+        mock_get_provider.return_value = mock_provider
+
+        # 1. Missing text
+        response = self.client.post("/api/ai/contextual-insight", json={"context": "outage"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("text is required", response.json()["detail"])
+
+        # 2. Text not a string
+        response = self.client.post("/api/ai/contextual-insight", json={"text": 12345, "context": "outage"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("text must be a string", response.json()["detail"])
+
+        # 3. Text empty/whitespace only
+        response = self.client.post("/api/ai/contextual-insight", json={"text": "   ", "context": "outage"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("text cannot be empty", response.json()["detail"])
+
+        # 4. Text too long
+        response = self.client.post("/api/ai/contextual-insight", json={"text": "a" * 5001, "context": "outage"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("text parameter exceeds maximum length", response.json()["detail"])
+
+        # 5. Context not a string
+        response = self.client.post("/api/ai/contextual-insight", json={"text": "Connection down", "context": ["not", "string"]})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("context must be a string", response.json()["detail"])
+
+        # 6. Context too long
+        response = self.client.post("/api/ai/contextual-insight", json={"text": "Connection down", "context": "b" * 5001})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("context parameter exceeds maximum length", response.json()["detail"])
+
+    @patch("ai.provider.get_investigation_provider")
+    def test_contextual_insight_error_handling(self, mock_get_provider):
+        """Test POST /api/ai/contextual-insight AI provider error handling."""
+        self.db.add(Setting(key="ai_enabled", value="true"))
+        self.db.commit()
+
+        mock_provider = MagicMock()
+        mock_provider.name = "gemini"
+        mock_get_provider.return_value = mock_provider
+
+        # 1. Provider returns dictionary with error key
+        mock_provider.analyze.return_value = {"error": "API Key Invalid"}
+        response = self.client.post("/api/ai/contextual-insight", json={"text": "Connection down"})
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("AI error: API Key Invalid", response.json()["detail"])
+
+        # 2. Provider throws an exception
+        mock_provider.analyze.side_effect = Exception("Connection timed out")
+        response = self.client.post("/api/ai/contextual-insight", json={"text": "Connection down"})
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("AI analysis failed to execute: Connection timed out", response.json()["detail"])
+        mock_provider.analyze.side_effect = None
+
+        # 3. Provider returns non-dict
+        mock_provider.analyze.return_value = "invalid response type"
+        response = self.client.post("/api/ai/contextual-insight", json={"text": "Connection down"})
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("AI provider returned an invalid response format", response.json()["detail"])
+
+        # 4. Provider returns non-string explanation
+        mock_provider.analyze.return_value = {"raw_response": 12345}
+        response = self.client.post("/api/ai/contextual-insight", json={"text": "Connection down"})
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("AI provider returned a non-string explanation", response.json()["detail"])
+
+        # 5. Provider returns empty response
+        mock_provider.analyze.return_value = {"raw_response": "   "}
+        response = self.client.post("/api/ai/contextual-insight", json={"text": "Connection down"})
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("AI returned an empty explanation", response.json()["detail"])
+
     def test_route_security_discovery(self):
         """
         Dynamically discover all registered routes in the FastAPI app
