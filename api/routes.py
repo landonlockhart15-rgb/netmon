@@ -164,12 +164,24 @@ def _router_creds(db: Session) -> dict:
 
 
 def _latest_scan_device_with_cves(db: Session, device_id: int):
+    """
+    The authoritative row for "what CVEs does this device have right now."
+
+    This is the most recent scan that actually ran service detection (a real
+    -sV pass, not a quick ping-only sweep) — and its cves_json is trusted as-is,
+    EMPTY INCLUDED. A previous version of this query skipped rows with an
+    empty cves_json and kept walking backward for an older row that had
+    findings, which meant a fixed vulnerability stayed "found" forever because
+    the function refused to believe a clean scan. Quick scans (services_json
+    empty) are skipped since they never ran the CVE matcher at all and would
+    otherwise look like "everything's fine" between deep scans.
+    """
     return (
         db.query(ScanDevice)
         .filter(
             ScanDevice.device_id == device_id,
-            ScanDevice.cves_json.notin_(["[]", ""]),
-            ScanDevice.cves_json.isnot(None),
+            ScanDevice.services_json.notin_(["[]", ""]),
+            ScanDevice.services_json.isnot(None),
         )
         .order_by(desc(ScanDevice.id))
         .first()
@@ -771,18 +783,11 @@ def get_cve_mapping(current_only: bool = True, db: Session = Depends(get_db)):
     scanned_devices = 0
     for dev in devices:
         latest_sd = db.query(ScanDevice).filter(ScanDevice.device_id == dev.id).order_by(desc(ScanDevice.id)).first()
-        latest_services = (
-            db.query(ScanDevice)
-            .filter(
-                ScanDevice.device_id == dev.id,
-                ScanDevice.services_json.notin_(["[]", ""]),
-                ScanDevice.services_json.isnot(None),
-            )
-            .order_by(desc(ScanDevice.id))
-            .first()
-        )
+        # The latest real service-detection scan is the single source of truth
+        # for both "did we check this device" and "what did we find" — reusing
+        # one row keeps a fixed vulnerability from reappearing from stale data.
         cve_row = _latest_scan_device_with_cves(db, dev.id)
-        services = latest_services.services_list if latest_services else []
+        services = cve_row.services_list if cve_row else []
         cves = cve_row.cves_list if cve_row else []
         if services:
             scanned_devices += 1
