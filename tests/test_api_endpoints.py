@@ -221,6 +221,7 @@ class TestAPIEndpoints(unittest.TestCase):
         iot_sd = ScanDevice(
             id=1, scan_id=1, device_id=1, ip="192.168.1.20",
             hostname="garage-cam", open_ports="[80, 23]",
+            services_json='[{"port": 80, "service": "http"}]',
             cves_json='[{"cve":"CVE-2020-0001","risk":"high","port":80,"service":"http"}]',
         )
         nas_sd = ScanDevice(
@@ -238,7 +239,7 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["path_count"], 1)
-        path = data["paths"][0]
+        path = data["verified_paths"][0]
         self.assertEqual(path["source"]["ip"], "192.168.1.20")
         self.assertEqual(path["target"]["ip"], "192.168.1.30")
         self.assertGreaterEqual(len(path["steps"]), 3)

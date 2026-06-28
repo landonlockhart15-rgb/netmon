@@ -188,8 +188,10 @@ def _latest_scan_device_with_cves(db: Session, device_id: int):
     )
 
 
-def _risk_rank(risk: str | None) -> int:
-    return {"critical": 4, "high": 3, "medium": 2, "low": 1}.get((risk or "").lower(), 0)
+def _risk_rank(risk) -> int:
+    if not isinstance(risk, str):
+        return 0
+    return {"critical": 4, "high": 3, "medium": 2, "low": 1}.get(risk.lower(), 0)
 
 
 _IOT_TERMS = ("iot", "camera", "cam", "bulb", "plug", "sensor", "thermostat", "tuya", "kasa", "wyze", "ring", "nest", "echo", "alexa", "printer", "roku", "tv")
@@ -243,7 +245,7 @@ def _attack_tree_device_summary(db: Session, dev: Device) -> dict:
     sd = _latest_scan_device(db, dev.id)
     cve_row = _latest_scan_device_with_cves(db, dev.id)
     cves = _json_list(cve_row.cves_json) if cve_row else []
-    severe_cves = [v for v in cves if _risk_rank(v.get("risk")) >= 3]
+    severe_cves = [v for v in cves if isinstance(v, dict) and _risk_rank(v.get("risk")) >= 3]
     ports = _port_set(sd)
     text = _device_text(dev, sd)
     iot_signals = [term for term in _IOT_TERMS if term in text]

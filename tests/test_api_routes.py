@@ -381,7 +381,7 @@ class TestDatabaseHelpers(unittest.TestCase):
         sd6 = ScanDevice(open_ports='["12345678901234567890"]')
         self.assertEqual(_port_set(sd6), {12345678901234567890})
 
-    def test_attack_tree_summary_cves_not_a_dict_raises_error(self):
+    def test_attack_tree_summary_cves_not_a_dict_is_ignored(self):
         scan = Scan(id=1, status="complete")
         device = Device(id=1, mac="aa:bb:cc:dd:ee:44", vendor="Wyze", label="Garage Camera")
         scan_device = ScanDevice(
@@ -390,6 +390,7 @@ class TestDatabaseHelpers(unittest.TestCase):
             device_id=1,
             ip="192.168.1.22",
             hostname="garage-cam",
+            services_json='[{"port": 80}]',
             cves_json='["CVE-2023-1234"]',
         )
         self.session.add(scan)
@@ -397,11 +398,12 @@ class TestDatabaseHelpers(unittest.TestCase):
         self.session.add(scan_device)
         self.session.commit()
 
-        # Iterating over string element in cves will call v.get("risk"), raising AttributeError
-        with self.assertRaises(AttributeError):
-            _attack_tree_device_summary(self.session, device)
+        # A non-dict cve entry is malformed data, not a crash — it's excluded
+        # from the severe-CVE count instead of raising.
+        summary = _attack_tree_device_summary(self.session, device)
+        self.assertFalse(summary["has_cve_evidence"])
 
-    def test_attack_tree_summary_cve_risk_not_a_string_raises_error(self):
+    def test_attack_tree_summary_cve_risk_not_a_string_is_ignored(self):
         scan = Scan(id=1, status="complete")
         device = Device(id=1, mac="aa:bb:cc:dd:ee:55", vendor="Wyze", label="Garage Camera")
         scan_device = ScanDevice(
@@ -410,6 +412,7 @@ class TestDatabaseHelpers(unittest.TestCase):
             device_id=1,
             ip="192.168.1.22",
             hostname="garage-cam",
+            services_json='[{"port": 80}]',
             cves_json='[{"cve": "CVE-2023-1234", "risk": 3}]',
         )
         self.session.add(scan)
@@ -417,9 +420,10 @@ class TestDatabaseHelpers(unittest.TestCase):
         self.session.add(scan_device)
         self.session.commit()
 
-        # risk.lower() will raise AttributeError because risk is an integer
-        with self.assertRaises(AttributeError):
-            _attack_tree_device_summary(self.session, device)
+        # A non-string risk value is malformed data, not a crash — it ranks
+        # as "not severe" instead of raising.
+        summary = _attack_tree_device_summary(self.session, device)
+        self.assertFalse(summary["has_cve_evidence"])
 
 
 if __name__ == "__main__":
