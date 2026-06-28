@@ -843,10 +843,13 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
 
     gateway = _gateway_ip(db)
     summaries = [_attack_tree_device_summary(db, dev) for dev in devices]
-    sources = [s for s in summaries if s["source_score"] >= 3]
+    # A path only exists if its starting point — the foothold — has an actual
+    # CVE match we found on it. We never build a path from a pure device-name/
+    # port guess ("looks like a camera"): that produced "attack paths" for
+    # devices with nothing wrong on them, which reads as a real threat to
+    # anyone who isn't a security person regardless of disclaimers or styling.
+    sources = [s for s in summaries if s["has_cve_evidence"]]
     targets = [s for s in summaries if s["target_score"] >= 3]
-    if not sources:
-        sources = sorted(summaries, key=lambda s: s["source_score"], reverse=True)[:2]
     if not targets:
         targets = sorted(summaries, key=lambda s: s["target_score"], reverse=True)[:3]
 
@@ -856,56 +859,31 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
             if src["device"].id == target["device"].id:
                 continue
             score = src["source_score"] + target["target_score"]
+            risk = _attack_risk(score)
             src_reasons = _attack_step_reasons(src, source=True)
             target_reasons = _attack_step_reasons(target, source=False)
-            # "Verified" means at least one side of this path is backed by an
-            # actual CVE match we found on that device — not just a name/port
-            # heuristic ("looks like a camera", "has SSH open"). Heuristic-only
-            # paths are real planning signal but must never be confused with a
-            # confirmed vulnerability, so the frontend renders them separately
-            # AND the risk label itself must not borrow a "critical/high" word —
-            # that implies something is actually wrong, which isn't true here.
-            evidence_type = "verified" if (src["has_cve_evidence"] or target["has_cve_evidence"]) else "speculative"
-            risk = _attack_risk(score) if evidence_type == "verified" else "unconfirmed"
-
-            if src["has_cve_evidence"]:
-                foothold_detail = f"Attacker compromises {src['name']} using a known CVE we found on it."
-            else:
-                foothold_detail = (
-                    f"No vulnerability was found on {src['name']} — this step is hypothetical, based only on "
-                    f"{src['name']} being a common device type (smart speaker, camera, etc.) that's frequently weak."
-                )
-
-            mitigations = [
-                "Move IoT devices to a guest or VLAN segment that cannot initiate connections to workstations or NAS devices.",
-                "Require unique strong credentials and disable default web, SSH, SMB, or RDP access where it is not needed.",
-            ]
-            if evidence_type == "verified":
-                mitigations.insert(1, "Patch or disable the vulnerable/admin services shown in the CVE and open-port evidence above.")
-
             paths.append({
                 "id": f"{src['device'].id}-{target['device'].id}",
                 "risk": risk,
                 "score": score,
-                "evidence_type": evidence_type,
                 "source": {
                     "device_id": src["device"].id,
                     "name": src["name"],
                     "ip": src["ip"],
                     "reasons": src_reasons,
-                    "remediation": _remediation_for(src["device"], src["ip"], gateway) if evidence_type == "verified" else None,
+                    "remediation": _remediation_for(src["device"], src["ip"], gateway),
                 },
                 "target": {
                     "device_id": target["device"].id,
                     "name": target["name"],
                     "ip": target["ip"],
                     "reasons": target_reasons,
-                    "remediation": _remediation_for(target["device"], target["ip"], gateway) if evidence_type == "verified" else None,
+                    "remediation": _remediation_for(target["device"], target["ip"], gateway),
                 },
                 "steps": [
                     {
                         "title": "Initial foothold",
-                        "detail": foothold_detail,
+                        "detail": f"Attacker compromises {src['name']} using a known CVE we found on it.",
                     },
                     {
                         "title": "Local network pivot",
@@ -916,12 +894,15 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
                         "detail": f"Attacker targets {target['name']} because it exposes valuable services or looks like storage/workstation infrastructure.",
                     },
                 ],
-                "mitigations": mitigations,
+                "mitigations": [
+                    "Patch or disable the vulnerable/admin service shown in the CVE evidence above.",
+                    "Move IoT devices to a guest or VLAN segment that cannot initiate connections to workstations or NAS devices.",
+                    "Require unique strong credentials and disable default web, SSH, SMB, or RDP access where it is not needed.",
+                ],
             })
 
     paths.sort(key=lambda p: (p["score"], p["source"]["name"], p["target"]["name"]), reverse=True)
-    verified_paths = [p for p in paths if p["evidence_type"] == "verified"][:10]
-    speculative_paths = [p for p in paths if p["evidence_type"] == "speculative"][:6]
+    paths = paths[:10]
     return {
         "scan": {
             "id": latest_scan.id if latest_scan else None,
@@ -930,13 +911,10 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
         "device_count": len(summaries),
         "source_count": len(sources),
         "target_count": len(targets),
-        "verified_paths": verified_paths,
-        "speculative_paths": speculative_paths,
-        "path_count": len(verified_paths) + len(speculative_paths),
+        "path_count": len(paths),
+        "paths": paths,
         "assumptions": [
-            "Verified paths are anchored to an actual CVE match found on that device.",
-            "Possible-foothold paths are based only on device naming, vendor, and open-port patterns — "
-            "no vulnerability was actually found on those devices.",
+            "Every path starts from a device with an actual CVE match we found — nothing here is a guess.",
             "This is a planning aid only; it does not prove compromise and does not execute exploit code.",
         ],
     }
