@@ -543,7 +543,7 @@ function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boo
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quick: false }),
+        body: JSON.stringify({ quick: false, vulners: true }),
       })
       if (!res.ok) throw new Error(await res.text())
       onRefresh()

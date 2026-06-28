@@ -167,7 +167,7 @@ _TARGET_PORTS = {22, 445, 548, 3389, 5000, 5001, 5900, 8080, 8443}
 def _device_text(dev: Device, sd: ScanDevice | None) -> str:
     return " ".join([
         dev.label or "", dev.hostname or "", dev.vendor or "", dev.os_guess or "",
-        sd.hostname if sd else "",
+        (sd.hostname or "") if sd else "",
     ]).lower()
 
 
