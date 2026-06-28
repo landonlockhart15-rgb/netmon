@@ -141,6 +141,28 @@ def _json_list(value: str | None) -> list:
         return []
 
 
+def _gateway_ip(db: Session) -> str:
+    gateway = ""
+    try:
+        from network.autodetect import get_network_info
+        gateway = get_network_info().get("gateway") or ""
+    except Exception:
+        pass
+    return _get_setting_str(db, "autoheal_router_host", "") or gateway or "192.168.1.1"
+
+
+def _router_creds(db: Session) -> dict:
+    """Shared admin credentials for talking to the router's SOAP API — the
+    same ones the Uptime Guardian uses to reboot it on outage."""
+    return {
+        "host": _gateway_ip(db),
+        "user": _get_setting_str(db, "autoheal_router_user", "admin"),
+        "password": os.getenv("ROUTER_PASS") or _get_setting_str(db, "autoheal_router_pass", ""),
+        "use_ssl": _get_setting_str(db, "autoheal_router_ssl", "false").lower() == "true",
+        "port": int(_get_setting_str(db, "autoheal_router_port", "") or 0) or None,
+    }
+
+
 def _latest_scan_device_with_cves(db: Session, device_id: int):
     return (
         db.query(ScanDevice)
@@ -189,10 +211,27 @@ def _latest_scan_device(db: Session, device_id: int):
     )
 
 
+def _remediation_for(dev: Device, ip: str | None, gateway: str) -> dict:
+    """
+    How to fix this finding. Two kinds:
+      - "firmware": NetMon can check/install a fix itself via the router's
+        own update API (Netgear Orbi system — router + satellites are
+        patched together by one "update all" action).
+      - "manual": no API NetMon can drive; point at the device's own admin
+        page and let the AI explain what to click once there.
+    """
+    text = " ".join([dev.label or "", dev.vendor or "", dev.hostname or ""]).lower()
+    is_orbi_system = (ip == gateway) or ("orbi" in text) or ("netgear" in text and "router" in text)
+    if is_orbi_system:
+        return {"type": "firmware", "vendor": "netgear_orbi"}
+    return {"type": "manual", "admin_url": f"http://{ip or gateway}/"}
+
+
 def _attack_tree_device_summary(db: Session, dev: Device) -> dict:
     sd = _latest_scan_device(db, dev.id)
     cve_row = _latest_scan_device_with_cves(db, dev.id)
     cves = _json_list(cve_row.cves_json) if cve_row else []
+    severe_cves = [v for v in cves if _risk_rank(v.get("risk")) >= 3]
     ports = _port_set(sd)
     text = _device_text(dev, sd)
     iot_signals = [term for term in _IOT_TERMS if term in text]
@@ -203,13 +242,13 @@ def _attack_tree_device_summary(db: Session, dev: Device) -> dict:
     if not dev.is_known:
         source_score += 2
     source_score += min(len(ports & _ADMIN_PORTS), 2)
-    source_score += min(sum(1 for v in cves if _risk_rank(v.get("risk")) >= 3), 3)
+    source_score += min(len(severe_cves), 3)
 
     target_score = 0
     if target_signals:
         target_score += 4
     target_score += min(len(ports & _TARGET_PORTS), 4)
-    target_score += min(sum(1 for v in cves if _risk_rank(v.get("risk")) >= 3), 2)
+    target_score += min(len(severe_cves), 2)
 
     return {
         "device": dev,
@@ -218,6 +257,7 @@ def _attack_tree_device_summary(db: Session, dev: Device) -> dict:
         "ip": sd.ip if sd else None,
         "ports": sorted(ports),
         "cves": cves,
+        "has_cve_evidence": bool(severe_cves),
         "iot_signals": iot_signals[:3],
         "target_signals": target_signals[:3],
         "source_score": source_score,
@@ -725,6 +765,8 @@ def get_cve_mapping(current_only: bool = True, db: Session = Depends(get_db)):
         latest_scan = db.query(Scan).filter(Scan.status == "complete").order_by(desc(Scan.id)).first()
         devices = db.query(Device).order_by(desc(Device.last_seen)).all()
 
+    gateway = _gateway_ip(db)
+
     findings = []
     scanned_devices = 0
     for dev in devices:
@@ -744,14 +786,16 @@ def get_cve_mapping(current_only: bool = True, db: Session = Depends(get_db)):
         cves = cve_row.cves_list if cve_row else []
         if services:
             scanned_devices += 1
+        ip = (cve_row.ip if cve_row else None) or (latest_sd.ip if latest_sd else None)
         for cve in cves:
             findings.append({
                 **cve,
                 "device_id": dev.id,
-                "ip": (cve_row.ip if cve_row else None) or (latest_sd.ip if latest_sd else None),
+                "ip": ip,
                 "hostname": (latest_sd.hostname if latest_sd else None) or dev.hostname or "",
                 "label": dev.label or "",
                 "scan_id": cve_row.scan_id if cve_row else None,
+                "remediation": _remediation_for(dev, ip, gateway),
             })
 
     findings.sort(key=lambda f: (_risk_rank(f.get("risk")), f.get("cve") or ""), reverse=True)
@@ -790,6 +834,7 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
     else:
         devices = db.query(Device).order_by(desc(Device.last_seen)).all()
 
+    gateway = _gateway_ip(db)
     summaries = [_attack_tree_device_summary(db, dev) for dev in devices]
     sources = [s for s in summaries if s["source_score"] >= 3]
     targets = [s for s in summaries if s["target_score"] >= 3]
@@ -807,21 +852,30 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
             risk = _attack_risk(score)
             src_reasons = _attack_step_reasons(src, source=True)
             target_reasons = _attack_step_reasons(target, source=False)
+            # "Verified" means at least one side of this path is backed by an
+            # actual CVE match we found on that device — not just a name/port
+            # heuristic ("looks like a camera", "has SSH open"). Heuristic-only
+            # paths are real planning signal but must never be confused with a
+            # confirmed vulnerability, so the frontend renders them separately.
+            evidence_type = "verified" if (src["has_cve_evidence"] or target["has_cve_evidence"]) else "speculative"
             paths.append({
                 "id": f"{src['device'].id}-{target['device'].id}",
                 "risk": risk,
                 "score": score,
+                "evidence_type": evidence_type,
                 "source": {
                     "device_id": src["device"].id,
                     "name": src["name"],
                     "ip": src["ip"],
                     "reasons": src_reasons,
+                    "remediation": _remediation_for(src["device"], src["ip"], gateway),
                 },
                 "target": {
                     "device_id": target["device"].id,
                     "name": target["name"],
                     "ip": target["ip"],
                     "reasons": target_reasons,
+                    "remediation": _remediation_for(target["device"], target["ip"], gateway),
                 },
                 "steps": [
                     {
@@ -845,6 +899,8 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
             })
 
     paths.sort(key=lambda p: (p["score"], p["source"]["name"], p["target"]["name"]), reverse=True)
+    verified_paths = [p for p in paths if p["evidence_type"] == "verified"][:10]
+    speculative_paths = [p for p in paths if p["evidence_type"] == "speculative"][:6]
     return {
         "scan": {
             "id": latest_scan.id if latest_scan else None,
@@ -853,13 +909,61 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
         "device_count": len(summaries),
         "source_count": len(sources),
         "target_count": len(targets),
-        "path_count": len(paths[:6]),
-        "paths": paths[:6],
+        "verified_paths": verified_paths,
+        "speculative_paths": speculative_paths,
+        "path_count": len(verified_paths) + len(speculative_paths),
         "assumptions": [
-            "Paths are inferred from labels, vendors, OS hints, open ports, trust state, and CVE evidence.",
-            "The tree is a planning aid only; it does not prove compromise and does not execute exploit code.",
+            "Verified paths are anchored to an actual CVE match found on that device.",
+            "Possible-foothold paths are based only on device naming, vendor, and open-port patterns — "
+            "no vulnerability was actually found on those devices.",
+            "This is a planning aid only; it does not prove compromise and does not execute exploit code.",
         ],
     }
+
+
+@router.get("/api/security/firmware-status")
+def get_firmware_status(db: Session = Depends(get_db)):
+    """
+    Check the router's own firmware version via its SOAP API — the same
+    credentials/connection the Uptime Guardian uses to reboot it. Read-only,
+    safe to call as often as the UI wants.
+    """
+    from network.router_firmware import check_firmware
+    creds = _router_creds(db)
+    if not creds["password"]:
+        return {"configured": False, "error": "No router admin password set — "
+                "add it under Settings → Uptime Guardian to enable firmware checks."}
+    result = check_firmware(
+        creds["host"], creds["user"], creds["password"],
+        use_ssl=creds["use_ssl"], port=creds["port"],
+    )
+    return {"configured": True, **result}
+
+
+@router.post("/api/security/firmware-update")
+def trigger_firmware_update(body: dict = None, db: Session = Depends(get_db)):
+    """
+    Apply a pending firmware update on the router. Requires {"confirm": true}
+    in the body — this is a real action that reboots the router for a few
+    minutes, so it's never triggered without explicit confirmation from the UI.
+    """
+    body = body or {}
+    if not body.get("confirm"):
+        raise HTTPException(status_code=400, detail="Set confirm=true to apply the firmware update — "
+                             "this will reboot the router for a few minutes.")
+    from network.router_firmware import update_firmware
+    creds = _router_creds(db)
+    if not creds["password"]:
+        raise HTTPException(status_code=400, detail="No router admin password configured.")
+    result = update_firmware(
+        creds["host"], creds["user"], creds["password"],
+        use_ssl=creds["use_ssl"], port=creds["port"],
+    )
+    write_log(
+        "action" if result.get("success") else "warning", "system", "firmware_update",
+        result.get("detail") or result.get("error") or "Firmware update attempted.",
+    )
+    return result
 
 
 # ═════════════════════════════════════════════════════════════════════════════

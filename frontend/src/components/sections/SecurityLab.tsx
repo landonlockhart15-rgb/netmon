@@ -1,12 +1,13 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import ReactECharts from 'echarts-for-react'
-import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal, FlaskConical, Wrench, GitFork, BrainCircuit, Loader2, Laptop, Server, Cpu, Smartphone, Router, Network } from 'lucide-react'
+import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal, FlaskConical, Wrench, GitFork, BrainCircuit, Loader2, Laptop, Server, Cpu, Smartphone, Router, Network, RefreshCw, ShieldCheck, ShieldQuestion } from 'lucide-react'
 import {
   checkWSL, getSecLabHistory,
   startNikto, startHydra, startJohn, startMetasploit,
   startWifiCapture, startAircrack, shodanCheck,
   securityChat, cancelSecurityRun, getContextualInsight,
+  getFirmwareStatus, updateFirmware,
 } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
@@ -448,6 +449,101 @@ export default function SecurityLab() {
 
 // ── Tool panels ──────────────────────────────────────────────────────────────
 
+function RouterFirmwareCard() {
+  const [confirming, setConfirming] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const { data, isLoading, refetch, isFetching } = useQuery({
+    queryKey: ['firmware-status'],
+    queryFn: getFirmwareStatus,
+    staleTime: 60_000,
+  })
+  const updateMutation = useMutation({
+    mutationFn: updateFirmware,
+    onSuccess: (res) => {
+      setConfirming(false)
+      if (!res.success) setActionError(res.error || 'Update failed.')
+      else { setActionError(null); refetch() }
+    },
+    onError: (e: any) => setActionError(e.message || 'Update failed.'),
+  })
+
+  if (!data) {
+    return (
+      <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 mb-4 text-xs text-gray-500">
+        {isLoading ? 'Checking router firmware…' : 'Router firmware status unavailable.'}
+      </div>
+    )
+  }
+  if (!data.configured || !data.success) {
+    return (
+      <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 mb-4 text-xs text-amber-200">
+        Couldn't check router firmware: {data.error}
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3 mb-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Router size={15} className="text-teal-300" />
+          <div>
+            <p className="text-xs font-medium text-gray-200">Router / Orbi system firmware</p>
+            <p className="text-[11px] text-gray-500">
+              Current: {data.current_version || 'unknown'}
+              {data.update_available && data.new_version ? ` → ${data.new_version} available` : ' — up to date, no fix needed yet'}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Btn variant="ghost" size="sm" loading={isFetching} onClick={() => refetch()}>
+            <RefreshCw size={12} /> Check now
+          </Btn>
+          {data.update_available && (
+            <Btn variant="primary" size="sm" onClick={() => setConfirming(true)}>Update now</Btn>
+          )}
+        </div>
+      </div>
+      {data.release_note && (
+        <p className="text-[11px] text-gray-500 mt-2 whitespace-pre-wrap">{data.release_note}</p>
+      )}
+      {actionError && <p className="text-[11px] text-red-400 mt-2">{actionError}</p>}
+      {confirming && (
+        <div className="mt-3 rounded-lg border border-purple-500/30 bg-purple-500/5 p-3">
+          <p className="text-xs text-gray-200 mb-2">
+            This installs {data.new_version} on your router and any connected satellites. The router reboots
+            itself afterward — expect a few minutes of dropped Wi-Fi/internet for everyone on the network.
+          </p>
+          <div className="flex gap-2">
+            <Btn variant="primary" size="sm" loading={updateMutation.isPending} onClick={() => updateMutation.mutate()}>
+              Yes, update now
+            </Btn>
+            <Btn variant="ghost" size="sm" onClick={() => setConfirming(false)}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RemediationHint({ remediation }: { remediation: any }) {
+  if (!remediation) return null
+  if (remediation.type === 'firmware') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-teal-300 whitespace-nowrap">
+        <Router size={11} /> Router firmware update
+      </span>
+    )
+  }
+  return (
+    <a href={remediation.admin_url} target="_blank" rel="noreferrer"
+      onClick={e => e.stopPropagation()}
+      className="inline-flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 whitespace-nowrap">
+      <ExternalLink size={11} /> Open device admin page
+    </a>
+  )
+}
+
 function CveFindingRow({ f, idx }: { f: any; idx: number }) {
   const [insight, setInsight] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -489,25 +585,27 @@ function CveFindingRow({ f, idx }: { f: any; idx: number }) {
           <div className="text-gray-500 mt-0.5 max-w-[220px] truncate">{f.evidence || `${f.product ?? ''} ${f.version ?? ''}`}</div>
         </td>
         <td className="px-4 py-2 text-gray-400 max-w-[280px]">{f.recommendation}</td>
+        <td className="px-4 py-2"><RemediationHint remediation={f.remediation} /></td>
         <td className="px-4 py-2 text-right">
           <button
             onClick={handleInsight}
-            title="Contextual Insight"
+            title="Explain in plain English"
             disabled={loading}
             className={cn(
-              'p-1.5 rounded transition-colors',
+              'inline-flex items-center gap-1 px-2 py-1 rounded transition-colors whitespace-nowrap',
               insight
                 ? 'text-purple-400 bg-purple-500/10 hover:text-purple-300'
                 : 'text-gray-500 hover:text-purple-400 hover:bg-white/5'
             )}
           >
             {loading ? <Loader2 size={13} className="animate-spin" /> : <BrainCircuit size={13} />}
+            <span className="text-[11px]">Explain</span>
           </button>
         </td>
       </tr>
       {(loading || insight || error) && (
         <tr className="border-b border-white/5 bg-[#0f0f1a]/50">
-          <td colSpan={6} className="px-4 py-3 text-xs">
+          <td colSpan={7} className="px-4 py-3 text-xs">
             {loading && (
               <div className="flex items-center gap-2 text-purple-400 animate-pulse font-medium">
                 <BrainCircuit size={12} className="animate-pulse" />
@@ -585,6 +683,8 @@ function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boo
         </div>
       )}
 
+      {findings.some(f => f.remediation?.type === 'firmware') && <RouterFirmwareCard />}
+
       {findings.length === 0 ? (
         <EmptyState icon="◎" text="No CVE matches yet" hint="Run a mapping scan to collect service banners and check the offline CVE signatures." />
       ) : (
@@ -597,7 +697,8 @@ function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boo
                 <th className="px-4 py-2">Device</th>
                 <th className="px-4 py-2">Service</th>
                 <th className="px-4 py-2">Patch</th>
-                <th className="px-4 py-2 text-right">Insight</th>
+                <th className="px-4 py-2">Fix</th>
+                <th className="px-4 py-2 text-right">Explain</th>
               </tr>
             </thead>
             <tbody>
@@ -609,7 +710,8 @@ function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boo
         </div>
       )}
       <p className="text-[11px] text-gray-600 mt-3">
-        Phase one uses a conservative offline banner matcher. Treat matches as triage signals and confirm with vendor advisories before making production changes.
+        Every row above is an actual match — a service we found, with a version that has a known CVE against it.
+        Click "Explain" for a plain-English summary, or "Fix" to jump straight to the fix.
       </p>
     </Card>
   )
@@ -712,14 +814,113 @@ const attackGraphOption = (path: any) => {
   }
 }
 
-function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boolean; onRefresh: () => void }) {
-  const paths: any[] = data?.paths ?? []
-  const [selectedPathId, setSelectedPathId] = useState<string | null>(null)
-  
-  const activePath = paths.find(p => p.id === selectedPathId) || paths[0]
+function AttackPathExplain({ path }: { path: any }) {
+  const [insight, setInsight] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleInsight = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (insight) { setInsight(null); return }
+    setLoading(true)
+    setError(null)
+    try {
+      const summaryText = `Possible attack path: ${path.source.name} (${path.source.ip ?? 'unknown ip'}) could be used to reach ${path.target.name} (${path.target.ip ?? 'unknown ip'}). Risk: ${path.risk}.`
+      const evidenceNote = path.evidence_type === 'verified'
+        ? 'This path is backed by an actual vulnerability (CVE) we found on one of these devices — it is a real, confirmed weakness.'
+        : 'IMPORTANT: this path is only a heuristic guess based on the device\'s name/type and open ports — we did NOT find an actual vulnerability on it. Make clear to the reader that nothing is confirmed broken.'
+      const contextText = `Foothold signals: ${(path.source.reasons || []).join('; ') || 'none'}. Target signals: ${(path.target.reasons || []).join('; ') || 'none'}. ${evidenceNote}`
+      const res = await getContextualInsight(summaryText, contextText)
+      setInsight(res.explanation)
+    } catch (e: any) {
+      setError(e.message || 'Failed to generate insight')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   return (
-    <Card title="Attack Tree" badge={paths.length ? String(paths.length) : undefined}
+    <div onClick={e => e.stopPropagation()}>
+      <button
+        onClick={handleInsight}
+        title="Explain in plain English"
+        disabled={loading}
+        className={cn(
+          'inline-flex items-center gap-1 px-2 py-1 rounded transition-colors text-[11px] whitespace-nowrap',
+          insight
+            ? 'text-purple-400 bg-purple-500/10 hover:text-purple-300'
+            : 'text-gray-500 hover:text-purple-400 hover:bg-white/5'
+        )}
+      >
+        {loading ? <Loader2 size={12} className="animate-spin" /> : <BrainCircuit size={12} />}
+        Explain
+      </button>
+      {error && <p className="text-[11px] text-red-400 mt-1">{error}</p>}
+      {insight && (
+        <div className="prose prose-invert max-w-none font-normal leading-relaxed text-gray-300 bg-purple-950/10 rounded-lg p-3 border border-purple-500/10 shadow-inner mt-2 text-xs">
+          <Markdown text={insight} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AttackPathCard({ path, isSelected, onSelect }: { path: any; isSelected: boolean; onSelect: () => void }) {
+  return (
+    <div
+      onClick={onSelect}
+      className={cn(
+        "rounded-lg border p-3 cursor-pointer transition-all",
+        isSelected
+          ? "border-purple-500 bg-purple-500/[0.03] shadow-[0_0_10px_rgba(168,85,247,0.05)]"
+          : "border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]"
+      )}
+    >
+      <div className="flex flex-col md:flex-row md:items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium text-gray-100">{path.source.name}</span>
+            <span className="text-gray-600">→</span>
+            <span className="text-sm font-medium text-gray-100">{path.target.name}</span>
+            <Badge variant={severityVariant(path.risk)}>{path.risk}</Badge>
+          </div>
+          <div className="font-mono text-[11px] text-blue-400 mt-1">
+            {path.source.ip ?? 'unknown'} → {path.target.ip ?? 'unknown'}
+          </div>
+        </div>
+        <div className="text-xs text-gray-500">Score {path.score}</div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 text-xs">
+        <ReasonList title="Foothold signals" reasons={path.source.reasons} />
+        <ReasonList title="Target signals" reasons={path.target.reasons} />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2 text-xs">
+        <RemediationHint remediation={path.source.remediation} />
+        <RemediationHint remediation={path.target.remediation} />
+      </div>
+      <div className="mt-3 pt-3 border-t border-white/5 flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">First mitigations</p>
+          <ul className="space-y-1 text-xs text-gray-400 list-disc pl-4">
+            {path.mitigations.slice(0, 3).map((m: string) => <li key={m}>{m}</li>)}
+          </ul>
+        </div>
+        <AttackPathExplain path={path} />
+      </div>
+    </div>
+  )
+}
+
+function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boolean; onRefresh: () => void }) {
+  const verifiedPaths: any[] = data?.verified_paths ?? []
+  const speculativePaths: any[] = data?.speculative_paths ?? []
+  const allPaths = [...verifiedPaths, ...speculativePaths]
+  const [selectedPathId, setSelectedPathId] = useState<string | null>(null)
+
+  const activePath = allPaths.find(p => p.id === selectedPathId) || verifiedPaths[0] || speculativePaths[0]
+
+  return (
+    <Card title="Attack Tree" badge={allPaths.length ? String(allPaths.length) : undefined}
       action={<Btn variant="ghost" size="sm" loading={loading} onClick={onRefresh}>Refresh</Btn>}>
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 mb-4">
         <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
@@ -740,10 +941,10 @@ function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boo
         </div>
       </div>
 
-      {paths.length === 0 ? (
+      {allPaths.length === 0 ? (
         <EmptyState icon="◎" text="No attack paths yet" hint="Run a device scan with service detection, then label IoT, NAS, and work devices for better path mapping." />
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-5">
           {activePath && (
             <div className="rounded-lg border border-purple-500/20 bg-black/20 p-4 shadow-[inset_0_1px_3px_rgba(255,255,255,0.05)] overflow-hidden">
               <div className="flex items-center justify-between gap-3 mb-4">
@@ -778,48 +979,47 @@ function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boo
             </div>
           )}
 
-          <div className="space-y-2">
-            {paths.map(path => {
-              const isSelected = path.id === (selectedPathId || paths[0]?.id)
-              return (
-                <div
-                  key={path.id}
-                  onClick={() => setSelectedPathId(path.id)}
-                  className={cn(
-                    "rounded-lg border p-3 cursor-pointer transition-all",
-                    isSelected
-                      ? "border-purple-500 bg-purple-500/[0.03] shadow-[0_0_10px_rgba(168,85,247,0.05)]"
-                      : "border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]"
-                  )}
-                >
-                  <div className="flex flex-col md:flex-row md:items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm font-medium text-gray-100">{path.source.name}</span>
-                        <span className="text-gray-600">→</span>
-                        <span className="text-sm font-medium text-gray-100">{path.target.name}</span>
-                        <Badge variant={severityVariant(path.risk)}>{path.risk}</Badge>
-                      </div>
-                      <div className="font-mono text-[11px] text-blue-400 mt-1">
-                        {path.source.ip ?? 'unknown'} → {path.target.ip ?? 'unknown'}
-                      </div>
-                    </div>
-                    <div className="text-xs text-gray-500">Score {path.score}</div>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 text-xs">
-                    <ReasonList title="Foothold signals" reasons={path.source.reasons} />
-                    <ReasonList title="Target signals" reasons={path.target.reasons} />
-                  </div>
-                  <div className="mt-3 pt-3 border-t border-white/5">
-                    <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">First mitigations</p>
-                    <ul className="space-y-1 text-xs text-gray-400 list-disc pl-4">
-                      {path.mitigations.slice(0, 3).map((m: string) => <li key={m}>{m}</li>)}
-                    </ul>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+          {verifiedPaths.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <ShieldCheck size={14} className="text-red-400" />
+                <p className="text-xs font-medium text-gray-200">Verified risks</p>
+                <Badge variant="error">{verifiedPaths.length}</Badge>
+              </div>
+              <p className="text-[11px] text-gray-500 mb-2">
+                These are backed by an actual vulnerability NetMon found on the device — not a guess. Fix these first.
+              </p>
+              <div className="space-y-2">
+                {verifiedPaths.map(path => (
+                  <AttackPathCard key={path.id} path={path}
+                    isSelected={path.id === (selectedPathId || activePath?.id)}
+                    onSelect={() => setSelectedPathId(path.id)} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {speculativePaths.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <ShieldQuestion size={14} className="text-amber-400" />
+                <p className="text-xs font-medium text-gray-200">Possible footholds (unconfirmed)</p>
+                <Badge variant="warn">{speculativePaths.length}</Badge>
+              </div>
+              <p className="text-[11px] text-gray-500 mb-2">
+                Nothing was actually found wrong with these devices. They're flagged only because their name or type
+                (camera, smart speaker, etc.) is a common attacker entry point in general — treat this as awareness,
+                not a confirmed problem to fix.
+              </p>
+              <div className="space-y-2">
+                {speculativePaths.map(path => (
+                  <AttackPathCard key={path.id} path={path}
+                    isSelected={path.id === (selectedPathId || activePath?.id)}
+                    onSelect={() => setSelectedPathId(path.id)} />
+                ))}
+              </div>
+            </div>
+          )}
 
           {data?.assumptions?.length > 0 && (
             <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 text-[11px] text-blue-200/80 space-y-1">

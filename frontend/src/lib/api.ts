@@ -183,6 +183,25 @@ export const getContextualInsight = (text: string, context?: string) =>
     body: JSON.stringify({ text, context }),
   })
 
+// ── Router firmware (Security Lab remediation) ──────────────────────────────
+
+export const getFirmwareStatus = () =>
+  apiFetch<{
+    configured: boolean
+    success?: boolean
+    error?: string | null
+    current_version?: string
+    new_version?: string | null
+    update_available?: boolean
+    release_note?: string
+  }>('/api/security/firmware-status')
+
+export const updateFirmware = () =>
+  apiFetch<{ success: boolean; detail?: string; error?: string | null }>('/api/security/firmware-update', {
+    method: 'POST',
+    body: JSON.stringify({ confirm: true }),
+  })
+
 // ── Logs ─────────────────────────────────────────────────────────────────────
 
 export const getLogs = (params?: Record<string, string>) => {
