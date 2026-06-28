@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal, FlaskConical, Wrench, GitFork, BrainCircuit, Loader2 } from 'lucide-react'
+import ReactECharts from 'echarts-for-react'
+import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal, FlaskConical, Wrench, GitFork, BrainCircuit, Loader2, Laptop, Server, Cpu, Smartphone, Router, Network } from 'lucide-react'
 import {
   checkWSL, getSecLabHistory,
   startNikto, startHydra, startJohn, startMetasploit,
@@ -614,9 +615,109 @@ function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boo
   )
 }
 
+function getDeviceIcon(name: string) {
+  const n = name.toLowerCase()
+  if (n.includes('bulb') || n.includes('smart') || n.includes('light') || n.includes('iot')) {
+    return <Cpu className="w-5 h-5 text-amber-400" />
+  }
+  if (n.includes('nas') || n.includes('storage') || n.includes('backup') || n.includes('media')) {
+    return <Server className="w-5 h-5 text-blue-400" />
+  }
+  if (n.includes('pc') || n.includes('workstation') || n.includes('mac') || n.includes('laptop') || n.includes('desktop')) {
+    return <Laptop className="w-5 h-5 text-purple-400" />
+  }
+  if (n.includes('phone') || n.includes('mobile') || n.includes('tablet')) {
+    return <Smartphone className="w-5 h-5 text-green-400" />
+  }
+  if (n.includes('router') || n.includes('gateway') || n.includes('switch') || n.includes('firewall')) {
+    return <Router className="w-5 h-5 text-teal-400" />
+  }
+  return <Cpu className="w-5 h-5 text-gray-400" />
+}
+
+const attackGraphOption = (path: any) => {
+  if (!path) return {}
+  const nodes = [
+    {
+      name: path.source?.name || 'Foothold',
+      value: path.source?.ip ?? 'unknown',
+      x: 100,
+      y: 150,
+      symbolSize: 45,
+      itemStyle: { color: '#ef4444' },
+      label: { show: true, position: 'bottom', color: '#e5e7eb', fontSize: 11, fontFamily: 'sans-serif' }
+    },
+    {
+      name: 'LAN Pivot',
+      value: '192.168.1.*',
+      x: 300,
+      y: 150,
+      symbolSize: 35,
+      itemStyle: { color: '#a855f7' },
+      label: { show: true, position: 'bottom', color: '#e5e7eb', fontSize: 11, fontFamily: 'sans-serif' }
+    },
+    {
+      name: path.target?.name || 'Target',
+      value: path.target?.ip ?? 'unknown',
+      x: 500,
+      y: 150,
+      symbolSize: 45,
+      itemStyle: { color: '#f59e0b' },
+      label: { show: true, position: 'bottom', color: '#e5e7eb', fontSize: 11, fontFamily: 'sans-serif' }
+    }
+  ]
+
+  const links = [
+    {
+      source: path.source?.name || 'Foothold',
+      target: 'LAN Pivot',
+      label: { show: true, formatter: 'Pivot Scan', color: '#9ca3af', fontSize: 9 }
+    },
+    {
+      source: 'LAN Pivot',
+      target: path.target?.name || 'Target',
+      label: { show: true, formatter: 'Exploitation', color: '#9ca3af', fontSize: 9 }
+    }
+  ]
+
+  return {
+    backgroundColor: 'transparent',
+    tooltip: {
+      show: true,
+      trigger: 'item',
+      backgroundColor: '#1f2937',
+      borderColor: '#374151',
+      textStyle: { color: '#f3f4f6' }
+    },
+    series: [
+      {
+        type: 'graph',
+        layout: 'none',
+        roam: false,
+        edgeSymbol: ['none', 'arrow'],
+        edgeSymbolSize: [4, 10],
+        lineStyle: {
+          color: '#8b5cf6',
+          width: 2,
+          opacity: 0.8,
+          curveness: 0
+        },
+        label: {
+          show: true
+        },
+        links: links,
+        data: nodes
+      }
+    ]
+  }
+}
+
 function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boolean; onRefresh: () => void }) {
   const paths: any[] = data?.paths ?? []
-  const topPath = paths[0]
+  const [selectedPathId, setSelectedPathId] = useState<string | null>(null)
+  
+  const activePath = paths.find(p => p.id === selectedPathId) || paths[0]
+
   return (
     <Card title="Attack Tree" badge={paths.length ? String(paths.length) : undefined}
       action={<Btn variant="ghost" size="sm" loading={loading} onClick={onRefresh}>Refresh</Btn>}>
@@ -643,17 +744,28 @@ function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boo
         <EmptyState icon="◎" text="No attack paths yet" hint="Run a device scan with service detection, then label IoT, NAS, and work devices for better path mapping." />
       ) : (
         <div className="space-y-4">
-          {topPath && (
-            <div className="rounded-lg border border-white/10 bg-black/20 p-4">
+          {activePath && (
+            <div className="rounded-lg border border-purple-500/20 bg-black/20 p-4 shadow-[inset_0_1px_3px_rgba(255,255,255,0.05)] overflow-hidden">
               <div className="flex items-center justify-between gap-3 mb-4">
                 <div className="flex items-center gap-2 text-gray-200">
                   <GitFork size={15} className="text-purple-300" />
-                  <span className="text-sm font-medium">Most likely pivot path</span>
+                  <span className="text-sm font-medium">Attack Pivot Path Visualization</span>
                 </div>
-                <Badge variant={severityVariant(topPath.risk)}>{topPath.risk}</Badge>
+                <Badge variant={severityVariant(activePath.risk)}>{activePath.risk}</Badge>
               </div>
+
+              {/* Visual Flow Graph (ECharts) */}
+              <div className="relative bg-white/[0.01] rounded-xl border border-white/5 mb-4 p-4 h-[220px]">
+                <ReactECharts
+                  style={{ height: '100%', width: '100%' }}
+                  option={attackGraphOption(activePath)}
+                  opts={{ renderer: 'canvas' }}
+                />
+              </div>
+
+              {/* Steps details */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {topPath.steps.map((step: any, i: number) => (
+                {activePath.steps.map((step: any, i: number) => (
                   <div key={step.title} className="relative rounded-lg border border-white/10 bg-white/[0.03] p-3 min-h-[112px]">
                     <div className="flex items-center gap-2 mb-2">
                       <div className="h-6 w-6 rounded-full bg-purple-500/15 border border-purple-500/30 text-purple-200 flex items-center justify-center text-xs">{i + 1}</div>
@@ -667,34 +779,46 @@ function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boo
           )}
 
           <div className="space-y-2">
-            {paths.map(path => (
-              <div key={path.id} className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
-                <div className="flex flex-col md:flex-row md:items-center gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm text-gray-100">{path.source.name}</span>
-                      <span className="text-gray-600">→</span>
-                      <span className="text-sm text-gray-100">{path.target.name}</span>
-                      <Badge variant={severityVariant(path.risk)}>{path.risk}</Badge>
+            {paths.map(path => {
+              const isSelected = path.id === (selectedPathId || paths[0]?.id)
+              return (
+                <div
+                  key={path.id}
+                  onClick={() => setSelectedPathId(path.id)}
+                  className={cn(
+                    "rounded-lg border p-3 cursor-pointer transition-all",
+                    isSelected
+                      ? "border-purple-500 bg-purple-500/[0.03] shadow-[0_0_10px_rgba(168,85,247,0.05)]"
+                      : "border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]"
+                  )}
+                >
+                  <div className="flex flex-col md:flex-row md:items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium text-gray-100">{path.source.name}</span>
+                        <span className="text-gray-600">→</span>
+                        <span className="text-sm font-medium text-gray-100">{path.target.name}</span>
+                        <Badge variant={severityVariant(path.risk)}>{path.risk}</Badge>
+                      </div>
+                      <div className="font-mono text-[11px] text-blue-400 mt-1">
+                        {path.source.ip ?? 'unknown'} → {path.target.ip ?? 'unknown'}
+                      </div>
                     </div>
-                    <div className="font-mono text-[11px] text-blue-400 mt-1">
-                      {path.source.ip ?? 'unknown'} → {path.target.ip ?? 'unknown'}
-                    </div>
+                    <div className="text-xs text-gray-500">Score {path.score}</div>
                   </div>
-                  <div className="text-xs text-gray-500">Score {path.score}</div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 text-xs">
+                    <ReasonList title="Foothold signals" reasons={path.source.reasons} />
+                    <ReasonList title="Target signals" reasons={path.target.reasons} />
+                  </div>
+                  <div className="mt-3 pt-3 border-t border-white/5">
+                    <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">First mitigations</p>
+                    <ul className="space-y-1 text-xs text-gray-400 list-disc pl-4">
+                      {path.mitigations.slice(0, 3).map((m: string) => <li key={m}>{m}</li>)}
+                    </ul>
+                  </div>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 text-xs">
-                  <ReasonList title="Foothold signals" reasons={path.source.reasons} />
-                  <ReasonList title="Target signals" reasons={path.target.reasons} />
-                </div>
-                <div className="mt-3 pt-3 border-t border-white/5">
-                  <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">First mitigations</p>
-                  <ul className="space-y-1 text-xs text-gray-400 list-disc pl-4">
-                    {path.mitigations.slice(0, 3).map((m: string) => <li key={m}>{m}</li>)}
-                  </ul>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
 
           {data?.assumptions?.length > 0 && (

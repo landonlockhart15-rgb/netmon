@@ -244,6 +244,13 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertGreaterEqual(len(path["steps"]), 3)
         self.assertGreaterEqual(len(path["mitigations"]), 1)
 
+    def test_attack_graph_option_uses_echarts_graph_data_array(self):
+        from pathlib import Path
+        source = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "sections" / "SecurityLab.tsx"
+        text = source.read_text(encoding="utf-8")
+        self.assertIn("data: nodes", text, "ECharts graph series must use the 'data' property for node records")
+        self.assertNotIn("nodes,", text, "The graph series should not rely on a nonstandard 'nodes' option")
+
     @patch("ai.provider.get_investigation_provider")
     def test_explain_chat_turn(self, mock_get_provider):
         """Test POST /api/device/{device_id}/chat/{turn_id}/explain route."""
