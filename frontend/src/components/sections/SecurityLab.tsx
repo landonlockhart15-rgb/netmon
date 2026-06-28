@@ -739,6 +739,15 @@ function getDeviceIcon(name: string) {
 
 const attackGraphOption = (path: any) => {
   if (!path) return {}
+  // Speculative paths get muted gray nodes/lines instead of red/purple/orange —
+  // those colors signal "this is happening," which isn't true for a guess with
+  // no confirmed vulnerability behind it.
+  const verified = path.evidence_type !== 'speculative'
+  const sourceColor = verified ? '#ef4444' : '#6b7280'
+  const targetColor = verified ? '#f59e0b' : '#6b7280'
+  const pivotColor = verified ? '#a855f7' : '#6b7280'
+  const lineColor = verified ? '#8b5cf6' : '#4b5563'
+
   const nodes = [
     {
       name: path.source?.name || 'Foothold',
@@ -746,7 +755,7 @@ const attackGraphOption = (path: any) => {
       x: 100,
       y: 150,
       symbolSize: 45,
-      itemStyle: { color: '#ef4444' },
+      itemStyle: { color: sourceColor },
       label: { show: true, position: 'bottom', color: '#e5e7eb', fontSize: 11, fontFamily: 'sans-serif' }
     },
     {
@@ -755,7 +764,7 @@ const attackGraphOption = (path: any) => {
       x: 300,
       y: 150,
       symbolSize: 35,
-      itemStyle: { color: '#a855f7' },
+      itemStyle: { color: pivotColor },
       label: { show: true, position: 'bottom', color: '#e5e7eb', fontSize: 11, fontFamily: 'sans-serif' }
     },
     {
@@ -764,7 +773,7 @@ const attackGraphOption = (path: any) => {
       x: 500,
       y: 150,
       symbolSize: 45,
-      itemStyle: { color: '#f59e0b' },
+      itemStyle: { color: targetColor },
       label: { show: true, position: 'bottom', color: '#e5e7eb', fontSize: 11, fontFamily: 'sans-serif' }
     }
   ]
@@ -773,12 +782,14 @@ const attackGraphOption = (path: any) => {
     {
       source: path.source?.name || 'Foothold',
       target: 'LAN Pivot',
-      label: { show: true, formatter: 'Pivot Scan', color: '#9ca3af', fontSize: 9 }
+      label: { show: true, formatter: verified ? 'Pivot Scan' : 'Hypothetical', color: '#9ca3af', fontSize: 9 },
+      lineStyle: verified ? {} : { type: 'dashed' as const },
     },
     {
       source: 'LAN Pivot',
       target: path.target?.name || 'Target',
-      label: { show: true, formatter: 'Exploitation', color: '#9ca3af', fontSize: 9 }
+      label: { show: true, formatter: verified ? 'Exploitation' : 'Hypothetical', color: '#9ca3af', fontSize: 9 },
+      lineStyle: verified ? {} : { type: 'dashed' as const },
     }
   ]
 
@@ -799,9 +810,9 @@ const attackGraphOption = (path: any) => {
         edgeSymbol: ['none', 'arrow'],
         edgeSymbolSize: [4, 10],
         lineStyle: {
-          color: '#8b5cf6',
+          color: lineColor,
           width: 2,
-          opacity: 0.8,
+          opacity: verified ? 0.8 : 0.5,
           curveness: 0
         },
         label: {
@@ -882,25 +893,31 @@ function AttackPathCard({ path, isSelected, onSelect }: { path: any; isSelected:
             <span className="text-sm font-medium text-gray-100">{path.source.name}</span>
             <span className="text-gray-600">→</span>
             <span className="text-sm font-medium text-gray-100">{path.target.name}</span>
-            <Badge variant={severityVariant(path.risk)}>{path.risk}</Badge>
+            <Badge variant={path.evidence_type === 'speculative' ? 'muted' : severityVariant(path.risk)}>
+              {path.evidence_type === 'speculative' ? 'Unconfirmed' : path.risk}
+            </Badge>
           </div>
           <div className="font-mono text-[11px] text-blue-400 mt-1">
             {path.source.ip ?? 'unknown'} → {path.target.ip ?? 'unknown'}
           </div>
         </div>
-        <div className="text-xs text-gray-500">Score {path.score}</div>
+        {path.evidence_type === 'verified' && <div className="text-xs text-gray-500">Score {path.score}</div>}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 text-xs">
         <ReasonList title="Foothold signals" reasons={path.source.reasons} />
         <ReasonList title="Target signals" reasons={path.target.reasons} />
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2 text-xs">
-        <RemediationHint remediation={path.source.remediation} />
-        <RemediationHint remediation={path.target.remediation} />
-      </div>
+      {(path.source.remediation || path.target.remediation) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2 text-xs">
+          <RemediationHint remediation={path.source.remediation} />
+          <RemediationHint remediation={path.target.remediation} />
+        </div>
+      )}
       <div className="mt-3 pt-3 border-t border-white/5 flex flex-col md:flex-row md:items-start md:justify-between gap-3">
         <div>
-          <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">First mitigations</p>
+          <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">
+            {path.evidence_type === 'speculative' ? 'Optional hardening (nothing is actually broken)' : 'First mitigations'}
+          </p>
           <ul className="space-y-1 text-xs text-gray-400 list-disc pl-4">
             {path.mitigations.slice(0, 3).map((m: string) => <li key={m}>{m}</li>)}
           </ul>
@@ -916,8 +933,11 @@ function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boo
   const speculativePaths: any[] = data?.speculative_paths ?? []
   const allPaths = [...verifiedPaths, ...speculativePaths]
   const [selectedPathId, setSelectedPathId] = useState<string | null>(null)
+  const [showSpeculative, setShowSpeculative] = useState(false)
 
-  const activePath = allPaths.find(p => p.id === selectedPathId) || verifiedPaths[0] || speculativePaths[0]
+  // The hero visualization only auto-selects a verified path — a speculative
+  // one only appears there if the user explicitly opens that section and clicks it.
+  const activePath = allPaths.find(p => p.id === selectedPathId) || verifiedPaths[0]
 
   return (
     <Card title="Attack Tree" badge={allPaths.length ? String(allPaths.length) : undefined}
@@ -946,14 +966,26 @@ function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boo
       ) : (
         <div className="space-y-5">
           {activePath && (
-            <div className="rounded-lg border border-purple-500/20 bg-black/20 p-4 shadow-[inset_0_1px_3px_rgba(255,255,255,0.05)] overflow-hidden">
-              <div className="flex items-center justify-between gap-3 mb-4">
+            <div className={cn(
+              "rounded-lg border p-4 shadow-[inset_0_1px_3px_rgba(255,255,255,0.05)] overflow-hidden",
+              activePath.evidence_type === 'speculative' ? "border-white/10 bg-black/20" : "border-purple-500/20 bg-black/20"
+            )}>
+              <div className="flex items-center justify-between gap-3 mb-1">
                 <div className="flex items-center gap-2 text-gray-200">
-                  <GitFork size={15} className="text-purple-300" />
-                  <span className="text-sm font-medium">Attack Pivot Path Visualization</span>
+                  <GitFork size={15} className={activePath.evidence_type === 'speculative' ? "text-gray-400" : "text-purple-300"} />
+                  <span className="text-sm font-medium">
+                    {activePath.evidence_type === 'speculative' ? 'Hypothetical Path (not confirmed)' : 'Attack Pivot Path Visualization'}
+                  </span>
                 </div>
-                <Badge variant={severityVariant(activePath.risk)}>{activePath.risk}</Badge>
+                <Badge variant={activePath.evidence_type === 'speculative' ? 'muted' : severityVariant(activePath.risk)}>
+                  {activePath.evidence_type === 'speculative' ? 'Unconfirmed' : activePath.risk}
+                </Badge>
               </div>
+              {activePath.evidence_type === 'speculative' && (
+                <p className="text-[11px] text-gray-500 mb-3">
+                  No vulnerability was found here — this is a "what if" illustration based on device type only. Nothing to fix.
+                </p>
+              )}
 
               {/* Visual Flow Graph (ECharts) */}
               <div className="relative bg-white/[0.01] rounded-xl border border-white/5 mb-4 p-4 h-[220px]">
@@ -1001,23 +1033,31 @@ function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boo
 
           {speculativePaths.length > 0 && (
             <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <ShieldQuestion size={14} className="text-amber-400" />
-                <p className="text-xs font-medium text-gray-200">Possible footholds (unconfirmed)</p>
-                <Badge variant="warn">{speculativePaths.length}</Badge>
-              </div>
-              <p className="text-[11px] text-gray-500 mb-2">
-                Nothing was actually found wrong with these devices. They're flagged only because their name or type
-                (camera, smart speaker, etc.) is a common attacker entry point in general — treat this as awareness,
-                not a confirmed problem to fix.
+              <button
+                onClick={() => setShowSpeculative(s => !s)}
+                className="flex items-center gap-2 mb-1.5 w-full text-left group"
+              >
+                <ShieldQuestion size={14} className="text-gray-500" />
+                <p className="text-xs font-medium text-gray-300 group-hover:text-gray-100">
+                  Possible footholds (unconfirmed) — nothing to fix
+                </p>
+                <Badge variant="muted">{speculativePaths.length}</Badge>
+                <span className="text-[11px] text-gray-600 ml-auto">{showSpeculative ? 'Hide' : 'Show'}</span>
+              </button>
+              <p className="text-[11px] text-gray-600 mb-2">
+                Nothing was actually found wrong with these devices. They're listed only because their name or type
+                (camera, smart speaker, etc.) is a common attacker entry point in general — this is background
+                awareness, not a problem you need to act on, which is why it's collapsed by default.
               </p>
-              <div className="space-y-2">
-                {speculativePaths.map(path => (
-                  <AttackPathCard key={path.id} path={path}
-                    isSelected={path.id === (selectedPathId || activePath?.id)}
-                    onSelect={() => setSelectedPathId(path.id)} />
-                ))}
-              </div>
+              {showSpeculative && (
+                <div className="space-y-2">
+                  {speculativePaths.map(path => (
+                    <AttackPathCard key={path.id} path={path}
+                      isSelected={path.id === (selectedPathId || activePath?.id)}
+                      onSelect={() => setSelectedPathId(path.id)} />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

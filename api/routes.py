@@ -854,15 +854,33 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
             if src["device"].id == target["device"].id:
                 continue
             score = src["source_score"] + target["target_score"]
-            risk = _attack_risk(score)
             src_reasons = _attack_step_reasons(src, source=True)
             target_reasons = _attack_step_reasons(target, source=False)
             # "Verified" means at least one side of this path is backed by an
             # actual CVE match we found on that device — not just a name/port
             # heuristic ("looks like a camera", "has SSH open"). Heuristic-only
             # paths are real planning signal but must never be confused with a
-            # confirmed vulnerability, so the frontend renders them separately.
+            # confirmed vulnerability, so the frontend renders them separately
+            # AND the risk label itself must not borrow a "critical/high" word —
+            # that implies something is actually wrong, which isn't true here.
             evidence_type = "verified" if (src["has_cve_evidence"] or target["has_cve_evidence"]) else "speculative"
+            risk = _attack_risk(score) if evidence_type == "verified" else "unconfirmed"
+
+            if src["has_cve_evidence"]:
+                foothold_detail = f"Attacker compromises {src['name']} using a known CVE we found on it."
+            else:
+                foothold_detail = (
+                    f"No vulnerability was found on {src['name']} — this step is hypothetical, based only on "
+                    f"{src['name']} being a common device type (smart speaker, camera, etc.) that's frequently weak."
+                )
+
+            mitigations = [
+                "Move IoT devices to a guest or VLAN segment that cannot initiate connections to workstations or NAS devices.",
+                "Require unique strong credentials and disable default web, SSH, SMB, or RDP access where it is not needed.",
+            ]
+            if evidence_type == "verified":
+                mitigations.insert(1, "Patch or disable the vulnerable/admin services shown in the CVE and open-port evidence above.")
+
             paths.append({
                 "id": f"{src['device'].id}-{target['device'].id}",
                 "risk": risk,
@@ -873,19 +891,19 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
                     "name": src["name"],
                     "ip": src["ip"],
                     "reasons": src_reasons,
-                    "remediation": _remediation_for(src["device"], src["ip"], gateway),
+                    "remediation": _remediation_for(src["device"], src["ip"], gateway) if evidence_type == "verified" else None,
                 },
                 "target": {
                     "device_id": target["device"].id,
                     "name": target["name"],
                     "ip": target["ip"],
                     "reasons": target_reasons,
-                    "remediation": _remediation_for(target["device"], target["ip"], gateway),
+                    "remediation": _remediation_for(target["device"], target["ip"], gateway) if evidence_type == "verified" else None,
                 },
                 "steps": [
                     {
                         "title": "Initial foothold",
-                        "detail": f"Attacker compromises {src['name']} using weak management exposure or known CVE evidence.",
+                        "detail": foothold_detail,
                     },
                     {
                         "title": "Local network pivot",
@@ -896,11 +914,7 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
                         "detail": f"Attacker targets {target['name']} because it exposes valuable services or looks like storage/workstation infrastructure.",
                     },
                 ],
-                "mitigations": [
-                    "Move IoT devices to a guest or VLAN segment that cannot initiate connections to workstations or NAS devices.",
-                    "Patch or disable vulnerable/admin services shown in the CVE and open-port evidence.",
-                    "Require unique strong credentials and disable default web, SSH, SMB, or RDP access where it is not needed.",
-                ],
+                "mitigations": mitigations,
             })
 
     paths.sort(key=lambda p: (p["score"], p["source"]["name"], p["target"]["name"]), reverse=True)
