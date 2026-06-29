@@ -921,6 +921,213 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/api/security/least-resistance")
+def get_least_resistance_report(current_only: bool = True, db: Session = Depends(get_db)):
+    """
+    Generate a 'Path of Least Resistance' report for each host based on 
+    mapping discovered open ports and service CVEs.
+    """
+    if current_only:
+        latest_scan, scan_ids = current_scan_ids(db)
+        if latest_scan:
+            device_ids = [
+                row[0] for row in (
+                    db.query(ScanDevice.device_id)
+                    .filter(ScanDevice.scan_id.in_(scan_ids))
+                    .distinct()
+                    .all()
+                )
+            ]
+            devices = db.query(Device).filter(Device.id.in_(device_ids)).all() if device_ids else []
+        else:
+            devices = []
+    else:
+        latest_scan = db.query(Scan).filter(Scan.status == "complete").order_by(desc(Scan.id)).first()
+        devices = db.query(Device).order_by(desc(Device.last_seen)).all()
+
+    gateway = _gateway_ip(db)
+    hosts_report = []
+
+    # Heuristic mapping for open ports when no specific CVE banner is found
+    PORT_CVE_REFS = [
+        {
+            "port": 21,
+            "service": "ftp",
+            "cve": "CVE-2011-2523",
+            "risk": "critical",
+            "title": "vsftpd 2.3.4 Backdoor Remote Code Execution",
+            "recommendation": "Replace vsftpd with a secure, current FTP server daemon, or disable FTP entirely.",
+            "exploit_available": True
+        },
+        {
+            "port": 22,
+            "service": "ssh",
+            "cve": "CVE-2016-0777",
+            "risk": "high",
+            "title": "OpenSSH Roaming Information Leak (CVE-2016-0777)",
+            "recommendation": "Upgrade OpenSSH and set 'UseRoaming no' in ssh_config.",
+            "exploit_available": True
+        },
+        {
+            "port": 23,
+            "service": "telnet",
+            "cve": "CVE-2022-24426",
+            "risk": "high",
+            "title": "Telnet Cleartext Transmission Vulnerability",
+            "recommendation": "Disable Telnet daemon. Migrate all remote access to encrypted SSH protocol.",
+            "exploit_available": False
+        },
+        {
+            "port": 80,
+            "service": "http",
+            "cve": "CVE-2021-41773",
+            "risk": "critical",
+            "title": "Apache httpd Path Traversal / File Disclosure",
+            "recommendation": "Upgrade Apache httpd to 2.4.51 or newer.",
+            "exploit_available": True
+        },
+        {
+            "port": 443,
+            "service": "https",
+            "cve": "CVE-2014-0160",
+            "risk": "high",
+            "title": "OpenSSL Heartbleed Information Leak",
+            "recommendation": "Upgrade OpenSSL to a non-vulnerable version and regenerate SSL certificates.",
+            "exploit_available": True
+        },
+        {
+            "port": 445,
+            "service": "microsoft-ds",
+            "cve": "CVE-2017-0144",
+            "risk": "critical",
+            "title": "Microsoft Windows SMB Remote Code Execution (EternalBlue)",
+            "recommendation": "Apply security update MS17-010 and disable SMBv1.",
+            "exploit_available": True
+        },
+        {
+            "port": 3389,
+            "service": "ms-wbt-server",
+            "cve": "CVE-2019-0708",
+            "risk": "critical",
+            "title": "Microsoft RDP Remote Code Execution (BlueKeep)",
+            "recommendation": "Install OS security updates and restrict RDP access using Network Level Authentication (NLA).",
+            "exploit_available": True
+        },
+        {
+            "port": 5900,
+            "service": "vnc",
+            "cve": "CVE-2006-2369",
+            "risk": "high",
+            "title": "RealVNC Authentication Bypass Vulnerability",
+            "recommendation": "Upgrade RealVNC or implement firewall restrictions on VNC port.",
+            "exploit_available": True
+        },
+        {
+            "port": 8080,
+            "service": "http-alt",
+            "cve": "CVE-2024-21626",
+            "risk": "high",
+            "title": "HTTP Alt Console Remote Code Execution Risk",
+            "recommendation": "Disable exposure of alt HTTP ports or configure strong authentication.",
+            "exploit_available": True
+        }
+    ]
+
+    for dev in devices:
+        latest_sd = db.query(ScanDevice).filter(ScanDevice.device_id == dev.id).order_by(desc(ScanDevice.id)).first()
+        if not latest_sd:
+            continue
+        
+        # Get actual parsed CVEs if available
+        cve_row = _latest_scan_device_with_cves(db, dev.id)
+        cves = cve_row.cves_list if cve_row else []
+        
+        # Convert list of CVE dicts to maintain a set of CVE IDs
+        existing_cves = {c.get("cve").upper() for c in cves if c.get("cve")}
+        
+        # Heuristic port mapping
+        open_ports = latest_sd.ports_list
+        mapped_cves = list(cves)
+        
+        for p in open_ports:
+            # Find matching port definitions in reference list
+            for ref in PORT_CVE_REFS:
+                if ref["port"] == p:
+                    cve_id = ref["cve"]
+                    if cve_id.upper() not in existing_cves:
+                        existing_cves.add(cve_id.upper())
+                        mapped_cves.append({
+                            "cve": cve_id,
+                            "risk": ref["risk"],
+                            "title": ref["title"],
+                            "service": ref["service"],
+                            "product": ref["service"],
+                            "version": "",
+                            "port": p,
+                            "evidence": f"Port {p} open",
+                            "recommendation": ref["recommendation"],
+                            "exploit_available": ref["exploit_available"],
+                            "source": "port-heuristic"
+                        })
+        
+        # Sort CVEs by risk rank
+        mapped_cves.sort(key=lambda c: (_risk_rank(c.get("risk")), c.get("cve") or ""), reverse=True)
+        
+        overall_risk = "low"
+        steps = []
+        remediation = "No actions required. Maintain default secure posture."
+        
+        if mapped_cves:
+            highest_cve = mapped_cves[0]
+            overall_risk = highest_cve.get("risk", "low")
+            remediation = highest_cve.get("recommendation", remediation)
+            
+            # Construct the Path of Least Resistance steps
+            steps.append({
+                "title": "LAN Reconnaissance",
+                "detail": f"Attacker scans the LAN and identifies open port {highest_cve['port']} ({highest_cve.get('service', 'unknown')}) on host {latest_sd.ip}."
+            })
+            steps.append({
+                "title": "Service Exploitation",
+                "detail": f"Attacker targets {highest_cve['cve']} ({highest_cve.get('title', 'Vulnerable Service')}) running on port {highest_cve['port']}."
+            })
+            compromise_level = "administrative access" if overall_risk in ("critical", "high") else "user-level control"
+            steps.append({
+                "title": "Host Compromise",
+                "detail": f"Attacker obtains {compromise_level} on {dev.label or dev.hostname or latest_sd.ip} and executes arbitrary payload commands."
+            })
+        else:
+            steps.append({
+                "title": "Secure Baseline Check",
+                "detail": f"No common vulnerable ports or matched CVEs detected on host {latest_sd.ip}."
+            })
+
+        hosts_report.append({
+            "device_id": dev.id,
+            "ip": latest_sd.ip,
+            "hostname": latest_sd.hostname or dev.hostname or "",
+            "label": dev.label or "",
+            "open_ports": open_ports,
+            "mapped_cves": mapped_cves,
+            "overall_risk": overall_risk,
+            "remediation": remediation,
+            "least_resistance_path": {
+                "risk": overall_risk,
+                "steps": steps,
+                "remediation": remediation
+            }
+        })
+        
+    hosts_report.sort(key=lambda h: _risk_rank(h["overall_risk"]), reverse=True)
+    return {
+        "scan": {
+            "id": latest_scan.id if latest_scan else None,
+            "started_at": _iso(latest_scan.started_at) if latest_scan else None,
+        },
+        "hosts": hosts_report
+    }
+
+
 @router.get("/api/security/firmware-status")
 def get_firmware_status(db: Session = Depends(get_db)):
     """
