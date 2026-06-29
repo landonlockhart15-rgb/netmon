@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { PlugZap, RotateCw, FlaskConical, Save, Power, Clock, Router as RouterIcon, Activity, ShieldCheck } from 'lucide-react'
+import { PlugZap, RotateCw, FlaskConical, Save, Power, Clock, Router as RouterIcon, Activity, ShieldCheck, Sparkles, CheckCircle2, XCircle, AlertCircle } from 'lucide-react'
 import { getAutoHeal, saveAutoHealConfig, autoHealRebootNow, autoHealResetCounter, autoHealSimulate } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
@@ -128,13 +128,97 @@ export default function UptimeGuardian() {
         }
       />
 
-      {/* Live state banner */}
-      {offline && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 flex items-center gap-2 text-sm text-red-300">
-          <Activity size={16} className="animate-pulse" />
-          Internet outage detected{state?.consecutive_offline ? ` — ${state.consecutive_offline} consecutive failed checks` : ''}
-          {state?.rebooted_this_outage && ' · reboot already attempted this outage'}
-        </div>
+      {/* AI-Driven Self-Healing Playbook Card */}
+      {data?.playbook && (
+        <Card
+          title="AI-Driven Self-Healing Playbook"
+          badge={offline ? "Active Outage" : "Standby"}
+        >
+          <div className="space-y-4">
+            {/* AI Diagnosis block */}
+            <div className={cn(
+              "rounded-lg border p-4 transition-all duration-300",
+              offline 
+                ? "bg-red-500/5 border-red-500/20" 
+                : "bg-purple-500/5 border-purple-500/20"
+            )}>
+              <div className="flex items-center gap-2 mb-2">
+                <Sparkles size={16} className={cn("text-purple-400", offline && "animate-pulse")} />
+                <span className="text-xs font-semibold text-purple-300 uppercase tracking-wider">AI Diagnosis & Playbook</span>
+              </div>
+              <p className="text-sm text-gray-200 leading-relaxed font-mono whitespace-pre-line">
+                {data.playbook.diagnosis}
+              </p>
+              {offline && state?.consecutive_offline && (
+                <div className="mt-2 text-xs text-red-300 font-mono flex items-center gap-1.5 border-t border-red-500/10 pt-2">
+                  <AlertCircle size={12} />
+                  Sustained outage detected — {state.consecutive_offline} consecutive failed check{state.consecutive_offline === 1 ? '' : 's'}.
+                  {state?.rebooted_this_outage && ' · Reboot already attempted this outage.'}
+                </div>
+              )}
+            </div>
+
+            {/* Proposed Action + Execution */}
+            <div className="rounded-lg border border-white/10 bg-white/[0.02] p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all duration-300">
+              <div>
+                <span className="text-xs text-gray-500 block uppercase tracking-wider font-semibold">Proposed Healing Action</span>
+                <span className="text-base font-bold text-white mt-1 flex items-center gap-2">
+                  <RouterIcon size={16} className="text-purple-400" />
+                  {data.playbook.proposed_action}
+                </span>
+                {cfg?.dry_run && (
+                  <span className="text-[10px] text-amber-400 font-mono mt-0.5 block">
+                    Armed in Dry-Run mode: Execution will log the event but perform no physical side effects.
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 w-full md:w-auto">
+                <Btn 
+                  variant="primary" 
+                  size="sm" 
+                  loading={rebootMut.isPending}
+                  onClick={() => {
+                    if (cfg && !cfg.dry_run) {
+                      if (!confirm(`Execute proposed healing action: ${data.playbook.proposed_action}? This will cause a temporary network drop of ~2-4 minutes.`)) return;
+                    }
+                    rebootMut.mutate(false);
+                  }}
+                  className="w-full md:w-auto bg-purple-600 hover:bg-purple-700 text-white"
+                >
+                  <RotateCw size={13} className="mr-1.5" /> Execute Action
+                </Btn>
+              </div>
+            </div>
+
+            {/* Safety Check Summary */}
+            <div>
+              <span className="text-xs text-gray-500 block uppercase tracking-wider font-semibold mb-2">Safety Check Pre-requisites</span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                {data.playbook.safety_checks?.map((check: any, idx: number) => (
+                  <div 
+                    key={idx} 
+                    className={cn(
+                      "border rounded-lg p-3 flex flex-col justify-between transition-all duration-300",
+                      check.passed 
+                        ? "bg-emerald-500/[0.03] border-emerald-500/20 text-emerald-300" 
+                        : "bg-red-500/[0.03] border-red-500/20 text-red-300"
+                    )}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-xs font-semibold text-gray-300">{check.name}</span>
+                      {check.passed ? (
+                        <CheckCircle2 size={13} className="text-emerald-400" />
+                      ) : (
+                        <XCircle size={13} className="text-red-400" />
+                      )}
+                    </div>
+                    <span className="text-xs font-mono font-medium text-gray-400">{check.detail}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </Card>
       )}
 
       {/* Test + manual controls */}

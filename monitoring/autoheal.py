@@ -50,6 +50,7 @@ _STATE: dict = {
     "rebooted_this_outage": False,
     "gave_up": False,
     "outage_announced": False,
+    "last_probe": None,           # last probe result dict
 }
 
 
@@ -590,6 +591,7 @@ def run_cycle(db=None, probe_fn=None) -> dict:
             return {"action": "disabled"}
 
         pr = (probe_fn or probe)(cfg)
+        _STATE["last_probe"] = pr
         now = datetime.now(timezone.utc)
 
         # ── Recovered / healthy ──────────────────────────────────────────────
@@ -793,3 +795,89 @@ def reset_reboot_counter(db=None) -> dict:
     finally:
         if own:
             db.close()
+
+
+def get_playbook(db) -> dict:
+    """
+    Builds the AI-driven playbook state: diagnosis, proposed action, and safety checks.
+    """
+    cfg = get_config(db)
+    now = datetime.now(timezone.utc)
+    
+    # 1. Determine proposed action name
+    method = cfg.get("method", "netgear_soap")
+    if method == "netgear_soap":
+        action_name = "Reboot Orbi Router (SOAP)"
+    elif method == "tasmota":
+        action_name = "Power-Cycle via Tasmota Plug"
+    elif method == "shelly":
+        action_name = "Power-Cycle via Shelly Plug"
+    elif method == "kasa":
+        action_name = "Power-Cycle via Kasa Plug"
+    else:
+        action_name = f"Reboot via {method}"
+
+    # 2. Safety check parameters
+    stats = attempt_stats(db)
+    reboots_today = stats.get("reboots_today", 0)
+    max_per_day = cfg.get("max_per_day", 4)
+    daily_ok = reboots_today < max_per_day if max_per_day > 0 else True
+
+    # Cooldown check
+    last_reboot_at = stats.get("last_reboot_at")
+    cooldown_ok = True
+    cooldown_remaining = 0
+    if last_reboot_at:
+        last_reboot = _aware(last_reboot_at)
+        cooldown_s = cfg.get("cooldown_s", 600)
+        elapsed = (now - last_reboot).total_seconds()
+        if elapsed < cooldown_s:
+            cooldown_ok = False
+            cooldown_remaining = int(cooldown_s - elapsed)
+
+    # Gateway reachability check
+    last_probe = _STATE.get("last_probe")
+    gateway_up = last_probe.get("gateway_up", True) if last_probe else True
+    gateway_host = cfg.get("router_host", "192.168.1.1")
+
+    # Offline state
+    is_offline = _STATE["offline_since"] is not None
+    offline_since = _STATE["offline_since"]
+    offline_for_s = (now - offline_since).total_seconds() if offline_since else None
+
+    # 3. Diagnosis string
+    if is_offline:
+        # Mock probe result for diagnosis helper
+        pr = {"gateway_up": gateway_up}
+        diagnosis = diagnose(db, pr, offline_for_s, cfg)
+    else:
+        diagnosis = "All systems healthy. No active outages or self-healing actions required at this time."
+
+    return {
+        "proposed_action": action_name,
+        "diagnosis": diagnosis,
+        "is_offline": is_offline,
+        "safety_checks": [
+            {
+                "name": "Daily Reboot Cap",
+                "passed": bool(daily_ok),
+                "detail": f"{reboots_today} of {max_per_day} used" if max_per_day > 0 else "No limit set"
+            },
+            {
+                "name": "Cooldown Period",
+                "passed": bool(cooldown_ok),
+                "detail": "Ready" if cooldown_ok else f"{cooldown_remaining // 60}m {cooldown_remaining % 60}s remaining"
+            },
+            {
+                "name": "LAN Gateway Ping",
+                "passed": bool(gateway_up),
+                "detail": f"Gateway ({gateway_host}) responding" if gateway_up else f"Gateway ({gateway_host}) unreachable"
+            },
+            {
+                "name": "Guardian Armed Status",
+                "passed": bool(cfg.get("enabled", False)),
+                "detail": "Armed" if cfg.get("enabled", False) else "Disabled (Manual only)"
+            }
+        ]
+    }
+

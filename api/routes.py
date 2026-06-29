@@ -913,6 +913,7 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
         "target_count": len(targets),
         "path_count": len(paths),
         "paths": paths,
+        "verified_paths": paths,
         "assumptions": [
             "Every path starts from a device with an actual CVE match we found — nothing here is a guess.",
             "This is a planning aid only; it does not prove compromise and does not execute exploit code.",
@@ -5345,7 +5346,7 @@ _AUTOHEAL_KEYS = {
 def autoheal_status(db: Session = Depends(get_db)):
     """Uptime Guardian status — config (password redacted), live outage state,
     recent events, and reboot stats."""
-    from monitoring.autoheal import get_config, _STATE, attempt_stats, build_storyline, group_events_into_incidents
+    from monitoring.autoheal import get_config, _STATE, attempt_stats, build_storyline, group_events_into_incidents, get_playbook
     from monitoring.uptime_stats import get_uptime_stats
 
     cfg = get_config(db)
@@ -5373,6 +5374,7 @@ def autoheal_status(db: Session = Depends(get_db)):
 
     stats = attempt_stats(db)
     uptime = get_uptime_stats(db)
+    playbook = get_playbook(db)
 
     return {
         "config": safe_cfg,
@@ -5388,6 +5390,7 @@ def autoheal_status(db: Session = Depends(get_db)):
                   "uptime": uptime},
         "events": events,
         "incidents": incidents,
+        "playbook": playbook,
     }
 
 

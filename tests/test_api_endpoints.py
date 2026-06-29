@@ -4,6 +4,8 @@ Standardized unit and integration tests for NetMon FastAPI API routes.
 import os
 import sys
 import unittest
+import json
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
 
 from fastapi.testclient import TestClient
@@ -15,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.main import app
 from app.database import get_db, Base
-from models.tables import Setting, Device, ScanDevice, Scan
+from models.tables import Setting, Device, ScanDevice, Scan, ActivityLog
 from scanner.parser import parse_nmap_xml
 
 
@@ -244,6 +246,123 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(path["target"]["ip"], "192.168.1.30")
         self.assertGreaterEqual(len(path["steps"]), 3)
         self.assertGreaterEqual(len(path["mitigations"]), 1)
+
+    def test_autoheal_status_includes_playbook_and_redacts_secrets(self):
+        import monitoring.autoheal as ah
+
+        original_state = dict(ah._STATE)
+        now = datetime.now(timezone.utc)
+        try:
+            self.db.add_all([
+                Setting(key="autoheal_enabled", value="true"),
+                Setting(key="autoheal_dry_run", value="false"),
+                Setting(key="autoheal_reboot_method", value="tasmota"),
+                Setting(key="autoheal_router_host", value="192.168.1.1"),
+                Setting(key="autoheal_router_user", value="admin"),
+                Setting(key="autoheal_router_pass", value="super-secret"),
+                Setting(key="autoheal_router_ssl", value="false"),
+                Setting(key="autoheal_cooldown_min", value="10"),
+                Setting(key="autoheal_max_reboots_per_day", value="1"),
+                Setting(key="autoheal_max_reboots_per_outage", value="1"),
+                Setting(key="autoheal_smartplug_method", value="none"),
+                Setting(key="autoheal_smartplug_pass", value="plug-secret"),
+            ])
+            self.db.add(ActivityLog(
+                category="autoheal",
+                event=ah.EV_DRYRUN,
+                level="action",
+                summary="DRY-RUN: would reboot.",
+                detail=json.dumps({"gateway_up": False}),
+                created_at=now - timedelta(minutes=2),
+            ))
+            self.db.commit()
+
+            ah._STATE.update({
+                "offline_since": now - timedelta(minutes=12),
+                "consecutive_offline": 4,
+                "rebooted_this_outage": True,
+                "gave_up": False,
+                "outage_announced": True,
+                "last_probe": {"gateway_up": False},
+            })
+
+            response = self.client.get("/api/autoheal")
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+
+            self.assertIn("config", data)
+            self.assertNotIn("router_pass", data["config"])
+            self.assertNotIn("smartplug_pass", data["config"])
+
+            self.assertIn("state", data)
+            self.assertTrue(data["state"]["offline"])
+            self.assertEqual(data["state"]["consecutive_offline"], 4)
+            self.assertTrue(data["state"]["rebooted_this_outage"])
+
+            playbook = data["playbook"]
+            self.assertEqual(playbook["proposed_action"], "Power-Cycle via Tasmota Plug")
+            self.assertTrue(playbook["is_offline"])
+            self.assertIn("router/gateway is not answering on the LAN either", playbook["diagnosis"])
+            self.assertEqual(
+                [check["name"] for check in playbook["safety_checks"]],
+                ["Daily Reboot Cap", "Cooldown Period", "LAN Gateway Ping", "Guardian Armed Status"],
+            )
+            self.assertFalse(playbook["safety_checks"][0]["passed"])
+            self.assertEqual(playbook["safety_checks"][0]["detail"], "1 of 1 used")
+            self.assertFalse(playbook["safety_checks"][1]["passed"])
+            self.assertIn("remaining", playbook["safety_checks"][1]["detail"])
+            self.assertFalse(playbook["safety_checks"][2]["passed"])
+            self.assertTrue(playbook["safety_checks"][3]["passed"])
+        finally:
+            ah._STATE.clear()
+            ah._STATE.update(original_state)
+
+    def test_autoheal_status_unknown_method_and_zero_daily_cap(self):
+        import monitoring.autoheal as ah
+
+        original_state = dict(ah._STATE)
+        try:
+            self.db.add_all([
+                Setting(key="autoheal_enabled", value="false"),
+                Setting(key="autoheal_reboot_method", value="weirdbox"),
+                Setting(key="autoheal_max_reboots_per_day", value="0"),
+                Setting(key="autoheal_router_port", value="abc"),
+            ])
+            self.db.commit()
+
+            ah._reset_state()
+            ah._STATE["last_probe"] = None
+
+            response = self.client.get("/api/autoheal")
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            playbook = data["playbook"]
+
+            self.assertEqual(playbook["proposed_action"], "Reboot via weirdbox")
+            self.assertEqual(playbook["diagnosis"], "All systems healthy. No active outages or self-healing actions required at this time.")
+            self.assertTrue(playbook["safety_checks"][0]["passed"])
+            self.assertEqual(playbook["safety_checks"][0]["detail"], "No limit set")
+            self.assertTrue(playbook["safety_checks"][1]["passed"])
+            self.assertEqual(playbook["safety_checks"][1]["detail"], "Ready")
+            self.assertTrue(playbook["safety_checks"][2]["passed"])
+            self.assertEqual(playbook["safety_checks"][2]["detail"], "Gateway (192.168.1.1) responding")
+            self.assertFalse(playbook["safety_checks"][3]["passed"])
+        finally:
+            ah._STATE.clear()
+            ah._STATE.update(original_state)
+
+    def test_uptime_guardian_component_renders_action_card_contract(self):
+        from pathlib import Path
+
+        source = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "sections" / "UptimeGuardian.tsx"
+        text = source.read_text(encoding="utf-8")
+        self.assertIn("AI-Driven Self-Healing Playbook", text)
+        self.assertIn("Proposed Healing Action", text)
+        self.assertIn("Safety Check Pre-requisites", text)
+        self.assertIn("data?.playbook", text)
+        self.assertIn("data.playbook.safety_checks?.map", text)
+        self.assertIn("Execute Action", text)
+        self.assertNotIn("Internet outage detected", text)
 
     def test_attack_graph_option_uses_echarts_graph_data_array(self):
         from pathlib import Path
