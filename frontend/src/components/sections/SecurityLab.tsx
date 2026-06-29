@@ -1298,7 +1298,7 @@ function LeastResistancePanel({ data, loading, onRefresh }: { data: any; loading
     <Card title="Path of Least Resistance" badge={hosts.length ? String(hosts.length) : undefined}
       action={<Btn variant="ghost" size="sm" loading={loading} onClick={onRefresh}>Refresh</Btn>}>
       <p className="text-xs text-gray-400 mb-4 leading-relaxed">
-        This report analyzes every discovered host in your network scan, mapping its open ports automatically to known CVEs, and outlines the easiest route (Path of Least Resistance) an attacker would take to compromise the host.
+        This report analyzes every discovered host in your network scan, mapping its detected services and versions to known CVEs, and outlines the easiest route (Path of Least Resistance) an attacker would take to compromise the host.
       </p>
 
       {hosts.length === 0 ? (

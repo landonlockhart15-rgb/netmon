@@ -135,6 +135,59 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(devices[0]["services"][0]["product"], "Apache httpd")
         self.assertEqual(devices[0]["vulnerabilities"][0]["cve"], "CVE-2021-41773")
 
+    def test_map_service_vulnerabilities_conservative_extended(self):
+        # 1. Heartbleed (CVE-2014-0160) - OpenSSL 1.0.1e
+        xml_heartbleed = """<?xml version="1.0"?>
+        <nmaprun><host>
+          <status state="up"/>
+          <address addr="192.168.1.10" addrtype="ipv4"/>
+          <ports><port protocol="tcp" portid="443">
+            <state state="open"/>
+            <service name="https" product="OpenSSL" version="1.0.1e"/>
+          </port></ports>
+        </host></nmaprun>"""
+        devices = parse_nmap_xml(xml_heartbleed)
+        self.assertEqual(devices[0]["vulnerabilities"][0]["cve"], "CVE-2014-0160")
+
+        # 2. EternalBlue (CVE-2017-0144) - Microsoft Windows 7 SMB
+        xml_eternal = """<?xml version="1.0"?>
+        <nmaprun><host>
+          <status state="up"/>
+          <address addr="192.168.1.10" addrtype="ipv4"/>
+          <ports><port protocol="tcp" portid="445">
+            <state state="open"/>
+            <service name="microsoft-ds" product="Microsoft Windows 7 microsoft-ds"/>
+          </port></ports>
+        </host></nmaprun>"""
+        devices = parse_nmap_xml(xml_eternal)
+        self.assertEqual(devices[0]["vulnerabilities"][0]["cve"], "CVE-2017-0144")
+
+        # 3. BlueKeep (CVE-2019-0708) - Microsoft Windows 7 RDP
+        xml_bluekeep = """<?xml version="1.0"?>
+        <nmaprun><host>
+          <status state="up"/>
+          <address addr="192.168.1.10" addrtype="ipv4"/>
+          <ports><port protocol="tcp" portid="3389">
+            <state state="open"/>
+            <service name="ms-wbt-server" product="Microsoft Windows 7 RDP"/>
+          </port></ports>
+        </host></nmaprun>"""
+        devices = parse_nmap_xml(xml_bluekeep)
+        self.assertEqual(devices[0]["vulnerabilities"][0]["cve"], "CVE-2019-0708")
+
+        # 4. Conservative check: Linux running Samba on 445 should NOT map to EternalBlue
+        xml_samba = """<?xml version="1.0"?>
+        <nmaprun><host>
+          <status state="up"/>
+          <address addr="192.168.1.10" addrtype="ipv4"/>
+          <ports><port protocol="tcp" portid="445">
+            <state state="open"/>
+            <service name="microsoft-ds" product="Samba smbd" version="4.15.13"/>
+          </port></ports>
+        </host></nmaprun>"""
+        devices = parse_nmap_xml(xml_samba)
+        self.assertEqual(len(devices[0]["vulnerabilities"]), 0)
+
     def test_parse_nmap_xml_maps_vulners_cves(self):
         # nmap --script vulners embeds CVEs as a <script id="vulners"> table.
         xml = """<?xml version="1.0"?>
@@ -253,8 +306,8 @@ class TestAPIEndpoints(unittest.TestCase):
         sd = ScanDevice(
             id=1, scan_id=1, device_id=1, ip="192.168.1.20",
             hostname="garage-cam", open_ports="[445]",
-            services_json='[]',
-            cves_json='[]',
+            services_json='[{"port":445,"service":"microsoft-ds"}]',
+            cves_json='[{"cve":"CVE-2017-0144","risk":"critical","title":"Microsoft Windows SMB Remote Code Execution (EternalBlue)","port":445,"service":"microsoft-ds","recommendation":"Apply security update MS17-010 and disable SMBv1.","source":"vulners"}]',
         )
         self.db.add(scan)
         self.db.add(dev)
@@ -272,7 +325,7 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(host["open_ports"], [445])
         self.assertEqual(len(host["mapped_cves"]), 1)
         self.assertEqual(host["mapped_cves"][0]["cve"], "CVE-2017-0144")
-        self.assertEqual(host["mapped_cves"][0]["source"], "port-heuristic")
+        self.assertEqual(host["mapped_cves"][0]["source"], "vulners")
         self.assertEqual(
             [step["title"] for step in host["least_resistance_path"]["steps"]],
             ["LAN Reconnaissance", "Service Exploitation", "Host Compromise"],

@@ -948,128 +948,16 @@ def get_least_resistance_report(current_only: bool = True, db: Session = Depends
     gateway = _gateway_ip(db)
     hosts_report = []
 
-    # Heuristic mapping for open ports when no specific CVE banner is found
-    PORT_CVE_REFS = [
-        {
-            "port": 21,
-            "service": "ftp",
-            "cve": "CVE-2011-2523",
-            "risk": "critical",
-            "title": "vsftpd 2.3.4 Backdoor Remote Code Execution",
-            "recommendation": "Replace vsftpd with a secure, current FTP server daemon, or disable FTP entirely.",
-            "exploit_available": True
-        },
-        {
-            "port": 22,
-            "service": "ssh",
-            "cve": "CVE-2016-0777",
-            "risk": "high",
-            "title": "OpenSSH Roaming Information Leak (CVE-2016-0777)",
-            "recommendation": "Upgrade OpenSSH and set 'UseRoaming no' in ssh_config.",
-            "exploit_available": True
-        },
-        {
-            "port": 23,
-            "service": "telnet",
-            "cve": "CVE-2022-24426",
-            "risk": "high",
-            "title": "Telnet Cleartext Transmission Vulnerability",
-            "recommendation": "Disable Telnet daemon. Migrate all remote access to encrypted SSH protocol.",
-            "exploit_available": False
-        },
-        {
-            "port": 80,
-            "service": "http",
-            "cve": "CVE-2021-41773",
-            "risk": "critical",
-            "title": "Apache httpd Path Traversal / File Disclosure",
-            "recommendation": "Upgrade Apache httpd to 2.4.51 or newer.",
-            "exploit_available": True
-        },
-        {
-            "port": 443,
-            "service": "https",
-            "cve": "CVE-2014-0160",
-            "risk": "high",
-            "title": "OpenSSL Heartbleed Information Leak",
-            "recommendation": "Upgrade OpenSSL to a non-vulnerable version and regenerate SSL certificates.",
-            "exploit_available": True
-        },
-        {
-            "port": 445,
-            "service": "microsoft-ds",
-            "cve": "CVE-2017-0144",
-            "risk": "critical",
-            "title": "Microsoft Windows SMB Remote Code Execution (EternalBlue)",
-            "recommendation": "Apply security update MS17-010 and disable SMBv1.",
-            "exploit_available": True
-        },
-        {
-            "port": 3389,
-            "service": "ms-wbt-server",
-            "cve": "CVE-2019-0708",
-            "risk": "critical",
-            "title": "Microsoft RDP Remote Code Execution (BlueKeep)",
-            "recommendation": "Install OS security updates and restrict RDP access using Network Level Authentication (NLA).",
-            "exploit_available": True
-        },
-        {
-            "port": 5900,
-            "service": "vnc",
-            "cve": "CVE-2006-2369",
-            "risk": "high",
-            "title": "RealVNC Authentication Bypass Vulnerability",
-            "recommendation": "Upgrade RealVNC or implement firewall restrictions on VNC port.",
-            "exploit_available": True
-        },
-        {
-            "port": 8080,
-            "service": "http-alt",
-            "cve": "CVE-2024-21626",
-            "risk": "high",
-            "title": "HTTP Alt Console Remote Code Execution Risk",
-            "recommendation": "Disable exposure of alt HTTP ports or configure strong authentication.",
-            "exploit_available": True
-        }
-    ]
-
     for dev in devices:
         latest_sd = db.query(ScanDevice).filter(ScanDevice.device_id == dev.id).order_by(desc(ScanDevice.id)).first()
         if not latest_sd:
             continue
-        
+
         # Get actual parsed CVEs if available
         cve_row = _latest_scan_device_with_cves(db, dev.id)
-        cves = cve_row.cves_list if cve_row else []
-        
-        # Convert list of CVE dicts to maintain a set of CVE IDs
-        existing_cves = {c.get("cve").upper() for c in cves if c.get("cve")}
-        
-        # Heuristic port mapping
+        mapped_cves = list(cve_row.cves_list) if cve_row and cve_row.cves_list else []
         open_ports = latest_sd.ports_list
-        mapped_cves = list(cves)
-        
-        for p in open_ports:
-            # Find matching port definitions in reference list
-            for ref in PORT_CVE_REFS:
-                if ref["port"] == p:
-                    cve_id = ref["cve"]
-                    if cve_id.upper() not in existing_cves:
-                        existing_cves.add(cve_id.upper())
-                        mapped_cves.append({
-                            "cve": cve_id,
-                            "risk": ref["risk"],
-                            "title": ref["title"],
-                            "service": ref["service"],
-                            "product": ref["service"],
-                            "version": "",
-                            "port": p,
-                            "evidence": f"Port {p} open",
-                            "recommendation": ref["recommendation"],
-                            "exploit_available": ref["exploit_available"],
-                            "source": "port-heuristic"
-                        })
-        
+
         # Sort CVEs by risk rank
         mapped_cves.sort(key=lambda c: (_risk_rank(c.get("risk")), c.get("cve") or ""), reverse=True)
         

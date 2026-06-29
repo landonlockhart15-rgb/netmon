@@ -200,6 +200,49 @@ def map_service_vulnerabilities(service: dict) -> List[dict]:
             "Upgrade OpenSSH to a supported vendor-patched release.",
         ))
 
+    # OpenSSL Heartbleed (CVE-2014-0160)
+    if "openssl" in text and version and version.startswith("1.0.1"):
+        if any(version.endswith(x) for x in ("", "a", "b", "c", "d", "e", "f")):
+            findings.append(_finding(
+                port, service, "CVE-2014-0160", "high",
+                "OpenSSL Heartbleed Information Leak",
+                "Upgrade OpenSSL to a non-vulnerable version and regenerate SSL certificates.",
+            ))
+
+    # EternalBlue (CVE-2017-0144)
+    if ("microsoft-ds" in text or "netbios-ssn" in text or name in ("microsoft-ds", "netbios-ssn")) and "windows" in text:
+        if any(x in text for x in ("7", "xp", "vista", "2003", "2008", "2012", "8.0", "8.1")):
+            findings.append(_finding(
+                port, service, "CVE-2017-0144", "critical",
+                "Microsoft Windows SMB Remote Code Execution (EternalBlue)",
+                "Apply security update MS17-010 and disable SMBv1.",
+            ))
+
+    # BlueKeep (CVE-2019-0708)
+    if ("ms-wbt-server" in text or name == "ms-wbt-server" or port == 3389) and "windows" in text:
+        if any(x in text for x in ("7", "xp", "vista", "2003", "2008")):
+            findings.append(_finding(
+                port, service, "CVE-2019-0708", "critical",
+                "Microsoft RDP Remote Code Execution (BlueKeep)",
+                "Install OS security updates and restrict RDP access using Network Level Authentication (NLA).",
+            ))
+
+    # RealVNC Auth Bypass (CVE-2006-2369)
+    if "realvnc" in text and version and _version_lt(version, "4.1.2"):
+        findings.append(_finding(
+            port, service, "CVE-2006-2369", "high",
+            "RealVNC Authentication Bypass Vulnerability",
+            "Upgrade RealVNC or implement firewall restrictions on VNC port.",
+        ))
+
+    # Telnet Cleartext / CVE-2022-24426
+    if ("telnet" in text or name == "telnet") and "windows" in text:
+        findings.append(_finding(
+            port, service, "CVE-2022-24426", "high",
+            "Telnet Cleartext Transmission Vulnerability",
+            "Disable Telnet daemon. Migrate all remote access to encrypted SSH protocol.",
+        ))
+
     return findings
 
 
