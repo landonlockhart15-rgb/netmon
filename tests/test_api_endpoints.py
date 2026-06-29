@@ -106,7 +106,11 @@ class TestAPIEndpoints(unittest.TestCase):
         # Insert a mock Scan and Device
         scan = Scan(id=1, status="complete")
         device = Device(id=1, mac="00:11:22:33:44:55", vendor="Apple")
-        scan_device = ScanDevice(id=1, scan_id=1, device_id=1, ip="192.168.1.50", hostname="iphone")
+        scan_device = ScanDevice(
+            id=1, scan_id=1, device_id=1, ip="192.168.1.50", hostname="iphone",
+            services_json='[{"name": "http"}]',
+            cves_json='[{"cve": "CVE-2014-0160", "risk": "critical"}]'
+        )
         
         self.db.add(scan)
         self.db.add(device)
@@ -120,6 +124,64 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(len(data["devices"]), 1)
         self.assertEqual(data["devices"][0]["ip"], "192.168.1.50")
         self.assertEqual(data["devices"][0]["vendor"], "Apple")
+        self.assertEqual(data["devices"][0]["vulnerability_count"], 1)
+        self.assertEqual(data["devices"][0]["max_cve_risk"], "critical")
+
+    def test_get_devices_uses_latest_security_snapshot_and_highest_risk(self):
+        """Test GET /api/devices prefers the newest scan and the strongest CVE risk."""
+        old_scan = Scan(
+            id=1,
+            status="complete",
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+        )
+        new_scan = Scan(
+            id=2,
+            status="complete",
+            started_at=datetime.now(timezone.utc),
+        )
+        patched = Device(id=1, mac="00:11:22:33:44:55", vendor="Apple", label="Patched Host")
+        mixed = Device(id=2, mac="00:11:22:33:44:66", vendor="Dell", label="Mixed Host")
+        patched_old = ScanDevice(
+            id=1,
+            scan_id=1,
+            device_id=1,
+            ip="192.168.1.20",
+            hostname="patched-old",
+            services_json='[{"name": "https"}]',
+            cves_json='[{"cve": "CVE-2014-0160", "risk": "critical"}]',
+        )
+        patched_new = ScanDevice(
+            id=2,
+            scan_id=2,
+            device_id=1,
+            ip="192.168.1.20",
+            hostname="patched-new",
+            services_json='[{"name": "https"}]',
+            cves_json='[]',
+        )
+        mixed_sd = ScanDevice(
+            id=3,
+            scan_id=2,
+            device_id=2,
+            ip="192.168.1.21",
+            hostname="mixed-host",
+            services_json='[{"name": "ssh"}]',
+            cves_json='[{"cve": "CVE-0000-1"}, {"cve": "CVE-0000-2", "risk": "low"}, {"cve": "CVE-0000-3", "risk": "High"}]',
+        )
+        self.db.add_all([old_scan, new_scan, patched, mixed, patched_old, patched_new, mixed_sd])
+        self.db.commit()
+
+        response = self.client.get("/api/devices")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["devices"]
+        by_ip = {device["ip"]: device for device in data}
+
+        self.assertEqual(by_ip["192.168.1.20"]["vulnerability_count"], 0)
+        self.assertIsNone(by_ip["192.168.1.20"]["max_cve_risk"])
+        self.assertEqual(by_ip["192.168.1.20"]["hostname"], "patched-new")
+        self.assertEqual(by_ip["192.168.1.21"]["vulnerability_count"], 3)
+        self.assertEqual(by_ip["192.168.1.21"]["max_cve_risk"], "High")
+        self.assertEqual([device["ip"] for device in data], sorted(by_ip.keys()))
 
     def test_parse_nmap_xml_maps_banner_cves(self):
         xml = """<?xml version="1.0"?>

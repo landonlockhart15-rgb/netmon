@@ -40,6 +40,7 @@ from api.routes import (
     _attack_tree_device_summary,
     _attack_risk,
     _attack_step_reasons,
+    _risk_rank,
     _json_list,
     _port_set,
 )
@@ -424,6 +425,19 @@ class TestDatabaseHelpers(unittest.TestCase):
         # as "not severe" instead of raising.
         summary = _attack_tree_device_summary(self.session, device)
         self.assertFalse(summary["has_cve_evidence"])
+
+
+class TestRiskRank(unittest.TestCase):
+    def test_known_severities(self):
+        self.assertEqual(_risk_rank("critical"), 4)
+        self.assertEqual(_risk_rank("HIGH"), 3)
+        self.assertEqual(_risk_rank("medium"), 2)
+        self.assertEqual(_risk_rank("low"), 1)
+
+    def test_unknown_or_malformed_values_fall_back_to_zero(self):
+        self.assertEqual(_risk_rank(None), 0)
+        self.assertEqual(_risk_rank("informational"), 0)
+        self.assertEqual(_risk_rank(3), 0)
 
 
 if __name__ == "__main__":
