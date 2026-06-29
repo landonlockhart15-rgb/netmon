@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Router, Laptop, Smartphone, Cpu, Globe, Server, RefreshCw, Activity, HelpCircle, Zap } from 'lucide-react'
+import { Router, Laptop, Smartphone, Cpu, Globe, Server, RefreshCw, Activity, HelpCircle, Zap, ShieldAlert } from 'lucide-react'
 import { getTrafficDashboard, getNetworkInfo, type Device } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -25,6 +25,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
   const [draggedNode, setDraggedNode] = useState<string | null>(null)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const [showInternet, setShowInternet] = useState(true)
+  const [colorMode, setColorMode] = useState<'network' | 'security'>('network')
 
   // Fetch traffic dashboard for conversations
   const { data: dashboard } = useQuery({
@@ -356,6 +357,8 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
       ports: dev.open_ports?.length || 0,
       traffic: formatBytes(devTraffic),
       type: isGateway(dev) ? 'gateway' : 'client',
+      vulnerability_count: dev.vulnerability_count || 0,
+      max_cve_risk: dev.max_cve_risk || null,
       raw: dev
     }
   }, [hoveredNode, devices, conversations])
@@ -434,13 +437,26 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
           const device = isInternet ? undefined : devices.find(d => d.id === Number(deviceId))
           const isGway = device ? isGateway(device) : false
 
+          const isSecurityMode = colorMode === 'security'
+          const risk = device?.max_cve_risk?.toLowerCase()
+
           const glowClass = isInternet
             ? "shadow-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:border-cyan-400"
-            : isGway
-              ? "shadow-purple-500/20 text-purple-400 border-purple-500/30 hover:border-purple-400"
-              : device?.trusted
-                ? "shadow-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:border-emerald-400"
-                : "shadow-amber-500/15 text-amber-400 border-amber-500/30 hover:border-amber-400"
+            : isSecurityMode
+              ? device
+                ? (risk === 'critical' || risk === 'high')
+                  ? "shadow-red-500/25 text-red-400 border-red-500/40 hover:border-red-400 bg-red-950/10"
+                  : risk === 'medium'
+                    ? "shadow-orange-500/20 text-orange-400 border-orange-500/40 hover:border-orange-400 bg-orange-950/10"
+                    : risk === 'low'
+                      ? "shadow-yellow-500/15 text-yellow-400 border-yellow-500/30 hover:border-yellow-400 bg-yellow-950/5"
+                      : "shadow-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:border-emerald-400"
+                : "shadow-purple-500/20 text-purple-400 border-purple-500/30 hover:border-purple-400"
+              : isGway
+                ? "shadow-purple-500/20 text-purple-400 border-purple-500/30 hover:border-purple-400"
+                : device?.trusted
+                  ? "shadow-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:border-emerald-400"
+                  : "shadow-amber-500/15 text-amber-400 border-amber-500/30 hover:border-amber-400"
 
           const isHovered = hoveredNode === id
           const isDragged = draggedNode === id
@@ -499,6 +515,18 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
             <Globe className="w-3.5 h-3.5" />
             {showInternet ? 'WAN: On' : 'WAN: Off'}
           </button>
+
+          <button 
+            onClick={() => setColorMode(colorMode === 'network' ? 'security' : 'network')}
+            className={cn(
+              "px-2 py-1 rounded transition-colors flex items-center gap-1",
+              colorMode === 'security' ? "bg-red-600/20 text-red-400 border border-red-500/20" : "text-gray-400 hover:text-gray-200"
+            )}
+            title="Toggle Security Posture Heatmap"
+          >
+            <ShieldAlert className="w-3.5 h-3.5" />
+            {colorMode === 'security' ? 'Heatmap: On' : 'Heatmap: Off'}
+          </button>
           
           <button
             onClick={resetLayout}
@@ -553,6 +581,17 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
                     <div className="flex justify-between"><span className="text-gray-500">Vendor:</span> <span className="truncate max-w-[150px] text-gray-300">{hoveredNodeInfo.vendor}</span></div>
                     <div className="flex justify-between"><span className="text-gray-500">OS Guess:</span> <span className="truncate max-w-[150px] text-gray-300">{hoveredNodeInfo.os}</span></div>
                     <div className="flex justify-between"><span className="text-gray-500">Open Ports:</span> <span className="text-gray-300">{hoveredNodeInfo.ports}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">CVE Risk:</span> <span className={cn(
+                      "font-semibold font-mono capitalize",
+                      hoveredNodeInfo.max_cve_risk === 'critical' || hoveredNodeInfo.max_cve_risk === 'high'
+                        ? 'text-red-400'
+                        : hoveredNodeInfo.max_cve_risk === 'medium'
+                          ? 'text-orange-400'
+                          : hoveredNodeInfo.max_cve_risk === 'low'
+                            ? 'text-yellow-400'
+                            : 'text-emerald-400'
+                    )}>{hoveredNodeInfo.max_cve_risk || 'None'}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">Vulnerabilities:</span> <span className="text-gray-300 font-mono">{hoveredNodeInfo.vulnerability_count || 0}</span></div>
                   </>
                 )}
                 {hoveredNodeInfo.details && (
@@ -587,23 +626,48 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
 
         {/* Legend */}
         <div className="bg-[#1a1a2e]/60 border border-white/5 rounded-xl p-3.5 text-[11px] space-y-2 text-gray-400">
-          <div className="font-semibold text-gray-300 mb-1.5 uppercase tracking-wider text-[10px]">Topology Legend</div>
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 shadow-[0_0_6px_#22d3ee]" />
-            <span>Internet WAN Gateway</span>
+          <div className="font-semibold text-gray-300 mb-1.5 uppercase tracking-wider text-[10px]">
+            {colorMode === 'security' ? 'Security Legend' : 'Topology Legend'}
           </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-purple-400 shadow-[0_0_6px_#a78bfa]" />
-            <span>Central Switch/Router Gateway</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399]" />
-            <span>Trusted Device (Verified)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shadow-[0_0_6px_#fbbf24]" />
-            <span>Unknown Device (Unverified)</span>
-          </div>
+          {colorMode === 'security' ? (
+            <>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_6px_#ef4444]" />
+                <span>Critical / High Risk Exploit</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-orange-500 shadow-[0_0_6px_#f97316]" />
+                <span>Medium Risk Vulnerability</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-yellow-400 shadow-[0_0_6px_#facc15]" />
+                <span>Low Risk Vulnerability</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399]" />
+                <span>Patched / Secure Device</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 shadow-[0_0_6px_#22d3ee]" />
+                <span>Internet WAN Gateway</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-purple-400 shadow-[0_0_6px_#a78bfa]" />
+                <span>Central Switch/Router Gateway</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399]" />
+                <span>Trusted Device (Verified)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shadow-[0_0_6px_#fbbf24]" />
+                <span>Unknown Device (Unverified)</span>
+              </div>
+            </>
+          )}
           <div className="flex items-center gap-2 border-t border-white/5 pt-2 mt-1">
             <span className="w-6 border-t border-dashed border-gray-600" />
             <span>Static physical link</span>

@@ -348,6 +348,8 @@ export interface Device {
   open_ports: number[]
   os_guess: string | null
   is_new?: boolean
+  vulnerability_count?: number
+  max_cve_risk?: string | null
 }
 
 export interface LearningLesson {
