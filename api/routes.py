@@ -5441,15 +5441,17 @@ def autoheal_simulate(body: dict = None, db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
     recovered_at = now - timedelta(seconds=cfg["recovery_window_s"] + 10)
     scenarios = [
-        ("Brief blip (not yet confirmed)", False, True, 1, 0, None),
-        ("Confirmed outage, gateway reachable", False, True, cfg["confirm_checks"], 0, None),
-        ("Confirmed outage, gateway also down", False, False, cfg["confirm_checks"], 0, None),
-        ("Rebooted once, still down past recovery window", False, True, cfg["confirm_checks"] + 5, 1, recovered_at),
-        ("Back online", True, True, 0, 0, None),
+        ("Brief blip (not yet confirmed)", False, True, 1, 0, None, False, 0),
+        ("Confirmed outage, gateway reachable", False, True, cfg["confirm_checks"], 0, None, False, 0),
+        ("Confirmed outage, gateway also down", False, False, cfg["confirm_checks"], 0, None, False, 0),
+        ("Rebooted once, still down past recovery window", False, True, cfg["confirm_checks"] + 5, 1, recovered_at, False, 0),
+        ("DNS blackout, raw IP still works", True, True, 0, 0, None, True, cfg["confirm_checks"]),
+        ("Back online", True, True, 0, 0, None, False, 0),
     ]
     out = []
-    for label, inet, gw, consec, reboots, last_at in scenarios:
-        d = decide(internet_up=inet, gateway_up=gw, consecutive_offline=consec, cfg=cfg,
+    for label, inet, gw, consec, reboots, last_at, dns_blackout, dns_checks in scenarios:
+        d = decide(internet_up=inet, gateway_up=gw, dns_blackout=dns_blackout, dns_blackout_checks=dns_checks,
+                   consecutive_offline=consec, cfg=cfg,
                    reboots_in_outage=reboots, reboots_today=reboots, last_attempt_at=last_at, now=now)
         out.append({"scenario": label, "decision": d})
     return {"dry_run": cfg["dry_run"], "enabled": cfg["enabled"], "scenarios": out}

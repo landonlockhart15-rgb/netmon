@@ -33,13 +33,14 @@ from models.tables import Setting, ActivityLog
 # Events we write to ActivityLog (category="autoheal")
 EV_REBOOT      = "router_reboot"          # real reboot attempt (success/fail in detail)
 EV_DRYRUN      = "router_reboot_dryrun"   # dry-run "would have rebooted"
+EV_DNS_BLACKOUT = "dns_blackout_detected"
 EV_RECOVERED   = "recovered"
 EV_GIVEUP      = "giveup"
 EV_OUTAGE      = "outage_detected"
 EV_RESET       = "reboot_counter_reset"
 # Attempts that count against caps/cooldown (real + dry-run, so dry-run behaves identically)
 _ATTEMPT_EVENTS = (EV_REBOOT, EV_DRYRUN)
-_STORY_EVENTS = {EV_OUTAGE, EV_DRYRUN, EV_REBOOT, EV_RECOVERED, EV_GIVEUP, EV_RESET}
+_STORY_EVENTS = {EV_OUTAGE, EV_DRYRUN, EV_REBOOT, EV_RECOVERED, EV_GIVEUP, EV_RESET, EV_DNS_BLACKOUT}
 
 # Short-term, in-process outage tracking. Persisted reboot history (ActivityLog)
 # is the source of truth for caps; this just tracks the *current* outage so we
@@ -51,6 +52,9 @@ _STATE: dict = {
     "gave_up": False,
     "outage_announced": False,
     "last_probe": None,           # last probe result dict
+    "dns_blackout_since": None,
+    "consecutive_dns_failures": 0,
+    "dns_soft_heal_attempted": False,
     "cached_ai_diagnosis": None,
     "ai_diagnosis_in_progress": False,
     "ai_diagnosis_for_offline_since": None,
@@ -58,6 +62,15 @@ _STATE: dict = {
 
 
 def _reset_state() -> None:
+    _STATE.update(offline_since=None, consecutive_offline=0,
+                  rebooted_this_outage=False, gave_up=False, outage_announced=False,
+                  dns_blackout_since=None, consecutive_dns_failures=0, dns_soft_heal_attempted=False,
+                  cached_ai_diagnosis=None, ai_diagnosis_in_progress=False,
+                  ai_diagnosis_for_offline_since=None)
+
+
+def _clear_internet_outage_state() -> None:
+    """Forget only the hard-outage state while preserving DNS-blackout tracking."""
     _STATE.update(offline_since=None, consecutive_offline=0,
                   rebooted_this_outage=False, gave_up=False, outage_announced=False,
                   cached_ai_diagnosis=None, ai_diagnosis_in_progress=False,
@@ -130,7 +143,7 @@ def get_config(db) -> dict:
 def probe(cfg: dict) -> dict:
     """Fresh connectivity probe. internet_up = ANY internet target reachable;
     gateway_up = the router itself answers. Fast (2 packets each)."""
-    from monitoring.health import run_ping
+    from monitoring.health import run_dns_lookup, run_ping
 
     internet_up = False
     internet_latency = None
@@ -143,12 +156,20 @@ def probe(cfg: dict) -> dict:
 
     gw = run_ping(target=cfg["router_host"], count=2, warn_loss_pct=50.0)
     gateway_up = gw["status"] != "offline"
+    dns_probe = {"status": "unknown", "target": None, "resolved_ips": [], "error": None}
+    if internet_up:
+        dns_probe = run_dns_lookup()
+    dns_ok = None if dns_probe["status"] == "unknown" else dns_probe["status"] != "offline"
 
     return {
         "internet_up": internet_up,
         "gateway_up": gateway_up,
         "internet_latency_ms": internet_latency,
         "gateway_latency_ms": gw["latency_ms"],
+        "dns_ok": dns_ok,
+        "dns_target": dns_probe.get("target"),
+        "dns_resolved_ips": dns_probe.get("resolved_ips", []),
+        "dns_error": dns_probe.get("error"),
     }
 
 
@@ -158,6 +179,8 @@ def decide(
     *,
     internet_up: bool,
     gateway_up: bool,
+    dns_blackout: bool,
+    dns_blackout_checks: int,
     consecutive_offline: int,
     cfg: dict,
     reboots_in_outage: int,
@@ -170,6 +193,8 @@ def decide(
 
     action ∈ {
       "online"           internet is up — nothing to do
+      "confirming_dns"   IP reachability is fine but DNS still needs confirmation
+      "dns_blackout"     DNS is confirmed broken — try a safe local DNS reset
       "confirming"       offline but not yet sustained long enough to act
       "awaiting_recovery" we recently rebooted; give the router time to boot
       "cooldown"         within the min gap between reboot attempts
@@ -177,6 +202,18 @@ def decide(
       "giveup"           reboot(s) didn't help or caps hit → stop, notify
     }
     """
+    if internet_up and dns_blackout:
+        if dns_blackout_checks < cfg["confirm_checks"]:
+            return {
+                "action": "confirming_dns",
+                "have": dns_blackout_checks,
+                "need": cfg["confirm_checks"],
+            }
+        return {
+            "action": "dns_blackout",
+            "reason": "Raw IP connectivity is working, but DNS lookups are failing. Try a safe DNS reset before rebooting the router.",
+        }
+
     if internet_up:
         return {"action": "online"}
 
@@ -213,7 +250,10 @@ def diagnose(db, probe_result: dict, offline_for_s: Optional[float], cfg: dict) 
     """Plain-English diagnosis. Deterministic base; optionally enriched by the
     local model when AI is enabled. Never blocks the heal flow."""
     mins = f"{offline_for_s/60:.1f} min" if offline_for_s else "unknown"
-    if probe_result["gateway_up"]:
+    if probe_result.get("internet_up") and probe_result.get("dns_ok") is False:
+        base = (f"Raw IP connectivity is still working, but DNS lookups have been failing for ~{mins}. "
+                "This looks like a DNS blackout, so try a safe DNS reset before escalating to a router reboot.")
+    elif probe_result["gateway_up"]:
         base = (f"Internet unreachable for ~{mins}, but the router/gateway is responding on the LAN. "
                 "This is the classic 'router needs a kick' case a reboot usually fixes (and resyncs the cable modem).")
     else:
@@ -262,7 +302,7 @@ def _ai_diagnose(probe_result: dict, mins: str) -> Optional[str]:
     model = os.getenv("AI_FAST_MODEL", os.getenv("AI_MODEL", "qwen2.5:3b"))
     prompt = (
         "You are a home-network assistant. The internet is down. "
-        f"Gateway reachable on LAN: {probe_result['gateway_up']}. Offline for ~{mins}. "
+        f"Gateway reachable on LAN: {probe_result['gateway_up']}. DNS OK: {probe_result.get('dns_ok', True)}. Offline for ~{mins}. "
         "In 2 sentences, state the most likely cause and whether rebooting the router will likely help. Be concise."
     )
     payload = json.dumps({"model": model, "prompt": prompt, "stream": False,
@@ -272,6 +312,65 @@ def _ai_diagnose(probe_result: dict, mins: str) -> Optional[str]:
     with urllib.request.urlopen(req, timeout=20) as resp:
         data = json.loads(resp.read().decode())
     return (data.get("response") or "").strip() or None
+
+
+def _soft_heal_dns(db) -> dict:
+    """
+    Safe local DNS repair attempt.
+
+    Phase 1 only restarts the local DNS blocker if it is enabled. That is a
+    low-risk recovery step that can clear a stuck upstream resolver without
+    dropping the LAN. If the blocker is disabled, we leave the network alone.
+    """
+    dns_enabled = _get(db, "dns_blocker_enabled", "false") == "true"
+    upstream = _get(db, "dns_upstream", "8.8.8.8")
+
+    if not dns_enabled:
+        return {
+            "attempted": False,
+            "success": False,
+            "summary": "DNS blackout detected, but the DNS blocker is disabled so no safe local reset was available.",
+            "detail": {"dns_blocker_enabled": False, "upstream": upstream},
+        }
+
+    try:
+        from dns_blocker import server as dns_srv
+    except Exception as exc:
+        return {
+            "attempted": False,
+            "success": False,
+            "summary": "DNS blackout detected, but the DNS blocker control path is unavailable.",
+            "detail": {"dns_blocker_enabled": True, "upstream": upstream, "error": str(exc)},
+        }
+
+    restarted = False
+    error = None
+    try:
+        if dns_srv.is_running():
+            dns_srv.stop()
+        restarted = bool(dns_srv.start(upstream=upstream))
+        if not restarted:
+            error = "DNS blocker failed to restart"
+    except Exception as exc:
+        error = str(exc)
+        restarted = False
+
+    summary = (
+        f"DNS blackout detected, so the local DNS blocker was restarted against upstream {upstream}."
+        if restarted else
+        "DNS blackout detected, but the local DNS blocker restart failed."
+    )
+    return {
+        "attempted": True,
+        "success": restarted,
+        "summary": summary,
+        "detail": {
+            "dns_blocker_enabled": True,
+            "upstream": upstream,
+            "restarted": restarted,
+            "error": error,
+        },
+    }
 
 
 # ── Persisted reboot history (caps survive restarts) ──────────────────────────
@@ -379,6 +478,10 @@ def _storyline_for_event(event: str, summary: str, detail: dict | str | None, pr
         if not steps:
             steps = ["Detected sustained internet drop"]
         steps.append("Stopped automatic rebooting after safety limits")
+    elif event == EV_DNS_BLACKOUT:
+        if not steps:
+            steps = ["Detected DNS blackout"]
+        steps.append("Prepared a safe local DNS reset before any router reboot")
     elif event == EV_RESET:
         steps = ["Reboot safety counter reset"]
     else:
@@ -623,9 +726,10 @@ def run_cycle(db=None, probe_fn=None) -> dict:
         pr = (probe_fn or probe)(cfg)
         _STATE["last_probe"] = pr
         now = datetime.now(timezone.utc)
+        dns_blackout = bool(pr.get("internet_up") and pr.get("dns_ok") is False)
 
         # ── Recovered / healthy ──────────────────────────────────────────────
-        if pr["internet_up"]:
+        if pr["internet_up"] and not dns_blackout:
             was_offline = _STATE["offline_since"] is not None
             rebooted = _STATE["rebooted_this_outage"]
             outage_started = _STATE["offline_since"]
@@ -637,7 +741,69 @@ def run_cycle(db=None, probe_fn=None) -> dict:
                 _emit(EV_RECOVERED, "info", msg, {"downtime_s": round(downtime) if downtime else None}, notify=True)
             return {"action": "online", "recovered": was_offline}
 
+        # ── DNS blackout while raw IP reachability still works ──────────────
+        if dns_blackout:
+            if _STATE["offline_since"] is not None:
+                _clear_internet_outage_state()
+            if _STATE["dns_blackout_since"] is None:
+                _STATE["dns_blackout_since"] = now
+                _STATE["consecutive_dns_failures"] = 1
+            else:
+                _STATE["consecutive_dns_failures"] += 1
+
+            dns_blackout_since = _STATE["dns_blackout_since"] or now
+            dns_blackout_for_s = (now - dns_blackout_since).total_seconds()
+            decision = decide(
+                internet_up=True, gateway_up=pr["gateway_up"],
+                dns_blackout=True, dns_blackout_checks=_STATE["consecutive_dns_failures"],
+                consecutive_offline=0, cfg=cfg,
+                reboots_in_outage=0, reboots_today=len(_attempts_since(db, now.replace(hour=0, minute=0, second=0, microsecond=0))),
+                last_attempt_at=None, now=now,
+            )
+            action = decision["action"]
+            if action == "confirming_dns":
+                decision.update(
+                    dns_blackout=True,
+                    dns_blackout_for_s=round(dns_blackout_for_s),
+                    gateway_up=pr["gateway_up"],
+                    dns_ok=False,
+                    dns_target=pr.get("dns_target"),
+                    dns_error=pr.get("dns_error"),
+                )
+                return decision
+
+            if action == "dns_blackout":
+                if not _STATE["dns_soft_heal_attempted"]:
+                    _STATE["dns_soft_heal_attempted"] = True
+                    heal = _soft_heal_dns(db)
+                    _emit(
+                        EV_DNS_BLACKOUT,
+                        "action" if heal["success"] else "warning",
+                        heal["summary"],
+                        {
+                            "dns_ok": False,
+                            "dns_target": pr.get("dns_target"),
+                            "dns_resolved_ips": pr.get("dns_resolved_ips", []),
+                            "dns_error": pr.get("dns_error"),
+                            "soft_heal": heal,
+                        },
+                        notify=True,
+                    )
+                    decision["executed"] = heal
+                decision.update(
+                    dns_blackout=True,
+                    dns_blackout_for_s=round(dns_blackout_for_s),
+                    gateway_up=pr["gateway_up"],
+                    dns_ok=False,
+                    dns_target=pr.get("dns_target"),
+                    dns_error=pr.get("dns_error"),
+                )
+                return decision
+
         # ── Internet down: update outage tracking ────────────────────────────
+        _STATE["dns_blackout_since"] = None
+        _STATE["consecutive_dns_failures"] = 0
+        _STATE["dns_soft_heal_attempted"] = False
         if _STATE["offline_since"] is None:
             _STATE["offline_since"] = now
             _STATE["consecutive_offline"] = 1
@@ -654,6 +820,7 @@ def run_cycle(db=None, probe_fn=None) -> dict:
 
         decision = decide(
             internet_up=False, gateway_up=pr["gateway_up"],
+            dns_blackout=False, dns_blackout_checks=0,
             consecutive_offline=_STATE["consecutive_offline"], cfg=cfg,
             reboots_in_outage=reboots_in_outage, reboots_today=reboots_today,
             last_attempt_at=last_attempt_at, now=now,
@@ -869,14 +1036,22 @@ def get_playbook(db) -> dict:
     last_probe = _STATE.get("last_probe")
     gateway_up = last_probe.get("gateway_up", True) if last_probe else True
     gateway_host = cfg.get("router_host", "192.168.1.1")
+    dns_blackout = bool(last_probe and last_probe.get("internet_up") and last_probe.get("dns_ok") is False)
 
     # Offline state
     is_offline = _STATE["offline_since"] is not None
     offline_since = _STATE["offline_since"]
+    if dns_blackout:
+        is_offline = False
+        offline_since = _STATE["dns_blackout_since"]
     offline_for_s = (now - offline_since).total_seconds() if offline_since else None
 
     # 3. Diagnosis string
-    if is_offline:
+    if dns_blackout:
+        pr = {"internet_up": True, "dns_ok": False, "gateway_up": gateway_up}
+        diagnosis = diagnose(db, pr, offline_for_s, cfg)
+        action_name = "Restart DNS blocker"
+    elif is_offline:
         # Mock probe result for diagnosis helper
         pr = {"gateway_up": gateway_up}
         diagnosis = diagnose(db, pr, offline_for_s, cfg)
@@ -887,6 +1062,7 @@ def get_playbook(db) -> dict:
         "proposed_action": action_name,
         "diagnosis": diagnosis,
         "is_offline": is_offline,
+        "dns_blackout": dns_blackout,
         "safety_checks": [
             {
                 "name": "Daily Reboot Cap",
@@ -903,6 +1079,11 @@ def get_playbook(db) -> dict:
                 "passed": bool(gateway_up),
                 "detail": f"Gateway ({gateway_host}) responding" if gateway_up else f"Gateway ({gateway_host}) unreachable"
             },
+            *([{
+                "name": "DNS Resolution",
+                "passed": False,
+                "detail": "Raw IP connectivity works, but DNS lookups are failing",
+            }] if dns_blackout else []),
             {
                 "name": "Guardian Armed Status",
                 "passed": bool(cfg.get("enabled", False)),
