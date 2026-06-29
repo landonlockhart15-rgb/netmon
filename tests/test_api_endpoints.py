@@ -135,6 +135,59 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(devices[0]["services"][0]["product"], "Apache httpd")
         self.assertEqual(devices[0]["vulnerabilities"][0]["cve"], "CVE-2021-41773")
 
+    def test_map_service_vulnerabilities_conservative_extended(self):
+        # 1. Heartbleed (CVE-2014-0160) - OpenSSL 1.0.1e
+        xml_heartbleed = """<?xml version="1.0"?>
+        <nmaprun><host>
+          <status state="up"/>
+          <address addr="192.168.1.10" addrtype="ipv4"/>
+          <ports><port protocol="tcp" portid="443">
+            <state state="open"/>
+            <service name="https" product="OpenSSL" version="1.0.1e"/>
+          </port></ports>
+        </host></nmaprun>"""
+        devices = parse_nmap_xml(xml_heartbleed)
+        self.assertEqual(devices[0]["vulnerabilities"][0]["cve"], "CVE-2014-0160")
+
+        # 2. EternalBlue (CVE-2017-0144) - Microsoft Windows 7 SMB
+        xml_eternal = """<?xml version="1.0"?>
+        <nmaprun><host>
+          <status state="up"/>
+          <address addr="192.168.1.10" addrtype="ipv4"/>
+          <ports><port protocol="tcp" portid="445">
+            <state state="open"/>
+            <service name="microsoft-ds" product="Microsoft Windows 7 microsoft-ds"/>
+          </port></ports>
+        </host></nmaprun>"""
+        devices = parse_nmap_xml(xml_eternal)
+        self.assertEqual(devices[0]["vulnerabilities"][0]["cve"], "CVE-2017-0144")
+
+        # 3. BlueKeep (CVE-2019-0708) - Microsoft Windows 7 RDP
+        xml_bluekeep = """<?xml version="1.0"?>
+        <nmaprun><host>
+          <status state="up"/>
+          <address addr="192.168.1.10" addrtype="ipv4"/>
+          <ports><port protocol="tcp" portid="3389">
+            <state state="open"/>
+            <service name="ms-wbt-server" product="Microsoft Windows 7 RDP"/>
+          </port></ports>
+        </host></nmaprun>"""
+        devices = parse_nmap_xml(xml_bluekeep)
+        self.assertEqual(devices[0]["vulnerabilities"][0]["cve"], "CVE-2019-0708")
+
+        # 4. Conservative check: Linux running Samba on 445 should NOT map to EternalBlue
+        xml_samba = """<?xml version="1.0"?>
+        <nmaprun><host>
+          <status state="up"/>
+          <address addr="192.168.1.10" addrtype="ipv4"/>
+          <ports><port protocol="tcp" portid="445">
+            <state state="open"/>
+            <service name="microsoft-ds" product="Samba smbd" version="4.15.13"/>
+          </port></ports>
+        </host></nmaprun>"""
+        devices = parse_nmap_xml(xml_samba)
+        self.assertEqual(len(devices[0]["vulnerabilities"]), 0)
+
     def test_parse_nmap_xml_maps_vulners_cves(self):
         # nmap --script vulners embeds CVEs as a <script id="vulners"> table.
         xml = """<?xml version="1.0"?>
@@ -246,6 +299,99 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(path["target"]["ip"], "192.168.1.30")
         self.assertGreaterEqual(len(path["steps"]), 3)
         self.assertGreaterEqual(len(path["mitigations"]), 1)
+
+    def test_least_resistance_endpoint_maps_ports_to_cves(self):
+        scan = Scan(id=1, status="complete")
+        dev = Device(id=1, mac="00:11:22:33:44:55", vendor="Wyze", label="Garage Camera", is_known=False)
+        sd = ScanDevice(
+            id=1, scan_id=1, device_id=1, ip="192.168.1.20",
+            hostname="garage-cam", open_ports="[445]",
+            services_json='[{"port":445,"service":"microsoft-ds"}]',
+            cves_json='[{"cve":"CVE-2017-0144","risk":"critical","title":"Microsoft Windows SMB Remote Code Execution (EternalBlue)","port":445,"service":"microsoft-ds","recommendation":"Apply security update MS17-010 and disable SMBv1.","source":"vulners"}]',
+        )
+        self.db.add(scan)
+        self.db.add(dev)
+        self.db.add(sd)
+        self.db.commit()
+
+        response = self.client.get("/api/security/least-resistance")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["scan"]["id"], 1)
+        self.assertEqual(len(data["hosts"]), 1)
+        host = data["hosts"][0]
+        self.assertEqual(host["ip"], "192.168.1.20")
+        self.assertEqual(host["overall_risk"], "critical")
+        self.assertEqual(host["open_ports"], [445])
+        self.assertEqual(len(host["mapped_cves"]), 1)
+        self.assertEqual(host["mapped_cves"][0]["cve"], "CVE-2017-0144")
+        self.assertEqual(host["mapped_cves"][0]["source"], "vulners")
+        self.assertEqual(
+            [step["title"] for step in host["least_resistance_path"]["steps"]],
+            ["LAN Reconnaissance", "Service Exploitation", "Host Compromise"],
+        )
+        self.assertEqual(len(host["least_resistance_path"]["steps"]), 3)
+
+    def test_least_resistance_endpoint_handles_empty_dataset(self):
+        response = self.client.get("/api/security/least-resistance")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIsNone(data["scan"]["id"])
+        self.assertEqual(data["hosts"], [])
+
+    def test_least_resistance_endpoint_uses_latest_scan_only(self):
+        old_scan = Scan(id=1, status="complete", started_at=datetime.now(timezone.utc) - timedelta(hours=2))
+        new_scan = Scan(id=2, status="complete", started_at=datetime.now(timezone.utc))
+        old_dev = Device(id=1, mac="00:11:22:33:44:55", vendor="Wyze", label="Old Camera", is_known=False)
+        new_dev = Device(id=2, mac="00:11:22:33:44:66", vendor="Dell", label="New Host", is_known=False)
+        old_sd = ScanDevice(
+            id=1, scan_id=1, device_id=1, ip="192.168.1.10",
+            hostname="old-cam", open_ports="[445]",
+            services_json='[{"port":445,"service":"microsoft-ds"}]',
+            cves_json='[{"cve":"CVE-2017-0144","risk":"critical","title":"SMB RCE","port":445,"service":"microsoft-ds","recommendation":"Patch SMB"}]',
+        )
+        new_sd = ScanDevice(
+            id=2, scan_id=2, device_id=2, ip="192.168.1.11",
+            hostname="new-host", open_ports="[9999]",
+            services_json='[{"port":9999,"service":"unknown"}]',
+            cves_json='[]',
+        )
+        self.db.add_all([old_scan, new_scan, old_dev, new_dev, old_sd, new_sd])
+        self.db.commit()
+
+        response = self.client.get("/api/security/least-resistance")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["scan"]["id"], 2)
+        self.assertEqual(len(data["hosts"]), 1)
+        self.assertEqual(data["hosts"][0]["ip"], "192.168.1.11")
+
+    def test_least_resistance_endpoint_dedupes_and_sorts_hosts(self):
+        scan = Scan(id=1, status="complete")
+        critical_dev = Device(id=1, mac="00:11:22:33:44:55", vendor="Dell", label="Critical Host", is_known=False)
+        quiet_dev = Device(id=2, mac="00:11:22:33:44:66", vendor="Generic", label="Quiet Host", is_known=False)
+        critical_sd = ScanDevice(
+            id=1, scan_id=1, device_id=1, ip="192.168.1.20",
+            hostname="critical-host", open_ports="[445]",
+            services_json='[{"port":445,"service":"microsoft-ds"}]',
+            cves_json='[{"cve":"CVE-2017-0144","risk":"critical","title":"SMB RCE","port":445,"service":"microsoft-ds","recommendation":"Patch SMB"}]',
+        )
+        quiet_sd = ScanDevice(
+            id=2, scan_id=1, device_id=2, ip="192.168.1.21",
+            hostname="quiet-host", open_ports="[9999]",
+            services_json='[{"port":9999,"service":"unknown"}]',
+            cves_json='[]',
+        )
+        self.db.add_all([scan, critical_dev, quiet_dev, critical_sd, quiet_sd])
+        self.db.commit()
+
+        response = self.client.get("/api/security/least-resistance")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual([host["ip"] for host in data["hosts"]], ["192.168.1.20", "192.168.1.21"])
+        self.assertEqual(len(data["hosts"][0]["mapped_cves"]), 1)
+        self.assertEqual(data["hosts"][0]["mapped_cves"][0]["cve"], "CVE-2017-0144")
+        self.assertEqual(data["hosts"][1]["least_resistance_path"]["steps"][0]["title"], "Secure Baseline Check")
 
     def test_autoheal_status_includes_playbook_and_redacts_secrets(self):
         import monitoring.autoheal as ah
@@ -370,6 +516,16 @@ class TestAPIEndpoints(unittest.TestCase):
         text = source.read_text(encoding="utf-8")
         self.assertIn("data: nodes", text, "ECharts graph series must use the 'data' property for node records")
         self.assertNotIn("nodes,", text, "The graph series should not rely on a nonstandard 'nodes' option")
+
+    def test_security_lab_renders_least_resistance_tab(self):
+        from pathlib import Path
+        source = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "sections" / "SecurityLab.tsx"
+        text = source.read_text(encoding="utf-8")
+        self.assertIn("Least Resistance", text)
+        self.assertIn("LeastResistancePanel", text)
+        self.assertIn("tab === 'least_resistance'", text)
+        self.assertIn("queryKey: ['least-resistance']", text)
+        self.assertIn("/api/security/least-resistance", text)
 
     @patch("ai.provider.get_investigation_provider")
     def test_explain_chat_turn(self, mock_get_provider):

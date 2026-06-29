@@ -18,9 +18,10 @@ import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
 import Markdown from '@/components/shared/Markdown'
 
-type Tab = 'cve' | 'attack_tree' | 'vulnerability' | 'password' | 'exploit' | 'wifi' | 'exposure'
+type Tab = 'least_resistance' | 'cve' | 'attack_tree' | 'vulnerability' | 'password' | 'exploit' | 'wifi' | 'exposure'
 
 const TABS: { id: Tab; label: string }[] = [
+  { id: 'least_resistance', label: 'Least Resistance' },
   { id: 'cve', label: 'CVE Mapping' },
   { id: 'attack_tree', label: 'Attack Tree' },
   { id: 'vulnerability', label: 'Vulnerability Scan' },
@@ -43,7 +44,7 @@ async function uploadSecFile(file: File, fileType: string): Promise<number> {
 
 export default function SecurityLab() {
   const qc = useQueryClient()
-  const [tab, setTab] = useState<Tab>('cve')
+  const [tab, setTab] = useState<Tab>('least_resistance')
   const [activeRunId, setActiveRunId] = useState<number | null>(null)
   const [streamOutput, setStreamOutput] = useState('')
   const [chatHistory, setChatHistory] = useState<{ role: string; content: string }[]>([])
@@ -63,6 +64,16 @@ export default function SecurityLab() {
   const { data: historyRaw, refetch: refetchHistory } = useQuery({
     queryKey: ['seclab-history'],
     queryFn: () => getSecLabHistory({ limit: 20 }),
+    refetchInterval: activeRunId ? 5000 : 30_000,
+  })
+
+  const leastResistanceQuery = useQuery({
+    queryKey: ['least-resistance'],
+    queryFn: async () => {
+      const res = await fetch('/api/security/least-resistance', { credentials: 'same-origin' })
+      if (!res.ok) throw new Error(`Least resistance report failed: ${res.status}`)
+      return res.json()
+    },
     refetchInterval: activeRunId ? 5000 : 30_000,
   })
 
@@ -276,6 +287,14 @@ export default function SecurityLab() {
           </button>
         ))}
       </div>
+
+      {tab === 'least_resistance' && (
+        <LeastResistancePanel
+          data={leastResistanceQuery.data}
+          loading={leastResistanceQuery.isFetching}
+          onRefresh={() => leastResistanceQuery.refetch()}
+        />
+      )}
 
       {tab === 'cve' && <CveMappingPanel data={cveQuery.data} loading={cveQuery.isFetching} onRefresh={() => cveQuery.refetch()} />}
 
@@ -1266,6 +1285,108 @@ function ShodanPanel() {
           {result.vulns?.length > 0 && <p className="text-red-400">CVEs: {result.vulns.join(', ')}</p>}
           {result.hostnames?.length > 0 && <p className="text-gray-400">Hostnames: {result.hostnames.join(', ')}</p>}
           {!result.ports?.length && !result.vulns?.length && <p className="text-emerald-400">No public exposure found.</p>}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+function LeastResistancePanel({ data, loading, onRefresh }: { data: any; loading: boolean; onRefresh: () => void }) {
+  const hosts: any[] = data?.hosts ?? []
+
+  return (
+    <Card title="Path of Least Resistance" badge={hosts.length ? String(hosts.length) : undefined}
+      action={<Btn variant="ghost" size="sm" loading={loading} onClick={onRefresh}>Refresh</Btn>}>
+      <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+        This report analyzes every discovered host in your network scan, mapping its detected services and versions to known CVEs, and outlines the easiest route (Path of Least Resistance) an attacker would take to compromise the host.
+      </p>
+
+      {hosts.length === 0 ? (
+        <EmptyState icon="◎" text="No host reports available" hint="Run a security scan to collect open ports and generate the report." />
+      ) : (
+        <div className="space-y-4">
+          {hosts.map(host => {
+            const hasPath = host.mapped_cves.length > 0
+            return (
+              <div key={host.device_id} className="rounded-lg border border-white/10 bg-white/[0.02] p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-200">
+                      {host.label || host.hostname || host.ip}
+                    </h4>
+                    <p className="font-mono text-xs text-blue-400 mt-0.5">
+                      {host.ip} {host.hostname ? `(${host.hostname})` : ''}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={severityVariant(host.overall_risk)}>
+                      {host.overall_risk} risk
+                    </Badge>
+                    <span className="text-xs text-gray-500">
+                      {host.open_ports.length} port{host.open_ports.length === 1 ? '' : 's'} open
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/5">
+                  {/* Left: Port mapping to CVEs */}
+                  <div className="space-y-2">
+                    <p className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Mapped Vulnerabilities (CVEs)</p>
+                    {host.mapped_cves.length === 0 ? (
+                      <p className="text-xs text-gray-500">No known vulnerable ports mapped.</p>
+                    ) : (
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                        {host.mapped_cves.map((cve: any, i: number) => (
+                          <div key={i} className="flex items-start gap-2 bg-white/[0.01] border border-white/5 rounded-lg p-2 text-xs">
+                            <Badge variant={severityVariant(cve.risk)} className="mt-0.5 scale-90 origin-top-left shrink-0">
+                              {cve.risk}
+                            </Badge>
+                            <div className="min-w-0">
+                              <p className="font-medium text-gray-200">{cve.cve} (Port {cve.port}/{cve.service})</p>
+                              <p className="text-gray-400 mt-0.5 text-[11px] leading-relaxed">{cve.title}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right: Path of Least Resistance Steps */}
+                  <div className="space-y-2">
+                    <p className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Least Resistance Compromise Path</p>
+                    <div className="space-y-2">
+                      {host.least_resistance_path.steps.map((step: any, idx: number) => (
+                        <div key={idx} className="flex gap-2">
+                          <div className="flex flex-col items-center shrink-0">
+                            <div className="h-5 w-5 rounded-full bg-purple-500/10 border border-purple-500/30 text-purple-300 flex items-center justify-center text-[10px] font-bold">
+                              {idx + 1}
+                            </div>
+                            {idx < host.least_resistance_path.steps.length - 1 && (
+                              <div className="w-[1px] bg-white/10 grow mt-1 mb-1"></div>
+                            )}
+                          </div>
+                          <div className="text-xs">
+                            <p className="font-medium text-gray-200">{step.title}</p>
+                            <p className="text-gray-400 mt-0.5 leading-relaxed">{step.detail}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {hasPath && host.remediation && (
+                  <div className="rounded-lg bg-teal-500/5 border border-teal-500/20 p-3 text-xs text-teal-300 flex items-start gap-2">
+                    <Wrench size={14} className="mt-0.5 shrink-0" />
+                    <div>
+                      <span className="font-medium">Recommended Mitigation: </span>
+                      {host.remediation}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
     </Card>

@@ -921,6 +921,101 @@ def get_attack_tree(current_only: bool = True, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/api/security/least-resistance")
+def get_least_resistance_report(current_only: bool = True, db: Session = Depends(get_db)):
+    """
+    Generate a 'Path of Least Resistance' report for each host based on 
+    mapping discovered open ports and service CVEs.
+    """
+    if current_only:
+        latest_scan, scan_ids = current_scan_ids(db)
+        if latest_scan:
+            device_ids = [
+                row[0] for row in (
+                    db.query(ScanDevice.device_id)
+                    .filter(ScanDevice.scan_id.in_(scan_ids))
+                    .distinct()
+                    .all()
+                )
+            ]
+            devices = db.query(Device).filter(Device.id.in_(device_ids)).all() if device_ids else []
+        else:
+            devices = []
+    else:
+        latest_scan = db.query(Scan).filter(Scan.status == "complete").order_by(desc(Scan.id)).first()
+        devices = db.query(Device).order_by(desc(Device.last_seen)).all()
+
+    gateway = _gateway_ip(db)
+    hosts_report = []
+
+    for dev in devices:
+        latest_sd = db.query(ScanDevice).filter(ScanDevice.device_id == dev.id).order_by(desc(ScanDevice.id)).first()
+        if not latest_sd:
+            continue
+
+        # Get actual parsed CVEs if available
+        cve_row = _latest_scan_device_with_cves(db, dev.id)
+        mapped_cves = list(cve_row.cves_list) if cve_row and cve_row.cves_list else []
+        open_ports = latest_sd.ports_list
+
+        # Sort CVEs by risk rank
+        mapped_cves.sort(key=lambda c: (_risk_rank(c.get("risk")), c.get("cve") or ""), reverse=True)
+        
+        overall_risk = "low"
+        steps = []
+        remediation = "No actions required. Maintain default secure posture."
+        
+        if mapped_cves:
+            highest_cve = mapped_cves[0]
+            overall_risk = highest_cve.get("risk", "low")
+            remediation = highest_cve.get("recommendation", remediation)
+            
+            # Construct the Path of Least Resistance steps
+            steps.append({
+                "title": "LAN Reconnaissance",
+                "detail": f"Attacker scans the LAN and identifies open port {highest_cve['port']} ({highest_cve.get('service', 'unknown')}) on host {latest_sd.ip}."
+            })
+            steps.append({
+                "title": "Service Exploitation",
+                "detail": f"Attacker targets {highest_cve['cve']} ({highest_cve.get('title', 'Vulnerable Service')}) running on port {highest_cve['port']}."
+            })
+            compromise_level = "administrative access" if overall_risk in ("critical", "high") else "user-level control"
+            steps.append({
+                "title": "Host Compromise",
+                "detail": f"Attacker obtains {compromise_level} on {dev.label or dev.hostname or latest_sd.ip} and executes arbitrary payload commands."
+            })
+        else:
+            steps.append({
+                "title": "Secure Baseline Check",
+                "detail": f"No common vulnerable ports or matched CVEs detected on host {latest_sd.ip}."
+            })
+
+        hosts_report.append({
+            "device_id": dev.id,
+            "ip": latest_sd.ip,
+            "hostname": latest_sd.hostname or dev.hostname or "",
+            "label": dev.label or "",
+            "open_ports": open_ports,
+            "mapped_cves": mapped_cves,
+            "overall_risk": overall_risk,
+            "remediation": remediation,
+            "least_resistance_path": {
+                "risk": overall_risk,
+                "steps": steps,
+                "remediation": remediation
+            }
+        })
+        
+    hosts_report.sort(key=lambda h: _risk_rank(h["overall_risk"]), reverse=True)
+    return {
+        "scan": {
+            "id": latest_scan.id if latest_scan else None,
+            "started_at": _iso(latest_scan.started_at) if latest_scan else None,
+        },
+        "hosts": hosts_report
+    }
+
+
 @router.get("/api/security/firmware-status")
 def get_firmware_status(db: Session = Depends(get_db)):
     """
