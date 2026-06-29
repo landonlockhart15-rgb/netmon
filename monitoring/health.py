@@ -40,6 +40,8 @@ from typing import Optional
 # PING / LATENCY
 # ─────────────────────────────────────────────────────────────────────────────
 
+DNS_PROBE_TARGET = "example.com"
+
 def run_ping(
     target: str = "8.8.8.8",
     count: int = 4,
@@ -140,6 +142,75 @@ def run_ping(
             "packet_loss": 100.0,
             "target":      target,
             "error":       str(e),
+        }
+
+
+def run_dns_lookup(target: str = DNS_PROBE_TARGET, timeout: float = 8.0) -> dict:
+    """
+    Run a DNS lookup through the system resolver and return a compact result.
+
+    We use nslookup because it exercises the same resolver path the OS uses for
+    browser/app hostname lookups, which is what we need for DNS-blackout
+    detection. The function returns a failure quickly when the resolver is dead
+    instead of waiting on the router reboot path.
+    """
+    try:
+        _si = subprocess.STARTUPINFO()
+        _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        _si.wShowWindow = 0  # SW_HIDE
+        result = subprocess.run(
+            ["nslookup", "-timeout=5", "-retry=1", target],
+            capture_output=True,
+            text=True,
+            timeout=max(5.0, float(timeout)),
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            startupinfo=_si,
+        )
+        output = (result.stdout or "") + "\n" + (result.stderr or "")
+        failure_patterns = (
+            "Non-existent domain",
+            "timed out",
+            "server failed",
+            "can't find",
+            "can't be found",
+            "no response from server",
+        )
+        resolved_ips = re.findall(r"(?im)^\s*Address(?:es)?:\s*([0-9a-fA-F\.:]+)\s*$", output)
+        name_match = re.search(r"(?im)^\s*Name:\s*(.+?)\s*$", output)
+        success = bool(name_match and resolved_ips and not any(p.lower() in output.lower() for p in failure_patterns))
+        if success:
+            return {
+                "status": "online",
+                "target": target,
+                "resolved_ips": resolved_ips,
+                "error": None,
+            }
+        return {
+            "status": "offline",
+            "target": target,
+            "resolved_ips": resolved_ips,
+            "error": (output.strip() or "DNS lookup failed"),
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "offline",
+            "target": target,
+            "resolved_ips": [],
+            "error": f"DNS lookup timed out after {timeout:.0f}s",
+        }
+    except FileNotFoundError:
+        return {
+            "status": "offline",
+            "target": target,
+            "resolved_ips": [],
+            "error": "nslookup not found",
+        }
+    except Exception as e:
+        return {
+            "status": "offline",
+            "target": target,
+            "resolved_ips": [],
+            "error": str(e),
         }
 
 

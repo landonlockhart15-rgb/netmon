@@ -41,47 +41,84 @@ def test_decide():
     cfg = base_cfg()
 
     d = decide(internet_up=True, gateway_up=True, consecutive_offline=0, cfg=cfg,
+               dns_blackout=False, dns_blackout_checks=0,
                reboots_in_outage=0, reboots_today=0, last_attempt_at=None, now=now)
     check("online when internet up", d["action"] == "online")
 
     d = decide(internet_up=False, gateway_up=True, consecutive_offline=1, cfg=cfg,
+               dns_blackout=False, dns_blackout_checks=0,
                reboots_in_outage=0, reboots_today=0, last_attempt_at=None, now=now)
     check("confirming on brief blip", d["action"] == "confirming")
 
     d = decide(internet_up=False, gateway_up=True, consecutive_offline=3, cfg=cfg,
+               dns_blackout=False, dns_blackout_checks=0,
                reboots_in_outage=0, reboots_today=0, last_attempt_at=None, now=now)
     check("reboot once outage confirmed (gateway up)", d["action"] == "reboot")
 
     d = decide(internet_up=False, gateway_up=False, consecutive_offline=3, cfg=cfg,
+               dns_blackout=False, dns_blackout_checks=0,
                reboots_in_outage=0, reboots_today=0, last_attempt_at=None, now=now)
     check("reboot attempted even if gateway down", d["action"] == "reboot")
 
     d = decide(internet_up=False, gateway_up=True, consecutive_offline=9, cfg=cfg,
+               dns_blackout=False, dns_blackout_checks=0,
                reboots_in_outage=1, reboots_today=1,
                last_attempt_at=now - timedelta(seconds=60), now=now)
     check("awaiting_recovery within boot window", d["action"] == "awaiting_recovery")
 
     d = decide(internet_up=False, gateway_up=True, consecutive_offline=20, cfg=cfg,
+               dns_blackout=False, dns_blackout_checks=0,
                reboots_in_outage=1, reboots_today=1,
                last_attempt_at=now - timedelta(seconds=300), now=now)
     check("giveup after reboot didn't help (per-outage cap)", d["action"] == "giveup")
 
     d = decide(internet_up=False, gateway_up=True, consecutive_offline=5, cfg=base_cfg(max_per_day=2),
+               dns_blackout=False, dns_blackout_checks=0,
                reboots_in_outage=0, reboots_today=2,
                last_attempt_at=now - timedelta(seconds=99999), now=now)
     check("giveup at daily cap", d["action"] == "giveup")
 
     # cooldown branch reachable only when per-outage cap allows >1 reboot
     d = decide(internet_up=False, gateway_up=True, consecutive_offline=9,
+               dns_blackout=False, dns_blackout_checks=0,
                cfg=base_cfg(max_per_outage=2, cooldown_s=600, recovery_window_s=240),
                reboots_in_outage=1, reboots_today=1,
                last_attempt_at=now - timedelta(seconds=300), now=now)
     check("cooldown between reboots (past recovery, within cooldown)", d["action"] == "cooldown")
 
 
+def test_dns_probe():
+    from unittest.mock import MagicMock, patch
+    import monitoring.health as health
+
+    ok = MagicMock()
+    ok.stdout = (
+        "Server:  1.1.1.1\n"
+        "Address: 1.1.1.1\n\n"
+        "Name:    example.com\n"
+        "Address: 93.184.216.34\n"
+    )
+    ok.stderr = ""
+    ok.returncode = 0
+
+    fail = MagicMock()
+    fail.stdout = "*** Can't find example.com: Non-existent domain\n"
+    fail.stderr = ""
+    fail.returncode = 0
+
+    with patch("monitoring.health.subprocess.run", return_value=ok):
+        r = health.run_dns_lookup("example.com")
+        check("dns lookup success parsed", r["status"] == "online" and r["resolved_ips"] == ["1.1.1.1", "93.184.216.34"] and r["error"] is None)
+
+    with patch("monitoring.health.subprocess.run", return_value=fail):
+        r = health.run_dns_lookup("example.com")
+        check("dns lookup failure detected", r["status"] == "offline" and "Non-existent domain" in (r["error"] or ""))
+
+
 def test_run_cycle_dryrun():
     from app.database import Base, SessionLocal, engine, run_migrations
     from models.tables import Setting, ActivityLog
+    from unittest.mock import patch
     import monitoring.autoheal as ah
 
     Base.metadata.create_all(bind=engine)
@@ -142,6 +179,22 @@ def test_run_cycle_dryrun():
                                ActivityLog.event == ah.EV_RECOVERED,
                                ActivityLog.created_at >= test_start).count())
         check("recovery event logged", n_recovered == 1)
+
+        ah._reset_state()
+        dns_blackout = lambda cfg: {"internet_up": True, "gateway_up": True,
+                                     "internet_latency_ms": 12.0, "gateway_latency_ms": 2.0,
+                                     "dns_ok": False, "dns_target": "example.com",
+                                     "dns_resolved_ips": [], "dns_error": "resolver timeout"}
+        d1 = ah.run_cycle(probe_fn=dns_blackout)
+        d2 = ah.run_cycle(probe_fn=dns_blackout)
+        with patch.object(ah, "_soft_heal_dns", return_value={
+            "attempted": True,
+            "success": True,
+            "summary": "DNS blackout detected, so the local DNS blocker was restarted against upstream 8.8.8.8.",
+            "detail": {"dns_blocker_enabled": True, "upstream": "8.8.8.8", "restarted": True, "error": None},
+        }):
+            d3 = ah.run_cycle(probe_fn=dns_blackout)
+        check("dns blackout confirms before soft heal", d1["action"] == "confirming_dns" and d2["action"] == "confirming_dns" and d3["action"] == "dns_blackout" and d3.get("executed", {}).get("success") is True)
     finally:
         # cleanup: remove rows we created, restore settings
         (db.query(ActivityLog)
@@ -408,6 +461,7 @@ def test_grouped_incidents():
 
 if __name__ == "__main__":
     print("decide() — pure decision engine:");      test_decide()
+    print("dns probe — resolution check:");         test_dns_probe()
     print("run_cycle() — dry-run orchestration:");   test_run_cycle_dryrun()
     print("storyline — narrative activity feed:");    test_storyline()
     print("router driver — safety:");                test_driver_safety()
