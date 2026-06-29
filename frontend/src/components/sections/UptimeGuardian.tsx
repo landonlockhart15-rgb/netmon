@@ -138,8 +138,8 @@ export default function UptimeGuardian() {
             {/* AI Diagnosis block */}
             <div className={cn(
               "rounded-lg border p-4 transition-all duration-300",
-              offline 
-                ? "bg-red-500/5 border-red-500/20" 
+              offline
+                ? "bg-red-500/5 border-red-500/20"
                 : "bg-purple-500/5 border-purple-500/20"
             )}>
               <div className="flex items-center gap-2 mb-2">
@@ -173,9 +173,9 @@ export default function UptimeGuardian() {
                 )}
               </div>
               <div className="flex items-center gap-2 w-full md:w-auto">
-                <Btn 
-                  variant="primary" 
-                  size="sm" 
+                <Btn
+                  variant="primary"
+                  size="sm"
                   loading={rebootMut.isPending}
                   onClick={() => {
                     if (cfg && !cfg.dry_run) {
@@ -195,12 +195,12 @@ export default function UptimeGuardian() {
               <span className="text-xs text-gray-500 block uppercase tracking-wider font-semibold mb-2">Safety Check Pre-requisites</span>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                 {data.playbook.safety_checks?.map((check: any, idx: number) => (
-                  <div 
-                    key={idx} 
+                  <div
+                    key={idx}
                     className={cn(
                       "border rounded-lg p-3 flex flex-col justify-between transition-all duration-300",
-                      check.passed 
-                        ? "bg-emerald-500/[0.03] border-emerald-500/20 text-emerald-300" 
+                      check.passed
+                        ? "bg-emerald-500/[0.03] border-emerald-500/20 text-emerald-300"
                         : "bg-red-500/[0.03] border-red-500/20 text-red-300"
                     )}
                   >

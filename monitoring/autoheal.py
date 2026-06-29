@@ -51,12 +51,17 @@ _STATE: dict = {
     "gave_up": False,
     "outage_announced": False,
     "last_probe": None,           # last probe result dict
+    "cached_ai_diagnosis": None,
+    "ai_diagnosis_in_progress": False,
+    "ai_diagnosis_for_offline_since": None,
 }
 
 
 def _reset_state() -> None:
     _STATE.update(offline_since=None, consecutive_offline=0,
-                  rebooted_this_outage=False, gave_up=False, outage_announced=False)
+                  rebooted_this_outage=False, gave_up=False, outage_announced=False,
+                  cached_ai_diagnosis=None, ai_diagnosis_in_progress=False,
+                  ai_diagnosis_for_offline_since=None)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -217,11 +222,36 @@ def diagnose(db, probe_result: dict, offline_for_s: Optional[float], cfg: dict) 
 
     if _get(db, "ai_enabled", "false") != "true":
         return base
-    try:
-        ai = _ai_diagnose(probe_result, mins)
-        return f"{base}\n\nAI: {ai}" if ai else base
-    except Exception:
+
+    offline_since = _STATE.get("offline_since")
+    if not offline_since:
         return base
+
+    cached_ai = _STATE.get("cached_ai_diagnosis")
+    cached_since = _STATE.get("ai_diagnosis_for_offline_since")
+
+    if cached_ai is not None and cached_since == offline_since:
+        return f"{base}\n\nAI: {cached_ai}" if cached_ai else base
+
+    if _STATE.get("ai_diagnosis_in_progress"):
+        return f"{base}\n\nAI: Generating AI diagnosis..."
+
+    import threading
+    _STATE["ai_diagnosis_in_progress"] = True
+    _STATE["ai_diagnosis_for_offline_since"] = offline_since
+
+    def worker():
+        try:
+            ai = _ai_diagnose(probe_result, mins)
+            _STATE["cached_ai_diagnosis"] = ai or ""
+        except Exception:
+            _STATE["cached_ai_diagnosis"] = ""
+        finally:
+            _STATE["ai_diagnosis_in_progress"] = False
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    return f"{base}\n\nAI: Generating AI diagnosis..."
 
 
 def _ai_diagnose(probe_result: dict, mins: str) -> Optional[str]:
@@ -803,7 +833,7 @@ def get_playbook(db) -> dict:
     """
     cfg = get_config(db)
     now = datetime.now(timezone.utc)
-    
+
     # 1. Determine proposed action name
     method = cfg.get("method", "netgear_soap")
     if method == "netgear_soap":
@@ -880,4 +910,3 @@ def get_playbook(db) -> dict:
             }
         ]
     }
-
