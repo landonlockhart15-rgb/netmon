@@ -302,7 +302,7 @@ def _maybe_resume_capture():
         try:
             from network.autodetect import get_network_info
             info = get_network_info() or {}
-            interface = info.get("interface_name") or interface
+            interface = info.get("interface") or info.get("interface_name") or interface
         except Exception:
             pass
         if interface:
