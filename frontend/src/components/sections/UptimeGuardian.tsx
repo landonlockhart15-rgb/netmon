@@ -128,10 +128,10 @@ export default function UptimeGuardian() {
         }
       />
 
-      {/* AI-Driven Self-Healing Playbook Card */}
+      {/* Self-Healing Playbook Card */}
       {data?.playbook && (
         <Card
-          title="AI-Driven Self-Healing Playbook"
+          title={data.playbook.ai_enabled ? "AI-Driven Self-Healing Playbook" : "Self-Healing Playbook"}
           badge={offline ? "Active Outage" : "Standby"}
         >
           <div className="space-y-4">
@@ -144,7 +144,7 @@ export default function UptimeGuardian() {
             )}>
               <div className="flex items-center gap-2 mb-2">
                 <Sparkles size={16} className={cn("text-purple-400", offline && "animate-pulse")} />
-                <span className="text-xs font-semibold text-purple-300 uppercase tracking-wider">AI Diagnosis & Playbook</span>
+                <span className="text-xs font-semibold text-purple-300 uppercase tracking-wider">{data.playbook.ai_enabled ? "AI Diagnosis & Playbook" : "Diagnosis & Playbook"}</span>
               </div>
               <p className="text-sm text-gray-200 leading-relaxed font-mono whitespace-pre-line">
                 {data.playbook.diagnosis}
@@ -419,8 +419,8 @@ export default function UptimeGuardian() {
         )}
       </Card>
 
-      {/* Event feed -> AI Narrated Timeline */}
-      <Card title="AI-Narrated Self-Healing Timeline" badge={incidents.length ? String(incidents.length) : undefined}>
+      {/* Self-Healing Timeline */}
+      <Card title={data?.playbook?.ai_enabled ? "AI-Narrated Self-Healing Timeline" : "Self-Healing Timeline"} badge={incidents.length ? String(incidents.length) : undefined}>
         {incidents.length === 0 ? (
           <EmptyState icon="◎" text="No auto-heal events yet" hint="Outage detections, reboots, and recoveries will appear here." />
         ) : (
@@ -470,7 +470,7 @@ export default function UptimeGuardian() {
                     <div className="mt-1.5 rounded-lg border border-purple-500/20 bg-purple-500/5 px-3 py-2 text-xs">
                       <div className="flex items-center gap-1.5 text-[10px] font-semibold text-purple-400 uppercase tracking-wider mb-1">
                         <PlugZap size={10} className="text-purple-400" />
-                        <span>Guardian Report</span>
+                        <span>{data?.playbook?.ai_enabled ? "AI Guardian Report" : "Guardian Report"}</span>
                         {inc.ai_narrative === 'Generating AI narrative...' && (
                           <span className="inline-block h-1.5 w-1.5 animate-ping rounded-full bg-purple-400" />
                         )}

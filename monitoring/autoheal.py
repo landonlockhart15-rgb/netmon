@@ -1058,11 +1058,14 @@ def get_playbook(db) -> dict:
     else:
         diagnosis = "All systems healthy. No active outages or self-healing actions required at this time."
 
+    ai_enabled = _get(db, "ai_enabled", "false") == "true"
+
     return {
         "proposed_action": action_name,
         "diagnosis": diagnosis,
         "is_offline": is_offline,
         "dns_blackout": dns_blackout,
+        "ai_enabled": ai_enabled,
         "safety_checks": [
             {
                 "name": "Daily Reboot Cap",
