@@ -444,6 +444,7 @@ def test_grouped_incidents():
     db = MagicMock()
     original_get = ah._get
     try:
+        # Case A: ai_enabled is false
         ah._get = MagicMock(return_value="false")
         incidents = ah.group_events_into_incidents(events, db)
         check("correct number of incidents grouped", len(incidents) == 1)
@@ -455,6 +456,16 @@ def test_grouped_incidents():
             check("incident end_time correct", inc["end_time"] == "2026-06-21T12:00:45Z")
             check("incident downtime_s correct", inc["downtime_s"] == 45)
             check("incident events count correct", len(inc["events"]) == 3)
+            check("ai_narrative is empty when ai_enabled is false", inc["ai_narrative"] == "")
+
+        # Case B: ai_enabled is true
+        ah._get = MagicMock(return_value="true")
+        ah._AI_NARRATIVE_GENERATING.clear()
+        ah._AI_NARRATIVE_CACHE.clear()
+        incidents2 = ah.group_events_into_incidents(events, db)
+        if len(incidents2) == 1:
+            check("ai_narrative starts generating when ai_enabled is true", incidents2[0]["ai_narrative"] == "Generating AI narrative...")
+
     finally:
         ah._get = original_get
 

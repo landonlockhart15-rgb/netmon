@@ -559,12 +559,89 @@ class TestAPIEndpoints(unittest.TestCase):
             ah._STATE.clear()
             ah._STATE.update(original_state)
 
+    def test_autoheal_status_ai_enabled_variations(self):
+        import monitoring.autoheal as ah
+
+        original_state = dict(ah._STATE)
+        try:
+            # Case 1: ai_enabled setting is missing (not added to db)
+            ah._reset_state()
+            ah._STATE["last_probe"] = None
+            response = self.client.get("/api/autoheal")
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertFalse(data["playbook"]["ai_enabled"])
+
+            # Case 2: ai_enabled is "true"
+            self.db.add(Setting(key="ai_enabled", value="true"))
+            self.db.commit()
+            response = self.client.get("/api/autoheal")
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertTrue(data["playbook"]["ai_enabled"])
+
+            # Case 3: ai_enabled is "false"
+            setting = self.db.query(Setting).filter(Setting.key == "ai_enabled").first()
+            setting.value = "false"
+            self.db.commit()
+            response = self.client.get("/api/autoheal")
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertFalse(data["playbook"]["ai_enabled"])
+
+            # Case 4: ai_enabled is malformed "yes"
+            setting.value = "yes"
+            self.db.commit()
+            response = self.client.get("/api/autoheal")
+            data = response.json()
+            self.assertFalse(data["playbook"]["ai_enabled"])
+
+            # Case 5: ai_enabled is malformed "1"
+            setting.value = "1"
+            self.db.commit()
+            response = self.client.get("/api/autoheal")
+            data = response.json()
+            self.assertFalse(data["playbook"]["ai_enabled"])
+
+            # Case 6: ai_enabled is empty string
+            setting.value = ""
+            self.db.commit()
+            response = self.client.get("/api/autoheal")
+            data = response.json()
+            self.assertFalse(data["playbook"]["ai_enabled"])
+
+            # Case 7: ai_enabled is extremely large string to test boundary/safety
+            setting.value = "true" * 1000
+            self.db.commit()
+            response = self.client.get("/api/autoheal")
+            data = response.json()
+            self.assertFalse(data["playbook"]["ai_enabled"])
+
+            # Case 8: DB exception raised during query (concurrency or error test)
+            mock_db = MagicMock()
+            mock_db.query.side_effect = Exception("DB connection timeout")
+            with self.assertRaises(Exception) as ctx:
+                ah.get_playbook(mock_db)
+            self.assertEqual(str(ctx.exception), "DB connection timeout")
+
+        finally:
+            ah._STATE.clear()
+            ah._STATE.update(original_state)
+            # Cleanup settings
+            self.db.query(Setting).filter(Setting.key == "ai_enabled").delete()
+            self.db.commit()
+
     def test_uptime_guardian_component_renders_action_card_contract(self):
         from pathlib import Path
 
         source = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "sections" / "UptimeGuardian.tsx"
         text = source.read_text(encoding="utf-8")
-        self.assertIn("AI-Driven Self-Healing Playbook", text)
+        # Verify conditional expressions pinning the AI vs non-AI feature UI updates
+        self.assertIn('data.playbook.ai_enabled ? "AI-Driven Self-Healing Playbook" : "Self-Healing Playbook"', text)
+        self.assertIn('data.playbook.ai_enabled ? "AI Diagnosis & Playbook" : "Diagnosis & Playbook"', text)
+        self.assertIn('data?.playbook?.ai_enabled ? "AI-Narrated Self-Healing Timeline" : "Self-Healing Timeline"', text)
+        self.assertIn('data?.playbook?.ai_enabled ? "AI Guardian Report" : "Guardian Report"', text)
+
         self.assertIn("Proposed Healing Action", text)
         self.assertIn("Safety Check Pre-requisites", text)
         self.assertIn("data?.playbook", text)
