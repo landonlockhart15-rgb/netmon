@@ -10,6 +10,7 @@ import unittest
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -158,16 +159,48 @@ class ParseDeviceFingerprintRows(unittest.TestCase):
             "api.example.com",
             "1.2.3.4",
             "d41d8cd98f00b204e9800998ecf8427e",
-            "ja4hash",
             "h2",
             "771",
         ])
         self.assertIsNotNone(row)
         self.assertEqual(row["sni"], "api.example.com")
         self.assertEqual(row["ja3"], "d41d8cd98f00b204e9800998ecf8427e")
-        self.assertEqual(row["ja4"], "ja4hash")
         self.assertEqual(row["alpn"], "h2")
         self.assertEqual(row["protocol"], "https")
+
+    @patch("traffic.analyzer.get_readable_files", return_value=[Path("dummy.pcapng")])
+    @patch("traffic.analyzer.find_tool", return_value="tshark")
+    @patch("traffic.analyzer.subprocess.run")
+    def test_get_device_activity_skips_missing_tls_fields(self, mock_run, _mock_find_tool, _mock_files):
+        def _run_side_effect(cmd, **_kwargs):
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stderr = ""
+            if "-G" in cmd:
+                proc.stdout = "\n".join([
+                    "tls.handshake.extensions_alpn",
+                    "tls.handshake.version",
+                ])
+                return proc
+            if "-Y" in cmd and any("tls.handshake.type == 1" in arg for arg in cmd):
+                self.assertNotIn("tls.handshake.ja4", cmd)
+                self.assertNotIn("tls.handshake.extensions_alpn_str", cmd)
+                self.assertNotIn("tls.handshake.ja3", cmd)
+                self.assertIn("tls.handshake.extensions_alpn", cmd)
+                proc.stdout = "123.45\tapi.example.com\t1.2.3.4\th2\t771\n"
+                return proc
+            proc.stdout = ""
+            return proc
+
+        mock_run.side_effect = _run_side_effect
+
+        from traffic.analyzer import get_device_activity
+
+        result = get_device_activity("192.168.1.5")
+        self.assertEqual(len(result["tls_sessions"]), 1)
+        self.assertEqual(result["tls_sessions"][0]["sni"], "api.example.com")
+        self.assertEqual(result["tls_sessions"][0]["ja3"], "")
+        self.assertEqual(result["tls_sessions"][0]["alpn"], "h2")
 
 
 if __name__ == "__main__":
