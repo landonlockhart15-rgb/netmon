@@ -10,10 +10,18 @@ import unittest
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from traffic.analyzer import _is_private, _parse_conv_ip, _parse_phs, cleanup_old_captures
+from traffic.analyzer import (
+    _is_private,
+    _parse_conv_ip,
+    _parse_phs,
+    _parse_http_request_row,
+    _parse_tls_client_hello_row,
+    cleanup_old_captures,
+)
 
 
 class PrivateIpCheck(unittest.TestCase):
@@ -123,6 +131,76 @@ class TestGetDeviceActivityValidation(unittest.TestCase):
         self.assertEqual(get_device_activity("192.168.1.300"), expected_error)
         self.assertEqual(get_device_activity("1.2.3.4; command_injection"), expected_error)
         self.assertEqual(get_device_activity(None), expected_error)
+
+
+class ParseDeviceFingerprintRows(unittest.TestCase):
+    def test_parse_http_request_row(self):
+        row = _parse_http_request_row([
+            "123.45",
+            "GET",
+            "example.com",
+            "/index.html",
+            "Mozilla/5.0",
+            "*/*",
+            "en-US,en;q=0.9",
+            "gzip, deflate, br",
+            "https://mail.google.com/",
+            "keep-alive",
+        ])
+        self.assertIsNotNone(row)
+        self.assertEqual(row["host"], "example.com")
+        self.assertEqual(row["ua"], "Mozilla/5.0")
+        self.assertEqual(row["accept_language"], "en-US,en;q=0.9")
+        self.assertEqual(row["protocol"], "http")
+
+    def test_parse_tls_client_hello_row(self):
+        row = _parse_tls_client_hello_row([
+            "123.45",
+            "api.example.com",
+            "1.2.3.4",
+            "d41d8cd98f00b204e9800998ecf8427e",
+            "h2",
+            "771",
+        ])
+        self.assertIsNotNone(row)
+        self.assertEqual(row["sni"], "api.example.com")
+        self.assertEqual(row["ja3"], "d41d8cd98f00b204e9800998ecf8427e")
+        self.assertEqual(row["alpn"], "h2")
+        self.assertEqual(row["protocol"], "https")
+
+    @patch("traffic.analyzer.get_readable_files", return_value=[Path("dummy.pcapng")])
+    @patch("traffic.analyzer.find_tool", return_value="tshark")
+    @patch("traffic.analyzer.subprocess.run")
+    def test_get_device_activity_skips_missing_tls_fields(self, mock_run, _mock_find_tool, _mock_files):
+        def _run_side_effect(cmd, **_kwargs):
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stderr = ""
+            if "-G" in cmd:
+                proc.stdout = "\n".join([
+                    "tls.handshake.extensions_alpn",
+                    "tls.handshake.version",
+                ])
+                return proc
+            if "-Y" in cmd and any("tls.handshake.type == 1" in arg for arg in cmd):
+                self.assertNotIn("tls.handshake.ja4", cmd)
+                self.assertNotIn("tls.handshake.extensions_alpn_str", cmd)
+                self.assertNotIn("tls.handshake.ja3", cmd)
+                self.assertIn("tls.handshake.extensions_alpn", cmd)
+                proc.stdout = "123.45\tapi.example.com\t1.2.3.4\th2\t771\n"
+                return proc
+            proc.stdout = ""
+            return proc
+
+        mock_run.side_effect = _run_side_effect
+
+        from traffic.analyzer import get_device_activity
+
+        result = get_device_activity("192.168.1.5")
+        self.assertEqual(len(result["tls_sessions"]), 1)
+        self.assertEqual(result["tls_sessions"][0]["sni"], "api.example.com")
+        self.assertEqual(result["tls_sessions"][0]["ja3"], "")
+        self.assertEqual(result["tls_sessions"][0]["alpn"], "h2")
 
 
 if __name__ == "__main__":

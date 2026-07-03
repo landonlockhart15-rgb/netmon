@@ -22,6 +22,7 @@ Visibility note:
 import ipaddress
 import re
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -52,6 +53,90 @@ def get_readable_files(capture_dir: Path = CAPTURE_DIR, max_files: int = 3) -> L
     if len(files) > 1:
         files = files[:-1]   # exclude active write file
     return files[-max_files:]
+
+
+def _parse_http_request_row(parts: list[str]) -> dict | None:
+    """Parse a tshark HTTP request row into a compact metadata dict."""
+    if len(parts) < 4:
+        return None
+
+    host = parts[2].strip() if len(parts) > 2 else ""
+    if not host:
+        return None
+
+    uri = parts[3].strip() if len(parts) > 3 else "/"
+    method = parts[1].strip() if len(parts) > 1 else ""
+    return {
+        "time":            parts[0].strip() if len(parts) > 0 else "",
+        "method":          method or "GET",
+        "host":            host,
+        "uri":             uri,
+        "full_url":       f"http://{host}{uri}",
+        "ua":              parts[4].strip() if len(parts) > 4 else "",
+        "accept":          parts[5].strip() if len(parts) > 5 else "",
+        "accept_language": parts[6].strip() if len(parts) > 6 else "",
+        "accept_encoding": parts[7].strip() if len(parts) > 7 else "",
+        "referer":         parts[8].strip() if len(parts) > 8 else "",
+        "connection":      parts[9].strip() if len(parts) > 9 else "",
+        "protocol":        "http",
+        "encrypted":       False,
+    }
+
+
+def _parse_tls_client_hello_row(parts: list[str], fields: list[str] | None = None) -> dict | None:
+    """Parse a tshark TLS ClientHello row into a compact metadata dict."""
+    if fields is None:
+        fields = [
+            "frame.time_epoch",
+            "tls.handshake.extensions_server_name",
+            "ip.dst",
+            "tls.handshake.ja3",
+            "tls.handshake.extensions_alpn",
+            "tls.handshake.version",
+        ]
+
+    if len(parts) < 2:
+        return None
+
+    values = {
+        field: parts[idx].strip() if idx < len(parts) else ""
+        for idx, field in enumerate(fields)
+    }
+
+    sni = values.get("tls.handshake.extensions_server_name", "").lower()
+    if not sni:
+        return None
+
+    return {
+        "time":        values.get("frame.time_epoch", ""),
+        "sni":         sni,
+        "dst_ip":      values.get("ip.dst", ""),
+        "ja3":         values.get("tls.handshake.ja3", ""),
+        "alpn":        (
+            values.get("tls.handshake.extensions_alpn", "")
+            or values.get("tls.handshake.extensions_alpn_str", "")
+        ),
+        "tls_version": values.get("tls.handshake.version", ""),
+        "full_url":    f"https://{sni}",
+        "protocol":    "https",
+        "encrypted":   True,
+    }
+
+
+@lru_cache(maxsize=None)
+def _tshark_field_supported(tshark: str, field: str) -> bool:
+    """Return True when tshark knows about a display field."""
+    try:
+        r = subprocess.run(
+            [tshark, "-G", "fields"],
+            capture_output=True, text=True, timeout=60,
+            creationflags=_no_window(),
+        )
+    except Exception:
+        return False
+    if r.returncode != 0:
+        return False
+    return field in r.stdout
 
 
 def run_analysis(capture_dir: Path = CAPTURE_DIR) -> Dict:
@@ -306,8 +391,8 @@ def get_device_activity(
     Extract detailed activity for a specific device IP from pcap files.
 
     Returns:
-      http_requests:  [{time, host, uri, method, full_url, protocol: "http"}]
-      tls_sessions:   [{time, sni, dst_ip, protocol: "https"}]
+      http_requests:  [{time, host, uri, method, ua, accept_language, ...}]
+      tls_sessions:   [{time, sni, dst_ip, ja3, alpn, protocol: "https"}]
       dns_queries:    [{time, domain}]
       summary:        {total_http, total_tls, total_dns, top_domains}
     """
@@ -330,6 +415,20 @@ def get_device_activity(
     http_requests: list[dict] = []
     tls_sessions:  list[dict] = []
     dns_queries:   list[dict] = []
+    tls_fields = [
+        "frame.time_epoch",
+        "tls.handshake.extensions_server_name",
+        "ip.dst",
+    ]
+    if _tshark_field_supported(tshark, "tls.handshake.ja3"):
+        tls_fields.append("tls.handshake.ja3")
+    if _tshark_field_supported(tshark, "tls.handshake.extensions_alpn"):
+        tls_fields.append("tls.handshake.extensions_alpn")
+    elif _tshark_field_supported(tshark, "tls.handshake.extensions_alpn_str"):
+        tls_fields.append("tls.handshake.extensions_alpn_str")
+    if _tshark_field_supported(tshark, "tls.handshake.version"):
+        tls_fields.append("tls.handshake.version")
+    tls_field_args = [arg for field in tls_fields for arg in ("-e", field)]
 
     for pcap in files:
         try:
@@ -342,25 +441,19 @@ def get_device_activity(
                  "-e", "http.request.method",
                  "-e", "http.host",
                  "-e", "http.request.uri",
-                 "-e", "http.user_agent"],
+                 "-e", "http.user_agent",
+                 "-e", "http.accept",
+                 "-e", "http.accept_language",
+                 "-e", "http.accept_encoding",
+                 "-e", "http.referer",
+                 "-e", "http.connection"],
                 capture_output=True, text=True, timeout=30,
                 creationflags=_no_window(),
             )
             for ln in r.stdout.splitlines():
-                parts = ln.strip().split("\t")
-                if len(parts) >= 3 and parts[2].strip():
-                    host = parts[2].strip()
-                    uri  = parts[3].strip() if len(parts) > 3 else "/"
-                    http_requests.append({
-                        "time":     parts[0].strip(),
-                        "method":   parts[1].strip() or "GET",
-                        "host":     host,
-                        "uri":      uri,
-                        "full_url": f"http://{host}{uri}",
-                        "ua":       parts[4].strip() if len(parts) > 4 else "",
-                        "protocol": "http",
-                        "encrypted": False,
-                    })
+                row = _parse_http_request_row([p.strip() for p in ln.split("\t")])
+                if row:
+                    http_requests.append(row)
         except Exception:
             pass
 
@@ -370,28 +463,20 @@ def get_device_activity(
                 [tshark, "-r", str(pcap),
                  "-Y", f"tls.handshake.type == 1 and ip.src == {device_ip}",
                  "-T", "fields",
-                 "-e", "frame.time_epoch",
-                 "-e", "tls.handshake.extensions_server_name",
-                 "-e", "ip.dst"],
+                 *tls_field_args],
                 capture_output=True, text=True, timeout=30,
                 creationflags=_no_window(),
             )
-            seen_sni: set[str] = set()
+            seen_tls: set[tuple[str, str, str]] = set()
             for ln in r.stdout.splitlines():
-                parts = ln.strip().split("\t")
-                if len(parts) >= 2 and parts[1].strip():
-                    sni = parts[1].strip().lower()
-                    key = sni
-                    if key not in seen_sni:
-                        seen_sni.add(key)
-                        tls_sessions.append({
-                            "time":     parts[0].strip(),
-                            "sni":      sni,
-                            "dst_ip":   parts[2].strip() if len(parts) > 2 else "",
-                            "full_url": f"https://{sni}",
-                            "protocol": "https",
-                            "encrypted": True,
-                        })
+                row = _parse_tls_client_hello_row([p.strip() for p in ln.split("\t")], tls_fields)
+                if not row:
+                    continue
+                key = (row["sni"], row["ja3"], row["alpn"])
+                if key in seen_tls:
+                    continue
+                seen_tls.add(key)
+                tls_sessions.append(row)
         except Exception:
             pass
 
@@ -416,7 +501,8 @@ def get_device_activity(
         except Exception:
             pass
 
-    # Deduplicate TLS by SNI keeping most recent, sort all by time desc
+    # Sort all observations by time desc; TLS rows are de-duplicated by
+    # (SNI, JA3, JA4) so repeated client hellos do not flood the UI.
     http_requests.sort(key=lambda x: x["time"], reverse=True)
     tls_sessions.sort(key=lambda x:  x["time"], reverse=True)
     dns_queries.sort(key=lambda x:   x["time"], reverse=True)
