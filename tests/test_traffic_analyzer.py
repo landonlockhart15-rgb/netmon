@@ -13,7 +13,14 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from traffic.analyzer import _is_private, _parse_conv_ip, _parse_phs, cleanup_old_captures
+from traffic.analyzer import (
+    _is_private,
+    _parse_conv_ip,
+    _parse_phs,
+    _parse_http_request_row,
+    _parse_tls_client_hello_row,
+    cleanup_old_captures,
+)
 
 
 class PrivateIpCheck(unittest.TestCase):
@@ -123,6 +130,44 @@ class TestGetDeviceActivityValidation(unittest.TestCase):
         self.assertEqual(get_device_activity("192.168.1.300"), expected_error)
         self.assertEqual(get_device_activity("1.2.3.4; command_injection"), expected_error)
         self.assertEqual(get_device_activity(None), expected_error)
+
+
+class ParseDeviceFingerprintRows(unittest.TestCase):
+    def test_parse_http_request_row(self):
+        row = _parse_http_request_row([
+            "123.45",
+            "GET",
+            "example.com",
+            "/index.html",
+            "Mozilla/5.0",
+            "*/*",
+            "en-US,en;q=0.9",
+            "gzip, deflate, br",
+            "https://mail.google.com/",
+            "keep-alive",
+        ])
+        self.assertIsNotNone(row)
+        self.assertEqual(row["host"], "example.com")
+        self.assertEqual(row["ua"], "Mozilla/5.0")
+        self.assertEqual(row["accept_language"], "en-US,en;q=0.9")
+        self.assertEqual(row["protocol"], "http")
+
+    def test_parse_tls_client_hello_row(self):
+        row = _parse_tls_client_hello_row([
+            "123.45",
+            "api.example.com",
+            "1.2.3.4",
+            "d41d8cd98f00b204e9800998ecf8427e",
+            "ja4hash",
+            "h2",
+            "771",
+        ])
+        self.assertIsNotNone(row)
+        self.assertEqual(row["sni"], "api.example.com")
+        self.assertEqual(row["ja3"], "d41d8cd98f00b204e9800998ecf8427e")
+        self.assertEqual(row["ja4"], "ja4hash")
+        self.assertEqual(row["alpn"], "h2")
+        self.assertEqual(row["protocol"], "https")
 
 
 if __name__ == "__main__":

@@ -81,6 +81,25 @@ class TestRoleInference(unittest.TestCase):
         }
         self.assertEqual(infer_device_role("192.168.1.21", {}, flow), "Work Laptop")
 
+    def test_browser_header_inference(self):
+        # Browser-style HTTP headers should tilt the ambiguous desktop/laptop case toward Work Laptop
+        act = {
+            "http_requests": [{
+                "accept": "*/*",
+                "accept_language": "en-US,en;q=0.9",
+                "accept_encoding": "gzip, deflate, br",
+                "referer": "https://mail.google.com/",
+                "connection": "keep-alive",
+            }],
+        }
+        flow = {
+            "destination_ports": [443, 80],
+            "packet_lengths": [900, 1100, 1200, 950],
+            "ttls": [64],
+            "window_sizes": [65535],
+        }
+        self.assertEqual(infer_device_role("192.168.1.24", act, flow), "Work Laptop")
+
     def test_fallback_inference(self):
         # 1. Hostname/IP hints fallback
         act = {"summary": {"top_domains": [{"domain": "work-laptop-lockhart.local"}]}}

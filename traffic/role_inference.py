@@ -151,6 +151,7 @@ def infer_device_role(device_ip: str, activity_data: dict, flow_stats: dict) -> 
     """
     # 1. Gather and normalize all DNS/TLS/HTTP domain queries to construct a domain context string
     domains = []
+    browser_header_hits = []
     if activity_data:
         http_requests = activity_data.get("http_requests", [])
         tls_sessions = activity_data.get("tls_sessions", [])
@@ -162,9 +163,23 @@ def infer_device_role(device_ip: str, activity_data: dict, flow_stats: dict) -> 
         
         top_domains = activity_data.get("summary", {}).get("top_domains", [])
         domains.extend([d.get("domain", "").lower() for d in top_domains if d.get("domain")])
+
+        for req in http_requests:
+            accept = req.get("accept", "")
+            accept_language = req.get("accept_language", "")
+            accept_encoding = req.get("accept_encoding", "")
+            referer = req.get("referer", "")
+            connection = req.get("connection", "")
+            if accept or accept_language or accept_encoding or referer or connection:
+                browser_header_hits.append(" ".join(
+                    part.lower()
+                    for part in [accept, accept_language, accept_encoding, referer, connection]
+                    if part
+                ))
         
     domains = list(set(domains))
     dom_str = " ".join(domains)
+    header_str = " ".join(browser_header_hits)
 
     # 2. Gather User-Agent strings
     user_agents = []
@@ -201,6 +216,10 @@ def infer_device_role(device_ip: str, activity_data: dict, flow_stats: dict) -> 
     if any(x in dom_str for x in ["tuya", "smartlife", "meethue", "kasa", "tp-link", "tplink-smarthome", "wemo", "sonos"]):
         return "Smart Home Device"
     if any(x in dom_str for x in ["courier.push.apple", "fcm.googleapis.com", "mtalk.google.com", "crashlytics.com", "firebase"]):
+        return "Mobile Phone"
+    if header_str and any(x in dom_str for x in ["github.com", "gitlab.com", "slack.com", "teams.microsoft.com", "office.com", "zoom.us", "aws.amazon.com", "jira", "atlassian", "bitbucket", "okta.com"]):
+        return "Work Laptop"
+    if header_str and any(x in dom_str for x in ["courier.push.apple", "fcm.googleapis.com", "mtalk.google.com", "crashlytics.com", "firebase", "icloud.com", "apple.com"]):
         return "Mobile Phone"
 
     # --- Heuristic Phase 3: Flow characteristics and headers ---
@@ -242,8 +261,9 @@ def infer_device_role(device_ip: str, activity_data: dict, flow_stats: dict) -> 
         has_desktop_ttl = any(ttl == 128 for ttl in ttls) or (any(ttl == 64 for ttl in ttls) and any(w > 30000 for w in win_sizes))
         if has_desktop_ttl:
             distinct_ports = len(set(dst_ports))
+            browserish_headers = bool(header_str)
             # Work Laptops exhibit highly diverse outbound ports compared to Mobile Phones
-            if distinct_ports > 5:
+            if distinct_ports > 5 or (browserish_headers and distinct_ports > 1):
                 return "Work Laptop"
             else:
                 return "Mobile Phone"
