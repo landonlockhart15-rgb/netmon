@@ -63,6 +63,10 @@ export const getDevicesSimple = async (): Promise<Device[]> => {
 export const trustAllDevices = () =>
   apiFetch<{ updated: number }>('/api/devices/trust-all', { method: 'POST' })
 export const getScans = () => apiFetch<Scan[]>('/api/scans')
+export const getDevicesAtScan = async (scanId: number): Promise<Device[]> => {
+  const raw = await apiFetch<any[]>(`/api/devices/at-scan/${scanId}`)
+  return raw.map(normalizeDevice)
+}
 export const getDiffLatest = () => apiFetch<DiffResult>('/api/diff/latest')
 export const getDeviceHistory = (id: number) => apiFetch<DeviceScan[]>(`/api/device/${id}/history`)
 export const patchDevice = (id: number, body: Partial<Device & { is_known?: boolean }>) => {

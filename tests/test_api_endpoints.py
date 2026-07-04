@@ -880,6 +880,153 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertIn("AI returned an empty explanation", response.json()["detail"])
 
+    def test_get_devices_at_scan_not_found(self):
+        """Test GET /api/devices/at-scan/{scan_id} with a non-existent scan ID."""
+        response = self.client.get("/api/devices/at-scan/999")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Scan not found")
+
+    def test_get_devices_at_scan_incomplete(self):
+        """Test GET /api/devices/at-scan/{scan_id} with an incomplete scan."""
+        scan = Scan(id=10, status="running", started_at=datetime.now(timezone.utc))
+        self.db.add(scan)
+        self.db.commit()
+
+        response = self.client.get("/api/devices/at-scan/10")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Scan not found")
+
+    def test_get_devices_at_scan_empty(self):
+        """Test GET /api/devices/at-scan/{scan_id} when scan has no device records."""
+        scan = Scan(id=20, status="complete", started_at=datetime.now(timezone.utc))
+        self.db.add(scan)
+        self.db.commit()
+
+        response = self.client.get("/api/devices/at-scan/20")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
+    def test_get_devices_at_scan_success(self):
+        """Test GET /api/devices/at-scan/{scan_id} with a valid completed scan and devices."""
+        scan = Scan(id=30, status="complete", started_at=datetime.now(timezone.utc))
+        device = Device(id=100, mac="00:aa:bb:cc:dd:ee", vendor="Netgear", label="My Switch", is_known=True, os_guess="Linux")
+        scan_device = ScanDevice(
+            id=200,
+            scan_id=30,
+            device_id=100,
+            ip="192.168.1.15",
+            hostname="switch-host",
+            open_ports="[80, 443]",
+            services_json='[{"port": 80}]',
+            cves_json='[{"cve": "CVE-TEST-1", "risk": "low"}, {"cve": "CVE-TEST-2", "risk": "critical"}]'
+        )
+        self.db.add_all([scan, device, scan_device])
+        self.db.commit()
+
+        response = self.client.get("/api/devices/at-scan/30")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data), 1)
+        
+        dev_data = data[0]
+        self.assertEqual(dev_data["id"], 100)
+        self.assertEqual(dev_data["mac"], "00:aa:bb:cc:dd:ee")
+        self.assertEqual(dev_data["vendor"], "Netgear")
+        self.assertEqual(dev_data["hostname"], "switch-host")
+        self.assertEqual(dev_data["label"], "My Switch")
+        self.assertEqual(dev_data["is_known"], True)
+        self.assertEqual(dev_data["latest_ip"], "192.168.1.15")
+        self.assertEqual(dev_data["open_ports"], [80, 443])
+        self.assertEqual(dev_data["vulnerability_count"], 2)
+        self.assertEqual(dev_data["max_cve_risk"], "critical")
+        self.assertEqual(dev_data["os_guess"], "Linux")
+
+    def test_get_devices_at_scan_fallback_null_values(self):
+        """Test fallback handling when fields in Device or ScanDevice are null."""
+        scan = Scan(id=40, status="complete", started_at=datetime.now(timezone.utc))
+        device = Device(id=101, mac=None, vendor=None, label=None, is_known=False, os_guess=None)
+        scan_device = ScanDevice(
+            id=201,
+            scan_id=40,
+            device_id=101,
+            ip="192.168.1.16",
+            hostname=None,
+            open_ports=None,
+            services_json=None,
+            cves_json=None
+        )
+        self.db.add_all([scan, device, scan_device])
+        self.db.commit()
+
+        response = self.client.get("/api/devices/at-scan/40")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data), 1)
+        
+        dev_data = data[0]
+        self.assertEqual(dev_data["mac"], "unknown")
+        self.assertEqual(dev_data["vendor"], "")
+        self.assertEqual(dev_data["hostname"], "")
+        self.assertEqual(dev_data["label"], "")
+        self.assertEqual(dev_data["os_guess"], "")
+        self.assertEqual(dev_data["open_ports"], [])
+        self.assertEqual(dev_data["vulnerability_count"], 0)
+        self.assertIsNone(dev_data["max_cve_risk"])
+
+    def test_get_devices_at_scan_freshest_device(self):
+        """Test that only the freshest ScanDevice row per device is returned when multiple exist."""
+        scan = Scan(id=50, status="complete", started_at=datetime.now(timezone.utc))
+        device = Device(id=102, mac="00:11:22:33:44:55", vendor="Apple")
+        # Add two ScanDevices for device 102 in the same scan/window.
+        sd_old = ScanDevice(
+            id=202,
+            scan_id=50,
+            device_id=102,
+            ip="192.168.1.100",
+            hostname="old-name",
+            open_ports="[80]"
+        )
+        sd_new = ScanDevice(
+            id=203,
+            scan_id=50,
+            device_id=102,
+            ip="192.168.1.101",
+            hostname="new-name",
+            open_ports="[80, 443]"
+        )
+        self.db.add_all([scan, device, sd_old, sd_new])
+        self.db.commit()
+
+        response = self.client.get("/api/devices/at-scan/50")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["latest_ip"], "192.168.1.101")
+        self.assertEqual(data[0]["hostname"], "new-name")
+        self.assertEqual(data[0]["open_ports"], [80, 443])
+
+    def test_get_devices_at_scan_malformed_cves(self):
+        """Test vulnerability parsing edge cases (missing risk, invalid types, or mixed risks)."""
+        scan = Scan(id=60, status="complete", started_at=datetime.now(timezone.utc))
+        device = Device(id=103, mac="00:11:22:33:44:aa")
+        scan_device = ScanDevice(
+            id=204,
+            scan_id=60,
+            device_id=103,
+            ip="192.168.1.102",
+            services_json='[{"port": 22}]',
+            cves_json='[{"cve": "CVE-1"}, {"cve": "CVE-2", "risk": 999}, {"cve": "CVE-3", "risk": "low"}, {"cve": "CVE-4", "risk": "high"}]'
+        )
+        self.db.add_all([scan, device, scan_device])
+        self.db.commit()
+
+        response = self.client.get("/api/devices/at-scan/60")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["vulnerability_count"], 4)
+        self.assertEqual(data[0]["max_cve_risk"], "high")
+
     def test_route_security_discovery(self):
         """
         Dynamically discover all registered routes in the FastAPI app

@@ -542,6 +542,53 @@ def get_scan_history(db: Session = Depends(get_db)):
     ]
 
 
+@router.get("/api/devices/at-scan/{scan_id}")
+def get_devices_at_scan(scan_id: int, db: Session = Depends(get_db)):
+    """Return the set of devices present during a specific completed scan window.
+
+    Used by the Topology Time Machine to replay historical network state.
+    """
+    scan = db.query(Scan).filter(Scan.id == scan_id, Scan.status == "complete").first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    scan_ids = window_scan_ids(db, scan)
+    rows = (
+        db.query(ScanDevice)
+        .filter(ScanDevice.scan_id.in_(scan_ids))
+        .order_by(desc(ScanDevice.id))
+        .all()
+    )
+    # Keep only the freshest ScanDevice row per device within this window
+    seen: dict = {}
+    for sd in rows:
+        if sd.device_id not in seen:
+            seen[sd.device_id] = sd
+
+    result = []
+    for sd in seen.values():
+        dev = sd.device
+        cve_row = _latest_scan_device_with_cves(db, dev.id)
+        vulnerabilities = cve_row.cves_list if cve_row else []
+        result.append({
+            "id":                 dev.id,
+            "mac":                dev.mac or "unknown",
+            "vendor":             dev.vendor or "",
+            "hostname":           sd.hostname or dev.hostname or "",
+            "label":              dev.label or "",
+            "is_known":           dev.is_known,
+            "latest_ip":          sd.ip,
+            "open_ports":         sd.ports_list,
+            "vulnerability_count": len(vulnerabilities),
+            "max_cve_risk":       max(
+                (v.get("risk") for v in vulnerabilities),
+                key=_risk_rank, default=None
+            ),
+            "os_guess":           dev.os_guess or "",
+        })
+    return result
+
+
 @router.get("/api/diff/latest")
 def get_latest_diff(db: Session = Depends(get_db)):
     latest_scan = (
