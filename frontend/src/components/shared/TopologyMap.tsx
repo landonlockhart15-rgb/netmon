@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Router, Laptop, Smartphone, Cpu, Globe, Server, RefreshCw, Activity, HelpCircle, Zap, ShieldAlert } from 'lucide-react'
-import { getTrafficDashboard, getNetworkInfo, type Device } from '@/lib/api'
+import { Router, Laptop, Smartphone, Cpu, Globe, Server, RefreshCw, Activity, HelpCircle, Zap, ShieldAlert, Clock } from 'lucide-react'
+import { getTrafficDashboard, getNetworkInfo, getScans, getDevicesAtScan, type Device, type Scan } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 interface TopologyMapProps {
@@ -26,6 +26,8 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const [showInternet, setShowInternet] = useState(true)
   const [colorMode, setColorMode] = useState<'network' | 'security'>('network')
+  // Temporal state: null = live, scan id = historical replay
+  const [historicalScanId, setHistoricalScanId] = useState<number | null>(null)
 
   // Fetch traffic dashboard for conversations
   const { data: dashboard } = useQuery({
@@ -39,6 +41,24 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     queryKey: ['network-info'],
     queryFn: getNetworkInfo,
   })
+
+  // Fetch completed scan list for time machine slider
+  const { data: scans } = useQuery({
+    queryKey: ['scans'],
+    queryFn: getScans,
+    refetchInterval: 60_000,
+    select: (data) => (data as any[]).filter((s: any) => s.status === 'complete').reverse() as Scan[],
+  })
+
+  // Fetch historical devices when replaying a past scan
+  const { data: historicalDevices } = useQuery({
+    queryKey: ['devices-at-scan', historicalScanId],
+    queryFn: () => getDevicesAtScan(historicalScanId!),
+    enabled: historicalScanId !== null,
+  })
+
+  // The devices the map actually renders — live prop or historical snapshot
+  const displayDevices = historicalScanId !== null && historicalDevices ? historicalDevices : devices
 
   const gatewayIp = networkInfo?.gateway
   const localIp = networkInfo?.local_ip
@@ -68,19 +88,19 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
   }
 
   const gatewayDevice = useMemo(() => {
-    return devices.find(isGateway) || devices[0]
-  }, [devices, gatewayIp])
+    return displayDevices.find(isGateway) || displayDevices[0]
+  }, [displayDevices, gatewayIp])
 
   // Initialize/update node positions
   useEffect(() => {
-    if (devices.length === 0) return
+    if (displayDevices.length === 0) return
     const { width, height } = dimensions
     const cx = width / 2
     const cy = height / 2
 
     setPositions(prev => {
       const next = { ...prev }
-      
+
       // Internet node (top center)
       if (!next['internet']) {
         next['internet'] = { x: cx, y: 70 }
@@ -93,7 +113,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
       }
 
       // Non-gateway devices
-      const otherDevices = devices.filter(d => d.id !== gatewayDevice?.id)
+      const otherDevices = displayDevices.filter(d => d.id !== gatewayDevice?.id)
       otherDevices.forEach((d, idx) => {
         const id = `device-${d.id}`
         if (!next[id]) {
@@ -108,7 +128,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
 
       return next
     })
-  }, [devices, dimensions, gatewayDevice])
+  }, [displayDevices, dimensions, gatewayDevice])
 
   // Reset to default radial layout
   const resetLayout = () => {
@@ -122,7 +142,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     const gatewayId = gatewayDevice ? `device-${gatewayDevice.id}` : 'gateway'
     newPositions[gatewayId] = { x: cx, y: cy }
 
-    const otherDevices = devices.filter(d => d.id !== gatewayDevice?.id)
+    const otherDevices = displayDevices.filter(d => d.id !== gatewayDevice?.id)
     otherDevices.forEach((d, idx) => {
       const id = `device-${d.id}`
       const angle = (idx / Math.max(1, otherDevices.length)) * 2 * Math.PI
@@ -143,7 +163,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     // 1. Add static physical link to Gateway for all devices (inactive by default)
     if (gatewayDevice) {
       const gId = `device-${gatewayDevice.id}`
-      devices.forEach(d => {
+      displayDevices.forEach(d => {
         if (d.id !== gatewayDevice.id) {
           const dId = `device-${d.id}`
           const linkId = `${dId}-${gId}`
@@ -161,10 +181,10 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
       })
     }
 
-    const findDeviceByIp = (ip: string) => devices.find(d => d.ip === ip)
+    const findDeviceByIp = (ip: string) => displayDevices.find(d => d.ip === ip)
 
     // Helper check to satisfy test assertion d.ip === localIp
-    const hasLocal = devices.some(d => d.ip === localIp)
+    const hasLocal = displayDevices.some(d => d.ip === localIp)
 
     // 2. Overlay connections from conversations
     if (conversations) {
@@ -261,7 +281,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     }
 
     return list
-  }, [devices, conversations, gatewayIp, localIp])
+  }, [displayDevices, conversations, gatewayIp, localIp])
 
   // Drag handlers
   const handlePointerDown = (id: string, e: React.PointerEvent) => {
@@ -325,7 +345,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     if (hoveredNode === 'internet') {
       const convList = conversations || []
       const wanTraffic = convList
-        .filter(c => !devices.some(d => d.ip === c.src_ip) || !devices.some(d => d.ip === c.dst_ip))
+        .filter(c => !displayDevices.some(d => d.ip === c.src_ip) || !displayDevices.some(d => d.ip === c.dst_ip))
         .reduce((acc, curr) => acc + curr.bytes, 0)
       return {
         id: 'internet',
@@ -338,7 +358,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     }
 
     const deviceId = hoveredNode.replace('device-', '')
-    const dev = devices.find(d => d.id === Number(deviceId))
+    const dev = displayDevices.find(d => d.id === Number(deviceId))
     if (!dev) return null
 
     const convList = conversations || []
@@ -361,7 +381,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
       max_cve_risk: dev.max_cve_risk || null,
       raw: dev
     }
-  }, [hoveredNode, devices, conversations])
+  }, [hoveredNode, displayDevices, conversations])
 
   // Speed and size based on connection metrics
   const getPulseProps = (bytes: number) => {
@@ -434,7 +454,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
         {Object.entries(positions).map(([id, pos]) => {
           const isInternet = id === 'internet'
           const deviceId = id.replace('device-', '')
-          const device = isInternet ? undefined : devices.find(d => d.id === Number(deviceId))
+          const device = isInternet ? undefined : displayDevices.find(d => d.id === Number(deviceId))
           const isGway = device ? isGateway(device) : false
 
           const isSecurityMode = colorMode === 'security'
@@ -498,7 +518,12 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
 
         {/* Toolbar */}
         <div className="absolute top-3 right-3 flex items-center gap-2 bg-black/40 backdrop-blur-md px-2 py-1.5 rounded-lg border border-white/5 text-xs pointer-events-auto">
-          {isCapturing && (
+          {historicalScanId !== null ? (
+            <div className="flex items-center gap-1.5 px-2 py-1 text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded select-none">
+              <Clock className="w-3 h-3" />
+              Time Machine
+            </div>
+          ) : isCapturing && (
             <div className="flex items-center gap-1.5 px-2 py-1 text-red-400 bg-red-500/10 border border-red-500/20 rounded animate-pulse select-none">
               <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
               Live
@@ -537,9 +562,64 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
           </button>
         </div>
 
-        <div className="absolute bottom-3 left-3 bg-black/40 backdrop-blur-md px-2 py-1 rounded border border-white/5 text-[9px] text-gray-500 pointer-events-none">
-          💡 Drag devices to organize topology. Click node to see details.
-        </div>
+        {/* Temporal slider — only shown when we have scan history */}
+        {scans && scans.length > 1 && (() => {
+          const sliderScans = scans.slice(-20)
+          const liveIndex = sliderScans.length
+          const currentIndex = historicalScanId !== null
+            ? sliderScans.findIndex(s => s.id === historicalScanId)
+            : liveIndex
+          const selectedScan = historicalScanId !== null
+            ? sliderScans.find(s => s.id === historicalScanId)
+            : null
+          return (
+            <div className="absolute bottom-3 left-3 right-3 flex flex-col items-center gap-1 pointer-events-auto">
+              <div className="w-full max-w-md bg-black/60 backdrop-blur-md px-3 py-2 rounded-lg border border-white/5">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[9px] text-gray-500 flex items-center gap-1">
+                    <Clock className="w-2.5 h-2.5" />
+                    {selectedScan
+                      ? new Date(selectedScan.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                      : 'Live View'}
+                  </span>
+                  {historicalScanId !== null && (
+                    <button
+                      onClick={() => setHistoricalScanId(null)}
+                      className="text-[9px] text-amber-400 hover:text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded transition-colors"
+                    >
+                      Return to Live
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={liveIndex}
+                  value={currentIndex === -1 ? liveIndex : currentIndex}
+                  onChange={e => {
+                    const idx = Number(e.target.value)
+                    if (idx === liveIndex) {
+                      setHistoricalScanId(null)
+                    } else {
+                      setHistoricalScanId(sliderScans[idx].id)
+                    }
+                  }}
+                  className="w-full h-1 accent-amber-400 cursor-pointer"
+                />
+                <div className="flex justify-between text-[8px] text-gray-600 mt-0.5">
+                  <span>{sliderScans.length > 0 ? new Date(sliderScans[0].started_at).toLocaleDateString() : ''}</span>
+                  <span className={cn(historicalScanId === null ? 'text-emerald-400' : 'text-gray-600')}>Live</span>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+
+        {!scans || scans.length <= 1 ? (
+          <div className="absolute bottom-3 left-3 bg-black/40 backdrop-blur-md px-2 py-1 rounded border border-white/5 text-[9px] text-gray-500 pointer-events-none">
+            Drag devices to organize topology. Click node to see details.
+          </div>
+        ) : null}
       </div>
 
       {/* Detail Sidebar */}
