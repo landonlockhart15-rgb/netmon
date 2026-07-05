@@ -45,6 +45,7 @@ function normalizeDevice(d: any): Device {
     ip: d.ip ?? d.latest_ip ?? '',
     trusted: d.trusted ?? d.is_known ?? false,
     open_ports: d.open_ports ?? [],
+    ghost_detection: d.ghost_detection ?? null,
   }
 }
 
@@ -354,6 +355,15 @@ export interface Device {
   is_new?: boolean
   vulnerability_count?: number
   max_cve_risk?: string | null
+  ghost_detection?: GhostDetection | null
+}
+
+export interface GhostDetection {
+  is_ghost: boolean
+  kind: 'rogue_ap' | 'shadow_device'
+  score: number
+  confidence: number
+  reasons: string[]
 }
 
 export interface LearningLesson {

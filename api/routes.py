@@ -194,10 +194,90 @@ def _risk_rank(risk) -> int:
     return {"critical": 4, "high": 3, "medium": 2, "low": 1}.get(risk.lower(), 0)
 
 
+def _ghost_detection_for_device(dev: Device, sd: ScanDevice | None) -> dict | None:
+    """Best-effort ghost heuristic for suspicious / unauthorized hardware.
+
+    Phase 1 is intentionally conservative: it only flags devices that are both
+    untrusted and have a physical-layer fingerprint that looks like a rogue AP
+    or an otherwise unrecognized shadow device. RSSI is optional and will be
+    consumed if a future capture source persists it on ScanDevice.
+    """
+    if dev.is_known:
+        return None
+
+    text = " ".join([
+        dev.label or "",
+        dev.hostname or "",
+        dev.vendor or "",
+        (sd.hostname or "") if sd else "",
+    ]).lower()
+    ports = _port_set(sd)
+    reasons: list[str] = []
+    score = 0
+
+    if not dev.mac:
+        reasons.append("No MAC address available for physical-layer fingerprinting")
+        score += 1
+
+    vendor = (dev.vendor or "").strip().lower()
+    if not vendor or vendor == "unknown":
+        reasons.append("No known OUI/vendor match")
+        score += 1
+
+    ap_terms = [term for term in _GHOST_AP_TERMS if term in text]
+    if ap_terms:
+        reasons.append("AP-like identity: " + ", ".join(ap_terms[:3]))
+        score += 2
+
+    device_terms = [term for term in _GHOST_DEVICE_TERMS if term in text]
+    if device_terms:
+        reasons.append("Unknown-device profile: " + ", ".join(device_terms[:3]))
+        score += 1
+
+    mgmt_ports = sorted(ports & _GHOST_MGMT_PORTS)
+    if mgmt_ports:
+        reasons.append("Management-style open ports: " + ", ".join(str(p) for p in mgmt_ports[:5]))
+        score += 1
+
+    signal_dbm = getattr(sd, "signal_dbm", None) if sd else None
+    if isinstance(signal_dbm, (int, float)):
+        # RSSI is negative in dBm; closer to 0 means physically nearer.
+        if signal_dbm > -60:
+            reasons.append(f"Strong RSSI: {signal_dbm:g} dBm")
+            score += 2
+        elif signal_dbm > -72:
+            reasons.append(f"Moderate RSSI: {signal_dbm:g} dBm")
+            score += 1
+
+    if score < 3:
+        return None
+
+    kind = "rogue_ap" if ap_terms or mgmt_ports else "shadow_device"
+    confidence = min(0.95, 0.45 + (0.12 * score))
+    return {
+        "is_ghost": True,
+        "kind": kind,
+        "score": score,
+        "confidence": round(confidence, 2),
+        "reasons": reasons[:4],
+    }
+
+
 _IOT_TERMS = ("iot", "camera", "cam", "bulb", "plug", "sensor", "thermostat", "tuya", "kasa", "wyze", "ring", "nest", "echo", "alexa", "printer", "roku", "tv")
 _HIGH_VALUE_TERMS = ("nas", "work", "pc", "desktop", "laptop", "server", "synology", "qnap", "truenas", "freenas", "windows", "macbook", "imac")
 _ADMIN_PORTS = {22, 23, 80, 443, 8080, 8443, 8000, 8888}
 _TARGET_PORTS = {22, 445, 548, 3389, 5000, 5001, 5900, 8080, 8443}
+_GHOST_AP_TERMS = (
+    "access point", "rogue", "hotspot", "wireless", "wifi", "ssid", "bssid",
+    "extender", "repeater", "mesh", "bridge", "router", "unifi", "ubiquiti",
+    "mikrotik", "netgear", "tp-link", "tplink", "asus", "linksys", "dlink",
+    "cisco", "ruckus", "aruba", "fortinet",
+)
+_GHOST_DEVICE_TERMS = (
+    "unknown", "untrusted", "shadow", "guest", "hidden", "cloaked",
+    "not in inventory", "new device",
+)
+_GHOST_MGMT_PORTS = {22, 23, 80, 443, 8080, 8443, 1900}
 
 
 def _device_text(dev: Device, sd: ScanDevice | None) -> str:
@@ -514,6 +594,7 @@ def get_devices(db: Session = Depends(get_db)):
             "first_seen": _iso(dev.first_seen),
             "last_seen":  _iso(dev.last_seen)  if dev.last_seen  else None,
             "is_known": dev.is_known, "device_id": dev.id,
+            "ghost_detection": _ghost_detection_for_device(dev, sd),
         })
     return {
         "scan": {
@@ -585,6 +666,7 @@ def get_devices_at_scan(scan_id: int, db: Session = Depends(get_db)):
                 key=_risk_rank, default=None
             ),
             "os_guess":           dev.os_guess or "",
+            "ghost_detection":    _ghost_detection_for_device(dev, sd),
         })
     return result
 
@@ -691,6 +773,7 @@ def get_all_devices(current_only: bool = False, db: Session = Depends(get_db)):
             "dhcp_option55": dev.dhcp_option55 or "",
             "dhcp_option60": dev.dhcp_option60 or "",
             "dhcp_hostname": dev.dhcp_hostname or "",
+            "ghost_detection": _ghost_detection_for_device(dev, latest_sd),
         })
     return result
 
