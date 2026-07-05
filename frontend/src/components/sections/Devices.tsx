@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { LayoutGrid, List, Cpu, ScanLine, ShieldCheck, MonitorSmartphone, CircleHelp, Network } from 'lucide-react'
+import { LayoutGrid, List, Cpu, ScanLine, ShieldCheck, MonitorSmartphone, CircleHelp, Network, TriangleAlert } from 'lucide-react'
 import { getDevices, runScan, trustAllDevices, type Device } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
@@ -63,6 +63,7 @@ export default function Devices() {
   const trustedCount = (devices as Device[]).filter(d => d.trusted).length
   const total = (devices as Device[]).length
   const withPorts = (devices as Device[]).filter(d => d.open_ports?.length > 0).length
+  const ghostCount = (devices as Device[]).filter(d => d.ghost_detection?.is_ghost).length
 
   return (
     <div className="space-y-4">
@@ -78,6 +79,7 @@ export default function Devices() {
             <StatTile icon={<MonitorSmartphone size={11} />} label="Total" accent="cyan" glow value={total} sub={filter === 'current' ? 'online now' : 'ever seen'} />
             <StatTile icon={<ShieldCheck size={11} />} label="Trusted" accent="emerald" value={trustedCount} sub="recognized" />
             <StatTile icon={<CircleHelp size={11} />} label="Unknown" accent={total - trustedCount > 0 ? 'amber' : 'gray'} value={total - trustedCount} sub="unverified" />
+            <StatTile icon={<TriangleAlert size={11} />} label="Ghosts" accent={ghostCount > 0 ? 'red' : 'gray'} value={ghostCount} sub="suspected rogue hardware" />
             <StatTile icon={<Network size={11} />} label="Open Ports" accent="blue" value={withPorts} sub="devices w/ ports" />
           </>
         }
@@ -214,7 +216,10 @@ function ListView({ devices, onSelect }: { devices: Device[]; onSelect: (id: num
               </td>
               <td className="px-4 py-2.5 text-gray-500">{formatRelativeTime(d.last_seen)}</td>
               <td className="px-4 py-2.5">
-                <Badge variant={d.trusted ? 'ok' : 'warn'}>{d.trusted ? 'Trusted' : 'Unknown'}</Badge>
+                <div className="flex flex-wrap gap-1">
+                  <Badge variant={d.trusted ? 'ok' : 'warn'}>{d.trusted ? 'Trusted' : 'Unknown'}</Badge>
+                  {d.ghost_detection?.is_ghost && <Badge variant="error">Ghost</Badge>}
+                </div>
               </td>
             </tr>
           ))}
@@ -232,7 +237,10 @@ function GridView({ devices, onSelect }: { devices: Device[]; onSelect: (id: num
           className="rounded-xl border border-white/8 bg-[#1a1a2e] p-3 cursor-pointer hover:border-purple-500/40 hover:bg-purple-500/5 transition-all group">
           <div className="flex items-start justify-between mb-2">
             <Cpu size={20} className="text-gray-600 group-hover:text-purple-400 transition-colors" />
-            <Badge variant={d.trusted ? 'ok' : 'warn'} className="text-[9px]">{d.trusted ? '✓' : '?'}</Badge>
+            <div className="flex gap-1">
+              <Badge variant={d.trusted ? 'ok' : 'warn'} className="text-[9px]">{d.trusted ? '✓' : '?'}</Badge>
+              {d.ghost_detection?.is_ghost && <Badge variant="error" className="text-[9px]">Ghost</Badge>}
+            </div>
           </div>
           <p className="text-xs font-mono text-blue-400 mb-0.5">{d.ip}</p>
           <p className="text-xs text-gray-200 truncate">

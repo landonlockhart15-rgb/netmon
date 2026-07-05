@@ -779,6 +779,39 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["allow"]["allowed_high_bandwidth"], True)
 
+    def test_ghost_detection_flags_rogue_ap_like_device(self):
+        """Test device payloads expose ghost detection for obvious rogue AP fingerprints."""
+        scan = Scan(id=60, status="complete", started_at=datetime.now(timezone.utc))
+        ghost = Device(
+            id=60,
+            mac="aa:bb:cc:dd:ee:ff",
+            vendor="Ubiquiti",
+            hostname="mesh-router",
+            label="Rogue AP",
+            is_known=False,
+        )
+        scan_device = ScanDevice(
+            id=60,
+            scan_id=60,
+            device_id=60,
+            ip="192.168.1.250",
+            hostname="rogue-ap",
+            open_ports="[80, 443, 8080]",
+        )
+        self.db.add_all([scan, ghost, scan_device])
+        self.db.commit()
+
+        response = self.client.get("/api/devices/all?current_only=true")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data), 1)
+        ghost_detection = data[0]["ghost_detection"]
+        self.assertIsNotNone(ghost_detection)
+        self.assertTrue(ghost_detection["is_ghost"])
+        self.assertEqual(ghost_detection["kind"], "rogue_ap")
+        self.assertGreaterEqual(ghost_detection["score"], 3)
+        self.assertTrue(any("AP-like" in reason or "Management-style" in reason for reason in ghost_detection["reasons"]))
+
     @patch("ai.provider.get_investigation_provider")
     def test_contextual_insight(self, mock_get_provider):
         """Test POST /api/ai/contextual-insight route."""
