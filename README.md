@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="static/lockhartlabs-logo.png" alt="LockhartLabs logo" width="96">
+</p>
+
 # NetMon
 
 > **Know exactly what's on your network — and what it's doing.**
@@ -34,17 +38,32 @@ and what you can do next — without handing your network data to anyone else.
 - Modern React dashboard (Overview / Devices / Alerts / Shield) with a
   responsive mobile layout and a live tray icon
 - Device discovery with nmap — device history, change detection, and open ports
+- **Enhanced device fingerprinting & profiling** — passive DHCP fingerprinting,
+  active SSDP/mDNS discovery, and ML-assisted device classification, with
+  shadow-device and rogue access point detection
+- **Interactive network topology** — a live "Pulse" visualization, a risk
+  heatmap, and a "Time Machine" to scrub the topology back through time
 - **AI device chat** — ask the assistant to identify or investigate any device,
-  with conversation history synthesized from past observations
+  with conversation history synthesized from past observations, plus a
+  plain-English "Explain Like I'm a Human" diagnostic overlay
 - Health checks for internet and router latency, plus **Uptime Guardian**
-  auto-heal for sustained outages
-- Traffic capture summaries with Wireshark `dumpcap` / `tshark`
-- DNS ad blocking with StevenBlack, OISD, and AdGuard blocklists
+  auto-heal for sustained outages — now with DNS-aware probing, soft-healing
+  failbacks, and a smart-plug power-cycle driver for routers with no admin API
+- Traffic capture summaries with Wireshark `dumpcap` / `tshark`, plus a passive
+  traffic inference engine
+- DNS ad blocking with StevenBlack, OISD, and AdGuard blocklists, infused with
+  threat intel for real-time C2/malware shielding
 - Anomaly detection, threat-intel + IP geolocation, and reversible firewall
   protection actions
+- **Security Lab** — authorized vulnerability, password, exploit, Wi-Fi, and
+  exposure checks through WSL/Kali tools, now with CVE vulnerability mapping,
+  an exploit-path attack graph, and automated exploit-surface mapping (a
+  Red-Team Lab) that keeps verified findings separate from speculative,
+  unconfirmed attack-tree guesses
+- AI-driven self-healing playbooks with narrative logs explaining what was
+  tried and why
 - Local AI analysis through Ollama, with an optional cloud provider fallback
   chain (Cerebras → Groq → SambaNova → OpenRouter → Gemini → Ollama)
-- Security Lab wrappers for authorized tests through WSL/Kali tools
 - Optional ntfy push notifications with action buttons
 
 ## Uptime Guardian

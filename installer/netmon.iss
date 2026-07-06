@@ -13,7 +13,7 @@
 ; launch — that's expected.
 
 #define AppName "NetMon"
-#define AppVersion "0.3.0"
+#define AppVersion "0.4.0"
 #define AppPublisher "Landon Lockhart"
 #define AppURL "https://github.com/landonlockhart15-rgb/netmon"
 #define AppExeName "NetMon.exe"
