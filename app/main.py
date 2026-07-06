@@ -47,7 +47,7 @@ STATIC_DIR = static_dir()
 
 # Paths that are ALWAYS accessible without a session.
 # Keep this list minimal — only what the login page itself needs.
-_EXEMPT_PATHS = {"/login", "/auth/login", "/auth/logout"}
+_EXEMPT_PATHS = {"/login", "/auth/login", "/auth/logout", "/static/lockhartlabs-logo.png"}
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
