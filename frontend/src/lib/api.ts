@@ -70,6 +70,7 @@ export const getDevicesAtScan = async (scanId: number): Promise<Device[]> => {
 }
 export const getDiffLatest = () => apiFetch<DiffResult>('/api/diff/latest')
 export const getDeviceHistory = (id: number) => apiFetch<DeviceScan[]>(`/api/device/${id}/history`)
+export const getDeviceProfile = (id: number) => apiFetch<DeviceProfile>(`/api/device/${id}/profile`)
 export const patchDevice = (id: number, body: Partial<Device & { is_known?: boolean }>) => {
   // Backend uses is_known, frontend uses trusted — normalize
   const payload: any = { ...body }
@@ -431,6 +432,27 @@ export interface DeviceScan {
   scan_id: number
   scanned_at: string
   open_ports: number[]
+}
+
+export interface DeviceProfile {
+  category: string
+  label: string
+  confidence: number
+  score: number
+  evidence: string[]
+  signals: {
+    vendor: string
+    hostname: string
+    os_guess: string
+    dhcp_option60: string
+    dhcp_option55: string
+    learned_domains: string[]
+    open_ports: number[]
+  }
+  alternatives: { category: string; label: string; score: number }[]
+  source: string
+  device?: { id: number; label: string; vendor: string; hostname: string; os_guess: string; is_known: boolean }
+  latest_ip?: string | null
 }
 
 export interface HealthStatus {
