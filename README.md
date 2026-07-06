@@ -188,7 +188,7 @@ $env:NETMON_SELFTEST = "1"; .\.venv\Scripts\python.exe netmon_app.py
 
 ## Credits
 
-Created and maintained by **Landon Lockhart**.
+Created and maintained by **Landon Lockhart** at **LockhartLabs**.
 
 Built with significant contributions from AI collaborators:
 
