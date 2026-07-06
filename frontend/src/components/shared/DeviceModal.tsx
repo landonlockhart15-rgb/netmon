@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, Save, ShieldAlert, ShieldOff, Globe, AlertTriangle } from 'lucide-react'
-import { getDevices, patchDevice, startMitm, stopMitm, getMitmStatus, getDeviceActivity, startCapture, type Device } from '@/lib/api'
+import { X, Save, ShieldAlert, ShieldOff, Globe, AlertTriangle, BrainCircuit } from 'lucide-react'
+import { getDevices, getDeviceProfile, patchDevice, startMitm, stopMitm, getMitmStatus, getDeviceActivity, startCapture, type Device, type DeviceProfile } from '@/lib/api'
 import { formatRelativeTime } from '@/lib/utils'
 import Btn from './Btn'
 import Badge from './Badge'
@@ -25,6 +25,11 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
   })
 
   const device = (devices as Device[]).find(d => d.id === deviceId)
+  const { data: profile } = useQuery<DeviceProfile>({
+    queryKey: ['device-profile', deviceId],
+    queryFn: () => getDeviceProfile(deviceId),
+    enabled: !!device,
+  })
 
   if (device && !initialized) {
     setLabel(device.label ?? '')
@@ -108,6 +113,7 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
           </div>
 
           {/* Learned from traffic */}
+          <ProfileSection profile={profile} />
           <LearnedSection device={device} />
 
           {/* Open ports */}
@@ -258,6 +264,41 @@ function LearnedSection({ device }: { device: any }) {
             ))}
           </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+function ProfileSection({ profile }: { profile?: DeviceProfile }) {
+  if (!profile) return null
+  const confidence = Math.round((profile.confidence ?? 0) * 100)
+  const alternatives = profile.alternatives ?? []
+
+  return (
+    <div className="space-y-2 pt-1 border-t border-white/5">
+      <p className="text-xs text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+        <BrainCircuit size={11} />
+        <span>Profile inference</span>
+        <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-600/20 text-cyan-300">
+          {profile.source || 'model'}
+        </span>
+      </p>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <Badge variant="ok">{profile.label}</Badge>
+        <span className="text-gray-400">{confidence}% confidence</span>
+        {profile.latest_ip && <span className="text-gray-600 font-mono">{profile.latest_ip}</span>}
+      </div>
+      {Array.isArray(profile.evidence) && profile.evidence.length > 0 && (
+        <ul className="space-y-1 text-xs text-gray-400">
+          {profile.evidence.slice(0, 4).map((item: string, i: number) => (
+            <li key={i}>• {item}</li>
+          ))}
+        </ul>
+      )}
+      {alternatives.length > 0 && (
+        <p className="text-[10px] text-gray-600">
+          Also considered: {alternatives.map((alt: any) => alt.label).join(', ')}
+        </p>
       )}
     </div>
   )

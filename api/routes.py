@@ -279,6 +279,65 @@ _GHOST_DEVICE_TERMS = (
 )
 _GHOST_MGMT_PORTS = {22, 23, 80, 443, 8080, 8443, 1900}
 
+_PROFILE_RULES = (
+    {
+        "key": "router",
+        "label": "Router / gateway",
+        "terms": ("router", "gateway", "modem", "orbi", "netgear", "unifi", "ubiquiti", "mikrotik", "tplink", "tp-link", "asus", "linksys", "dlink", "d-link", "cisco"),
+        "domains": ("routerlogin", "unifi", "tplink", "netgear", "myrouter"),
+        "ports": {80, 443, 8080, 8443, 1900, 5000, 5001},
+    },
+    {
+        "key": "phone",
+        "label": "Phone / tablet",
+        "terms": ("iphone", "ipad", "android", "galaxy", "pixel", "oneplus", "motorola", "xiaomi", "huawei", "oppo", "vivo", "samsung"),
+        "domains": ("apple.com", "icloud.com", "googleapis", "gstatic", "play.google", "android.com"),
+        "ports": set(),
+    },
+    {
+        "key": "computer",
+        "label": "Computer / workstation",
+        "terms": ("windows", "macbook", "imac", "mac os", "linux", "desktop", "laptop", "workstation", "pc"),
+        "domains": ("microsoft.com", "windowsupdate", "apple.com", "kernel.org"),
+        "ports": {22, 445, 3389, 5985, 5986},
+    },
+    {
+        "key": "camera",
+        "label": "Camera / security device",
+        "terms": ("camera", "doorbell", "ring", "nest", "blink", "arlo", "wyze", "hikvision", "dahua", "security"),
+        "domains": ("ring.com", "nest.com", "wyze.com", "arlo.com", "hikvision.com", "dahua.com"),
+        "ports": {80, 443, 554, 8080, 8443, 8554},
+    },
+    {
+        "key": "printer",
+        "label": "Printer",
+        "terms": ("printer", "hp", "brother", "canon", "epson", "xerox", "laserjet", "deskjet"),
+        "domains": ("hp.com", "brother.com", "canon.com", "epson.com", "xerox.com"),
+        "ports": {80, 443, 515, 631, 9100},
+    },
+    {
+        "key": "storage",
+        "label": "Storage / server",
+        "terms": ("nas", "synology", "qnap", "truenas", "freenas", "server", "plex", "unraid"),
+        "domains": ("synology.com", "qnap.com", "plex.tv", "unraid.net"),
+        "ports": {22, 80, 443, 445, 5000, 5001},
+    },
+    {
+        "key": "streaming",
+        "label": "Streaming / media device",
+        "terms": ("roku", "chromecast", "fire tv", "firetv", "apple tv", "smart tv", "television", "tv"),
+        "domains": ("roku.com", "youtube.com", "google.com", "amazon.com", "apple.com"),
+        "ports": {80, 443, 1900, 8008, 8009, 8443},
+    },
+    {
+        "key": "iot",
+        "label": "Smart home / IoT",
+        "terms": ("bulb", "plug", "sensor", "thermostat", "tuya", "kasa", "hue", "smartlife", "echo", "alexa", "zigbee", "zwave"),
+        "domains": ("tuya.com", "tplinksmarthome.com", "meethue.com", "amazon.com"),
+        "ports": {80, 443, 1883, 5683, 8883},
+    },
+)
+
 
 def _device_text(dev: Device, sd: ScanDevice | None) -> str:
     return " ".join([
@@ -289,6 +348,128 @@ def _device_text(dev: Device, sd: ScanDevice | None) -> str:
 
 def _device_name(dev: Device, sd: ScanDevice | None) -> str:
     return dev.label or (sd.hostname if sd else None) or dev.hostname or (sd.ip if sd else None) or f"Device #{dev.id}"
+
+
+def _device_profile_context(dev: Device, sd: ScanDevice | None) -> tuple[str, set[int], list[str]]:
+    try:
+        allow = json.loads(dev.allow_json or "{}")
+    except Exception:
+        allow = {}
+    learned_domains = allow.get("learned_domains") if isinstance(allow, dict) else []
+    if not isinstance(learned_domains, list):
+        learned_domains = []
+
+    text = " ".join([
+        dev.label or "",
+        dev.vendor or "",
+        dev.hostname or "",
+        dev.os_guess or "",
+        dev.dhcp_option60 or "",
+        dev.dhcp_hostname or "",
+        (sd.hostname or "") if sd else "",
+    ]).lower()
+    ports = _port_set(sd)
+    domains = [
+        d.strip().lower()
+        for d in learned_domains
+        if isinstance(d, str) and d.strip()
+    ]
+    return text, ports, domains
+
+
+def _profile_rule_score(rule: dict, text: str, ports: set[int], domains: list[str]) -> tuple[float, list[str]]:
+    reasons: list[str] = []
+    score = 0.0
+
+    for term in rule["terms"]:
+        if term in text:
+            score += 2.0
+            reasons.append(f"Matched identity term: {term}")
+
+    for domain in domains:
+        if any(term in domain for term in rule["domains"]):
+            score += 2.0
+            reasons.append(f"Matched learned domain: {domain}")
+            break
+
+    matched_ports = sorted(ports & rule["ports"])
+    if matched_ports:
+        score += min(2.5, 1.0 + (0.5 * len(matched_ports)))
+        reasons.append("Matched open ports: " + ", ".join(str(p) for p in matched_ports[:4]))
+
+    return score, reasons
+
+
+def _device_profile_for(dev: Device, sd: ScanDevice | None) -> dict | None:
+    """Best-effort profile inference from existing device signals."""
+    text, ports, domains = _device_profile_context(dev, sd)
+
+    scores: list[tuple[float, dict, list[str]]] = []
+    for rule in _PROFILE_RULES:
+        score, reasons = _profile_rule_score(rule, text, ports, domains)
+        if dev.dhcp_option60 and rule["key"] == "computer" and "msft" in dev.dhcp_option60.lower():
+            score += 2.0
+            reasons.append("DHCP vendor class looks like Microsoft Windows")
+        if dev.dhcp_option60 and rule["key"] == "phone" and any(term in dev.dhcp_option60.lower() for term in ("iphone", "android", "apple")):
+            score += 2.0
+            reasons.append("DHCP vendor class looks like a mobile device")
+        if dev.os_guess and any(term in dev.os_guess.lower() for term in rule["terms"]):
+            score += 2.0
+            reasons.append(f"OS guess supports {rule['label'].lower()}")
+        scores.append((score, rule, reasons))
+
+    scores.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_rule, best_reasons = scores[0]
+    runner_up = scores[1][0] if len(scores) > 1 else 0.0
+
+    if best_score < 2.0:
+        return {
+            "category": "unknown",
+            "label": "Unknown / mixed",
+            "confidence": 0.25,
+            "score": 0.0,
+            "evidence": ["Not enough stable signals yet"],
+            "signals": {
+                "vendor": dev.vendor or "",
+                "hostname": dev.hostname or "",
+                "os_guess": dev.os_guess or "",
+                "dhcp_option60": dev.dhcp_option60 or "",
+                "dhcp_option55": dev.dhcp_option55 or "",
+                "learned_domains": domains[:8],
+                "open_ports": sorted(ports)[:12],
+            },
+            "alternatives": [],
+            "source": "heuristic-v1",
+        }
+
+    confidence = min(0.98, 0.35 + (best_score * 0.08) + ((best_score - runner_up) * 0.05))
+    alternatives = [
+        {
+            "category": rule["key"],
+            "label": rule["label"],
+            "score": round(score, 2),
+        }
+        for score, rule, _ in scores[1:3]
+        if score > 0
+    ]
+    return {
+        "category": best_rule["key"],
+        "label": best_rule["label"],
+        "confidence": round(confidence, 2),
+        "score": round(best_score, 2),
+        "evidence": best_reasons[:5],
+        "signals": {
+            "vendor": dev.vendor or "",
+            "hostname": dev.hostname or "",
+            "os_guess": dev.os_guess or "",
+            "dhcp_option60": dev.dhcp_option60 or "",
+            "dhcp_option55": dev.dhcp_option55 or "",
+            "learned_domains": domains[:8],
+            "open_ports": sorted(ports)[:12],
+        },
+        "alternatives": alternatives,
+        "source": "heuristic-v1",
+    }
 
 
 def _port_set(sd: ScanDevice | None) -> set[int]:
@@ -844,6 +1025,27 @@ def add_device_allow_entry(device_id: int, entry: dict, db: Session = Depends(ge
     device.allow_json = json.dumps(allow)
     db.commit()
     return {"id": device.id, "allow": allow}
+
+
+@router.get("/api/device/{device_id}/profile")
+def get_device_profile(device_id: int, db: Session = Depends(get_db)):
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    latest_sd = _latest_scan_device(db, device_id)
+    profile = _device_profile_for(device, latest_sd)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Device profile unavailable")
+    profile["device"] = {
+        "id": device.id,
+        "label": device.label or "",
+        "vendor": device.vendor or "",
+        "hostname": device.hostname or "",
+        "os_guess": device.os_guess or "",
+        "is_known": device.is_known,
+    }
+    profile["latest_ip"] = latest_sd.ip if latest_sd else None
+    return profile
 
 
 @router.get("/api/device/{device_id}/history")

@@ -127,6 +127,259 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(data["devices"][0]["vulnerability_count"], 1)
         self.assertEqual(data["devices"][0]["max_cve_risk"], "critical")
 
+    def test_get_device_profile_infers_router_identity(self):
+        scan = Scan(id=1, status="complete")
+        device = Device(
+            id=1,
+            mac="00:11:22:33:44:55",
+            vendor="Netgear",
+            hostname="routerlogin",
+            label="Office Router",
+            dhcp_option60="Netgear Router",
+        )
+        scan_device = ScanDevice(
+            id=1,
+            scan_id=1,
+            device_id=1,
+            ip="192.168.1.1",
+            hostname="routerlogin",
+            open_ports="[80,443,1900]",
+        )
+        self.db.add_all([scan, device, scan_device])
+        self.db.commit()
+
+        response = self.client.get("/api/device/1/profile")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["category"], "router")
+        self.assertEqual(data["label"], "Router / gateway")
+        self.assertGreaterEqual(data["confidence"], 0.6)
+        self.assertTrue(any("router" in reason.lower() for reason in data["evidence"]))
+
+    def test_get_device_profile_device_not_found(self):
+        """Test GET /api/device/{id}/profile when the device does not exist."""
+        response = self.client.get("/api/device/999/profile")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Device not found")
+
+    def test_get_device_profile_missing_scan_device(self):
+        """Test GET /api/device/{id}/profile when device has no ScanDevice record."""
+        # Scenario 1: Device has no metadata signals, should fall back to unknown
+        device_unknown = Device(
+            id=101,
+            mac="00:11:22:33:44:01",
+        )
+        # Scenario 2: Device has metadata signals, should infer even without ScanDevice
+        device_printer = Device(
+            id=102,
+            mac="00:11:22:33:44:02",
+            label="HP LaserJet Printer",
+        )
+        self.db.add_all([device_unknown, device_printer])
+        self.db.commit()
+
+        # Unknown
+        response = self.client.get("/api/device/101/profile")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["category"], "unknown")
+        self.assertEqual(data["latest_ip"], None)
+
+        # Printer
+        response = self.client.get("/api/device/102/profile")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["category"], "printer")
+        self.assertEqual(data["latest_ip"], None)
+
+    def test_get_device_profile_empty_device_metadata(self):
+        """Test GET /api/device/{id}/profile with empty device metadata."""
+        scan = Scan(id=10, status="complete")
+        device = Device(
+            id=103,
+            mac="00:11:22:33:44:03",
+            label=None,
+            vendor=None,
+            hostname=None,
+            os_guess=None,
+        )
+        scan_device = ScanDevice(
+            id=10,
+            scan_id=10,
+            device_id=103,
+            ip="192.168.1.103",
+            hostname=None,
+            open_ports=None,
+        )
+        self.db.add_all([scan, device, scan_device])
+        self.db.commit()
+
+        response = self.client.get("/api/device/103/profile")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["category"], "unknown")
+        self.assertEqual(data["latest_ip"], "192.168.1.103")
+
+    def test_get_device_profile_malformed_allow_json(self):
+        """Test GET /api/device/{id}/profile when allow_json is malformed or invalid structure."""
+        scan = Scan(id=11, status="complete")
+        
+        # 1. Invalid JSON string
+        dev1 = Device(id=104, mac="00:11:22:33:44:04", allow_json="{invalid_json}")
+        # 2. JSON list instead of object
+        dev2 = Device(id=105, mac="00:11:22:33:44:05", allow_json='["not", "a", "dict"]')
+        # 3. learned_domains is not a list
+        dev3 = Device(id=106, mac="00:11:22:33:44:06", allow_json='{"learned_domains": "not-a-list"}')
+        # 4. learned_domains is a list with non-string elements
+        dev4 = Device(id=107, mac="00:11:22:33:44:07", allow_json='{"learned_domains": ["apple.com", 123, null, {}]}')
+        
+        sd1 = ScanDevice(id=11, scan_id=11, device_id=104, ip="192.168.1.104")
+        sd2 = ScanDevice(id=12, scan_id=11, device_id=105, ip="192.168.1.105")
+        sd3 = ScanDevice(id=13, scan_id=11, device_id=106, ip="192.168.1.106")
+        sd4 = ScanDevice(id=14, scan_id=11, device_id=107, ip="192.168.1.107")
+        
+        self.db.add_all([scan, dev1, dev2, dev3, dev4, sd1, sd2, sd3, sd4])
+        self.db.commit()
+
+        for dev_id in [104, 105, 106]:
+            response = self.client.get(f"/api/device/{dev_id}/profile")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["category"], "unknown")
+
+        # dev4 should match apple.com and recognize it as phone or computer
+        response4 = self.client.get("/api/device/107/profile")
+        self.assertEqual(response4.status_code, 200)
+        data = response4.json()
+        self.assertEqual(data["category"], "phone")
+
+    def test_get_device_profile_malformed_ports(self):
+        """Test GET /api/device/{id}/profile when scan_device.open_ports is malformed."""
+        scan = Scan(id=12, status="complete")
+        device = Device(id=108, mac="00:11:22:33:44:08")
+        
+        # open_ports is a malformed JSON list, should not crash
+        sd1 = ScanDevice(id=15, scan_id=12, device_id=108, ip="192.168.1.108", open_ports="[80, 'invalid', 443]")
+        self.db.add_all([scan, device, sd1])
+        self.db.commit()
+
+        response = self.client.get("/api/device/108/profile")
+        self.assertEqual(response.status_code, 200)
+        # Should not crash and successfully returned profile
+        self.assertEqual(response.json()["category"], "unknown")
+
+    def test_get_device_profile_confidence_bounds(self):
+        """Test GET /api/device/{id}/profile confidence bounds (<= 0.98)."""
+        scan = Scan(id=13, status="complete")
+        # Ensure rules score very high to hit the cap
+        device = Device(
+            id=109,
+            mac="00:11:22:33:44:09",
+            vendor="Netgear",
+            label="Netgear Router Gateway",
+            hostname="netgear-router-gateway",
+            dhcp_option60="Netgear Router Gateway",
+        )
+        sd = ScanDevice(
+            id=16,
+            scan_id=13,
+            device_id=109,
+            ip="192.168.1.109",
+            open_ports="[80,443,1900,8080,8443,5000,5001]",
+        )
+        self.db.add_all([scan, device, sd])
+        self.db.commit()
+
+        response = self.client.get("/api/device/109/profile")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["confidence"], 0.98)
+
+    def test_get_device_profile_alternatives(self):
+        """Test GET /api/device/{id}/profile runner-up alternatives are correct."""
+        scan = Scan(id=14, status="complete")
+        # Match "brother" (printer) but also has "smartlife" (iot) and "windows" (computer)
+        # to ensure multiple categories have non-zero scores.
+        device = Device(
+            id=110,
+            mac="00:11:22:33:44:10",
+            label="Brother printer windows smartlife",
+        )
+        sd = ScanDevice(
+            id=17,
+            scan_id=14,
+            device_id=110,
+            ip="192.168.1.110",
+        )
+        self.db.add_all([scan, device, sd])
+        self.db.commit()
+
+        response = self.client.get("/api/device/110/profile")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        # "brother" matches printer (score 2.0). "windows" matches computer (score 2.0). "smartlife" matches iot (score 2.0).
+        # Depending on sort order (stable/tie), it should list other non-zero scoring rules in alternatives
+        self.assertIn(data["category"], ["printer", "computer", "iot"])
+        self.assertGreater(len(data["alternatives"]), 0)
+        for alt in data["alternatives"]:
+            self.assertIn(alt["category"], ["printer", "computer", "iot"])
+            self.assertGreater(alt["score"], 0)
+
+    def test_get_device_profile_dhcp_and_os_heuristics(self):
+        """Test DHCP and OS guess specific heuristics in profile inference."""
+        scan = Scan(id=15, status="complete")
+        
+        # Windows DHCP option
+        dev_win = Device(id=111, mac="00:11:22:33:44:11", dhcp_option60="MSFT 5.0")
+        sd_win = ScanDevice(id=18, scan_id=15, device_id=111, ip="192.168.1.111")
+        
+        # Phone DHCP option
+        dev_phone = Device(id=112, mac="00:11:22:33:44:12", dhcp_option60="android-dhcp-9")
+        sd_phone = ScanDevice(id=19, scan_id=15, device_id=112, ip="192.168.1.112")
+
+        # OS Guess term matching computer
+        dev_os = Device(id=113, mac="00:11:22:33:44:13", os_guess="Microsoft Windows 10")
+        sd_os = ScanDevice(id=20, scan_id=15, device_id=113, ip="192.168.1.113")
+
+        self.db.add_all([scan, dev_win, dev_phone, dev_os, sd_win, sd_phone, sd_os])
+        self.db.commit()
+
+        # Windows DHCP options boost computer
+        response_win = self.client.get("/api/device/111/profile")
+        self.assertEqual(response_win.status_code, 200)
+        self.assertEqual(response_win.json()["category"], "computer")
+
+        # Android/Apple DHCP options boost phone
+        response_phone = self.client.get("/api/device/112/profile")
+        self.assertEqual(response_phone.status_code, 200)
+        self.assertEqual(response_phone.json()["category"], "phone")
+
+        # OS guess boosts category
+        response_os = self.client.get("/api/device/113/profile")
+        self.assertEqual(response_os.status_code, 200)
+        self.assertEqual(response_os.json()["category"], "computer")
+
+    def test_get_device_profile_latest_scan_device_concurrency(self):
+        """Test GET /api/device/{id}/profile selects the latest scan device only."""
+        scan1 = Scan(id=16, status="complete", started_at=datetime.now(timezone.utc) - timedelta(minutes=5))
+        scan2 = Scan(id=17, status="complete", started_at=datetime.now(timezone.utc))
+        
+        device = Device(id=114, mac="00:11:22:33:44:14")
+        
+        # Old scan device: 192.168.1.200 (Printer)
+        sd1 = ScanDevice(id=21, scan_id=16, device_id=114, ip="192.168.1.200", hostname="printer-old", open_ports="[9100]")
+        # New scan device: 192.168.1.201 (Camera/security)
+        sd2 = ScanDevice(id=22, scan_id=17, device_id=114, ip="192.168.1.201", hostname="camera-new", open_ports="[554]")
+        
+        self.db.add_all([scan1, scan2, device, sd1, sd2])
+        self.db.commit()
+
+        response = self.client.get("/api/device/114/profile")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["latest_ip"], "192.168.1.201")
+        # Should match the new scan device's port 554 (camera) instead of printer
+        self.assertEqual(data["category"], "camera")
+
     def test_get_devices_uses_latest_security_snapshot_and_highest_risk(self):
         """Test GET /api/devices prefers the newest scan and the strongest CVE risk."""
         old_scan = Scan(
