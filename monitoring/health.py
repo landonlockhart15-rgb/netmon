@@ -30,9 +30,12 @@ THRESHOLDS
 
 import os
 import re
+import socket
 import subprocess
 import time
+import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Optional
 
 
@@ -41,6 +44,118 @@ from typing import Optional
 # ─────────────────────────────────────────────────────────────────────────────
 
 DNS_PROBE_TARGET = "example.com"
+CAPTIVE_PORTAL_PROBE_URLS = (
+    "http://connectivitycheck.gstatic.com/generate_204",
+    "http://clients3.google.com/generate_204",
+)
+
+
+def test_dns_resolution(target: str = DNS_PROBE_TARGET, timeout: float = 5.0) -> dict:
+    """
+    Resolve a hostname without leaving process-wide socket timeout changes behind.
+
+    socket.getaddrinfo has no per-call timeout argument, so this uses a worker
+    future for the timeout boundary instead of socket.setdefaulttimeout().
+    """
+    previous_timeout = socket.getdefaulttimeout()
+    ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="netmon-dns")
+    try:
+        future = ex.submit(socket.getaddrinfo, target, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        try:
+            records = future.result(timeout=max(0.1, float(timeout)))
+        except FutureTimeoutError:
+            future.cancel()
+            return {
+                "status": "offline",
+                "target": target,
+                "resolved_ips": [],
+                "error": f"DNS resolution timed out after {timeout:.0f}s",
+            }
+
+        resolved_ips = sorted({item[4][0] for item in records if item and item[4]})
+        return {
+            "status": "online" if resolved_ips else "offline",
+            "target": target,
+            "resolved_ips": resolved_ips,
+            "error": None if resolved_ips else "DNS resolution returned no addresses",
+        }
+    except Exception as e:
+        return {
+            "status": "offline",
+            "target": target,
+            "resolved_ips": [],
+            "error": str(e),
+        }
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+        if socket.getdefaulttimeout() != previous_timeout:
+            socket.setdefaulttimeout(previous_timeout)
+
+
+def check_captive_portal(urls: tuple[str, ...] | list[str] | None = None, timeout: float = 5.0) -> dict:
+    """
+    Probe generate_204 endpoints and report likely captive portals.
+
+    A real captive portal typically returns 200/redirect/auth-required content
+    instead of 204. Upstream server errors such as HTTP 500 are probe failures,
+    not evidence of a portal.
+    """
+    probe_urls = tuple(urls or CAPTIVE_PORTAL_PROBE_URLS)
+    errors: list[str] = []
+
+    for url in probe_urls:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "NetMon/1.0 CaptiveCheck"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                status = getattr(resp, "status", None) or resp.getcode()
+                body = resp.read(256) if status != 204 else b""
+        except urllib.error.HTTPError as e:
+            status = int(getattr(e, "code", 0) or 0)
+            if status in (300, 301, 302, 303, 307, 308, 401, 403, 511):
+                return {
+                    "status": "captive",
+                    "captive": True,
+                    "url": url,
+                    "http_status": status,
+                    "error": None,
+                }
+            errors.append(f"{url}: HTTP {status}")
+            continue
+        except Exception as e:
+            errors.append(f"{url}: {e}")
+            continue
+
+        if status == 204:
+            return {
+                "status": "open",
+                "captive": False,
+                "url": url,
+                "http_status": status,
+                "error": None,
+            }
+        if 500 <= int(status or 0) <= 599:
+            errors.append(f"{url}: HTTP {status}")
+            continue
+        if int(status or 0) in (200, 301, 302, 303, 307, 308, 401, 403, 511) or body:
+            return {
+                "status": "captive",
+                "captive": True,
+                "url": url,
+                "http_status": status,
+                "error": None,
+            }
+
+    return {
+        "status": "unknown",
+        "captive": False,
+        "url": None,
+        "http_status": None,
+        "error": "; ".join(errors) if errors else "No captive portal probe URLs configured",
+    }
+
+
+probe_captive_portal = check_captive_portal
+test_captive_portal = check_captive_portal
 
 def run_ping(
     target: str = "8.8.8.8",

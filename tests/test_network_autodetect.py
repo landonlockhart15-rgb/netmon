@@ -122,6 +122,32 @@ class TestGetNetworkInfo(unittest.TestCase):
         self.assertEqual(info["subnet"], "192.168.1.0/24")
         self.assertEqual(info["interface"], "Wi-Fi")
 
+    @patch("subprocess.check_output")
+    def test_get_network_info_uses_ipv4_gateway_after_ipv6_continuation(self, mock_subprocess):
+        def side_effect(args, **kwargs):
+            cmd = args[0]
+            if cmd == "route":
+                return (
+                    "          0.0.0.0          0.0.0.0      10.20.30.254    10.20.30.40     25\n"
+                )
+            if cmd == "netsh":
+                return "Enabled        Connected      Dedicated        Ethernet\n"
+            if cmd == "ipconfig":
+                return (
+                    "Windows IP Configuration\n\n"
+                    "Ethernet adapter Ethernet:\n"
+                    "   IPv4 Address. . . . . . . . . . . : 10.20.30.40(Preferred)\n"
+                    "   Subnet Mask . . . . . . . . . . . : 255.255.255.0\n"
+                    "   Default Gateway . . . . . . . . . : fe80::1%12\n"
+                    "                                       10.20.30.254\n"
+                )
+            raise ValueError(f"Unexpected command: {args}")
+
+        mock_subprocess.side_effect = side_effect
+
+        info = autodetect.get_network_info()
+        self.assertEqual(info["gateway"], "10.20.30.254")
+
 
 class TestGetScanTarget(unittest.TestCase):
     def setUp(self):
