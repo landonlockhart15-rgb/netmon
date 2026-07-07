@@ -5676,14 +5676,20 @@ def _parse_ipconfig_all() -> list[dict]:
                     if value:
                         current["dns_servers"].append(value)
                     last_field = "dns_servers"
+                elif field == "gateway":
+                    if _IP_RE.match(value):
+                        current.setdefault(field, value)
+                    last_field = "gateway"
                 else:
                     current.setdefault(field, value)
                     last_field = field
         else:
-            # Continuation line: extra DNS servers are bare IPs on indented lines
+            # Continuation line: extra DNS servers and gateways are bare IPs on indented lines
             stripped = line.strip()
             if stripped and last_field == "dns_servers" and _IP_RE.match(stripped):
                 current.setdefault("dns_servers", []).append(stripped)
+            elif stripped and last_field == "gateway" and _IP_RE.match(stripped):
+                current.setdefault("gateway", stripped)
 
     if current:
         adapters.append(current)

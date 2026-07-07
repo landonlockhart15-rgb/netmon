@@ -20,6 +20,7 @@ def _network_addr(ip: str, mask: str) -> str:
 
 _SKIP_IFACE = ("loopback", "tunnel", "isatap", "teredo", "tailscale",
                "vpn", "virtual", "vmware", "vethernet", "wsl", "hyper-v")
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 def _is_usable(ip: str) -> bool:
     if not ip:
@@ -33,6 +34,34 @@ def _is_usable(ip: str) -> bool:
     except ValueError:
         pass
     return True
+
+
+def _extract_ipv4_gateway(section: str) -> str:
+    """
+    Return the first usable IPv4 default gateway from an ipconfig adapter block.
+
+    Windows often formats gateways as a multi-line field, for example:
+      Default Gateway . . . . . . . . . : fe80::...
+                                           192.168.1.1
+    The IPv6 link-local entry is not usable for IPv4 scans, so keep scanning
+    continuation lines until a usable IPv4 gateway is found.
+    """
+    lines = section.splitlines()
+    for idx, line in enumerate(lines):
+        if not re.search(r"Default Gateway[\s.]+:", line, re.IGNORECASE):
+            continue
+
+        candidates: list[str] = []
+        for candidate_line in lines[idx:]:
+            if candidate_line is not line and re.match(r"^\s*\S.+[\s.]+:", candidate_line):
+                break
+            candidates.extend(_IPV4_RE.findall(candidate_line))
+
+        for gateway in candidates:
+            if _is_usable(gateway):
+                return gateway
+        return ""
+    return ""
 
 
 def _default_route_iface_ip() -> str:
@@ -119,11 +148,10 @@ def get_network_info() -> dict:
             continue
 
         mask_m  = re.search(r"Subnet Mask[\s.]+:\s*([\d.]+)", section, re.IGNORECASE)
-        gw_m    = re.search(r"Default Gateway[\s.]+:\s*([\d.]+)", section, re.IGNORECASE)
         iface_m = re.search(r"^.*adapter (.+?):", section, re.MULTILINE)
 
         mask    = mask_m.group(1).strip()  if mask_m  else "255.255.255.0"
-        gateway = gw_m.group(1).strip()    if gw_m    else ip.rsplit(".", 1)[0] + ".1"
+        gateway = _extract_ipv4_gateway(section) or ip.rsplit(".", 1)[0] + ".1"
         iface   = iface_m.group(1).strip() if iface_m else "Unknown"
 
         if not _is_usable(gateway):
@@ -185,6 +213,11 @@ def get_scan_target() -> str:
 
     fallback = _fallback()
     return fallback.get("scan_target") or "192.168.1.0/24"
+
+
+def get_default_gateway() -> str:
+    """Return the active adapter's usable IPv4 gateway."""
+    return (get_network_info().get("gateway") or "").strip()
 
 
 def invalidate_cache() -> None:
