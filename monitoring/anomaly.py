@@ -24,7 +24,7 @@ import subprocess
 from datetime import datetime, timezone, timedelta
 
 from app.database import SessionLocal
-from models.tables import TrafficSummary, HealthCheck, Device, ActivityLog
+from models.tables import TrafficSummary, HealthCheck, Device, Scan, ScanDevice, ActivityLog
 from monitoring.activity import write_log
 import monitoring.notifier as notifier
 from network.protection import explain_protected_target, validate_block_target
@@ -43,6 +43,7 @@ _COOLDOWN_MINUTES = {
     "nighttime_device":      60 * 24,   # once per device per day
     "sustained_bandwidth":   45,        # don't nag about the same hog repeatedly
     "degraded_health":       20,
+    "shadow_device":         60 * 24,   # scan-history behavior changes slowly
 }
 
 # Night hours (local — Central Time). 22:00 – 05:59
@@ -414,6 +415,134 @@ def check_degraded_health(db) -> list[dict]:
     return events
 
 
+# ── 7. Shadow-device behavior check ──────────────────────────────────────────
+
+def _utc_naive(dt: datetime) -> datetime:
+    """Normalize mixed SQLite datetimes for comparisons in tests and prod."""
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _is_locally_administered_mac(mac: str | None) -> bool:
+    """True for randomized/private MACs where the locally administered bit is set."""
+    if not mac:
+        return False
+    first_octet = mac.replace("-", ":").split(":")[0]
+    try:
+        return bool(int(first_octet, 16) & 0x02)
+    except ValueError:
+        return False
+
+
+def check_shadow_devices(db) -> list[dict]:
+    """
+    Detect devices that behave unlike stable inventory:
+      - brief untrusted appearances that are already absent from the current scan
+      - one IP seen with several different MAC addresses in the recent window
+
+    This deliberately uses only persisted scan history, so it is a safe first
+    phase before adding passive mDNS/DHCP event streams.
+    """
+    events: list[dict] = []
+    latest = (
+        db.query(Scan)
+        .filter(Scan.status == "complete")
+        .order_by(Scan.id.desc())
+        .first()
+    )
+    if not latest or not latest.started_at:
+        return events
+
+    latest_started = _utc_naive(latest.started_at)
+    lookback = latest_started - timedelta(hours=24)
+
+    current_device_ids = {
+        row.device_id
+        for row in db.query(ScanDevice.device_id)
+        .filter(ScanDevice.scan_id == latest.id)
+        .all()
+    }
+
+    recent_rows = (
+        db.query(ScanDevice)
+        .join(Scan)
+        .filter(Scan.status == "complete", Scan.started_at >= lookback)
+        .order_by(ScanDevice.id.asc())
+        .all()
+    )
+    if not recent_rows:
+        return events
+
+    rows_by_device: dict[int, list[ScanDevice]] = {}
+    rows_by_ip: dict[str, list[ScanDevice]] = {}
+    for sd in recent_rows:
+        rows_by_device.setdefault(sd.device_id, []).append(sd)
+        if sd.ip:
+            rows_by_ip.setdefault(sd.ip, []).append(sd)
+
+    for device_id, rows in rows_by_device.items():
+        dev = rows[-1].device
+        if dev.is_known or device_id in current_device_ids:
+            continue
+        first_seen = min(_utc_naive(r.scan.started_at) for r in rows if r.scan.started_at)
+        last_seen = max(_utc_naive(r.scan.started_at) for r in rows if r.scan.started_at)
+        age_s = (last_seen - first_seen).total_seconds()
+        absent_s = (latest_started - last_seen).total_seconds()
+        if len(rows) <= 2 and age_s <= 30 * 60 and absent_s >= 5 * 60:
+            mac = dev.mac or "unknown"
+            ip = rows[-1].ip
+            key = f"shadow_device:brief:{device_id}:{mac}"
+            if not _is_cooled_down(key, "shadow_device"):
+                continue
+            _stamp(key)
+            label = dev.hostname or rows[-1].hostname or ip or f"device #{device_id}"
+            events.append({
+                "type": "shadow_device",
+                "ip": ip,
+                "device_id": device_id,
+                "level": "warning",
+                "title": f"Shadow device disappeared — {label}",
+                "body": (
+                    f"Untrusted device {label} appeared briefly and is absent from the latest scan. "
+                    f"MAC: {mac}. This can indicate a rogue or transient device."
+                ),
+                "actions": [notifier.investigate_action(ip), notifier.dismiss_action()] if ip else [notifier.dismiss_action()],
+            })
+
+    for ip, rows in rows_by_ip.items():
+        macs: dict[str, Device] = {}
+        for sd in rows:
+            mac = (sd.device.mac or "").lower()
+            if mac:
+                macs[mac] = sd.device
+        if len(macs) < 3:
+            continue
+        local_count = sum(1 for mac in macs if _is_locally_administered_mac(mac))
+        unknown_count = sum(1 for dev in macs.values() if not dev.is_known)
+        if local_count < 2 and unknown_count < 3:
+            continue
+        key = f"shadow_device:mac_rotation:{ip}"
+        if not _is_cooled_down(key, "shadow_device"):
+            continue
+        _stamp(key)
+        latest_row = rows[-1]
+        events.append({
+            "type": "shadow_device",
+            "ip": ip,
+            "device_id": latest_row.device_id,
+            "level": "warning",
+            "title": f"MAC rotation detected — {ip}",
+            "body": (
+                f"{ip} used {len(macs)} different MAC addresses in the last 24 hours "
+                f"({local_count} look randomized/private). Frequent rotation can hide rogue hardware."
+            ),
+            "actions": [notifier.investigate_action(ip), notifier.dismiss_action()],
+        })
+
+    return events
+
+
 # ── 4. Nighttime device (injected from scheduler, not polled) ─────────────────
 
 def nighttime_device_alert(ip: str, mac: str, hostname: str, device_id: int) -> None:
@@ -548,6 +677,7 @@ def run_anomaly_checks() -> None:
         all_events.extend(check_health_outage(db))
         all_events.extend(check_sustained_bandwidth(db))
         all_events.extend(check_degraded_health(db))
+        all_events.extend(check_shadow_devices(db))
     except Exception as exc:
         print(f"[anomaly] DB check error: {exc}")
     finally:
@@ -564,6 +694,7 @@ def run_anomaly_checks() -> None:
             ev["level"], "alert", ev["type"],
             ev["body"],
             device_ip = ev.get("ip"),
+            device_id = ev.get("device_id"),
         )
         if _kb is not None:
             try:
