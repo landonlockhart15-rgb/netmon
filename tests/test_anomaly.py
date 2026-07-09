@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from models.tables import Base, TrafficSummary, HealthCheck, Setting, Device, ActivityLog
+from models.tables import Base, TrafficSummary, HealthCheck, Setting, Device, Scan, ScanDevice, ActivityLog
 import monitoring.anomaly as anomaly
 
 
@@ -221,6 +221,64 @@ class TestDegradedHealth(unittest.TestCase):
         events = anomaly.check_degraded_health(self.session)
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["type"], "degraded_health")
+
+
+class TestShadowDevices(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.session = self.Session()
+        self._orig_cooldowns = anomaly._COOLDOWNS.copy()
+        anomaly._COOLDOWNS.clear()
+
+    def tearDown(self):
+        self.session.close()
+        self.engine.dispose()
+        anomaly._COOLDOWNS = self._orig_cooldowns
+
+    def _scan(self, minutes_ago):
+        scan = Scan(
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
+            status="complete",
+        )
+        self.session.add(scan)
+        self.session.flush()
+        return scan
+
+    def test_brief_untrusted_device_absent_from_latest_scan(self):
+        first = self._scan(20)
+        latest = self._scan(5)
+        shadow = Device(mac="02:11:22:33:44:55", hostname="phone", is_known=False)
+        stable = Device(mac="00:11:22:33:44:55", hostname="router", is_known=True)
+        self.session.add_all([shadow, stable])
+        self.session.flush()
+        self.session.add(ScanDevice(scan_id=first.id, device_id=shadow.id, ip="192.168.1.77"))
+        self.session.add(ScanDevice(scan_id=latest.id, device_id=stable.id, ip="192.168.1.1"))
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "shadow_device")
+        self.assertEqual(events[0]["ip"], "192.168.1.77")
+        self.assertIn("appeared briefly", events[0]["body"])
+
+    def test_mac_rotation_on_same_ip(self):
+        scans = [self._scan(minutes) for minutes in (30, 20, 10)]
+        for idx, scan in enumerate(scans):
+            dev = Device(mac=f"02:11:22:33:44:{idx:02x}", hostname=f"mobile-{idx}", is_known=False)
+            self.session.add(dev)
+            self.session.flush()
+            self.session.add(ScanDevice(scan_id=scan.id, device_id=dev.id, ip="192.168.1.88"))
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+
+        rotation = [ev for ev in events if "MAC rotation" in ev["title"]]
+        self.assertEqual(len(rotation), 1)
+        self.assertEqual(rotation[0]["ip"], "192.168.1.88")
+        self.assertIn("3 different MAC", rotation[0]["body"])
 
 
 class TestPortScans(unittest.TestCase):
