@@ -33,6 +33,7 @@ from app.database import engine, Base, run_migrations, seed_default_settings
 from app.auth import validate_session, COOKIE_NAME
 from api.routes import router
 from api.auth_routes import router as auth_router
+from app.version import __version__
 
 load_dotenv()
 
@@ -219,7 +220,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="NetMon",
     description="Local home network monitor",
-    version="0.4.0",
+    version=__version__,
     lifespan=lifespan,
 )
 

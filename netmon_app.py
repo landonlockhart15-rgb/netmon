@@ -50,6 +50,11 @@ def main() -> None:
     if creds:
         rt.show_first_run_dialog(*creds)
 
+    # The app remains useful without nmap, but its core discovery/port-scan
+    # features do not. Give packaged users an actionable preflight instead of
+    # waiting for their first scan to fail with a technical error.
+    rt.show_nmap_preflight()
+
     # Safe to import the app now — DATABASE_URL + .env are configured.
     import launch
     launch.run_tray()

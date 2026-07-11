@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import { ACCENT, type Accent } from './StatTile'
+import { ACCENT, type Accent } from './statTileStyles'
 
 // Conic-sweep + border colors per accent. Kept as literal strings so Tailwind's
 // scanner picks the border classes up (never build class names at runtime).

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Power, ShieldCheck, ExternalLink, RefreshCw } from 'lucide-react'
 import Card from '@/components/shared/Card'
@@ -37,11 +37,27 @@ const shieldR = 36
 const viewW = 600
 const viewH = 410
 
+type HealthState = 'healthy' | 'degraded' | 'down' | 'unknown'
+interface SentinelService {
+  id?: string
+  name?: string
+  health_state?: string
+  tier?: string
+  monitor_only?: boolean
+  reason?: string
+  probe?: { ok?: boolean; latency_ms?: number | null }
+}
+interface SentinelData {
+  state?: { disabled?: boolean; services?: SentinelService[] }
+  heartbeat?: { status?: string; heartbeat_at?: string }
+}
+interface ServiceCounts { healthy: number; degraded: number; down: number; unknown: number }
+
 export default function Sentinel() {
   const [token, setToken] = useState(localStorage.getItem(CP_TOKEN_KEY) ?? '')
   const [editToken, setEditToken] = useState(false)
 
-  const { data, error, isLoading, refetch, isFetching } = useQuery<any>({
+  const { data, error, isLoading, refetch, isFetching } = useQuery<SentinelData>({
     queryKey: ['sentinel-state', token],
     queryFn: () => cpFetch('/sentinel/state'),
     refetchInterval: 5000,
@@ -79,28 +95,30 @@ export default function Sentinel() {
     refetch()
   }
 
-  const services = data?.state?.services || []
-  const heartbeat = data?.heartbeat || {}
+  const services = useMemo(() => data?.state?.services ?? [], [data?.state?.services])
+  const heartbeat = data?.heartbeat ?? {}
 
   const counts = useMemo(() => {
     return services.reduce(
-      (acc: any, s: any) => {
-        const k = s.health_state || 'unknown'
+      (acc, s) => {
+        const k: HealthState = s.health_state === 'healthy' || s.health_state === 'degraded' || s.health_state === 'down'
+          ? s.health_state
+          : 'unknown'
         acc[k] = (acc[k] || 0) + 1
         return acc
       },
-      { healthy: 0, degraded: 0, down: 0, unknown: 0 }
+      { healthy: 0, degraded: 0, down: 0, unknown: 0 } as ServiceCounts
     )
   }, [services])
 
   const protectedSvcs = useMemo(() => {
-    return services.filter((s: any) => String(s.id || s.name || '').toLowerCase() !== 'sentinel')
+    return services.filter(s => String(s.id || s.name || '').toLowerCase() !== 'sentinel')
   }, [services])
 
   const N = protectedSvcs.length || 1
 
   const nodes = useMemo(() => {
-    return protectedSvcs.map((s: any, i: number) => {
+    return protectedSvcs.map((s, i) => {
       const ang = -Math.PI / 2 + (i * (2 * Math.PI)) / N
       const ux = Math.cos(ang)
       const uy = Math.sin(ang)
@@ -278,7 +296,7 @@ export default function Sentinel() {
                   xmlns="http://www.w3.org/2000/svg"
                 >
                   {/* Spokes */}
-                  {nodes.map((n: any) => (
+                  {nodes.map(n => (
                     <line
                       key={n.id}
                       className={`sent-spoke ${n.state}`}
@@ -309,7 +327,7 @@ export default function Sentinel() {
                   </text>
 
                   {/* Nodes */}
-                  {nodes.map((n: any) => (
+                  {nodes.map(n => (
                     <g key={n.id} className="sent-node-g group">
                       <title>{n.tooltip}</title>
                       <rect

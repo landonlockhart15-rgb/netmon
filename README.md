@@ -20,8 +20,9 @@ your own machine, with nothing sent to a cloud dashboard.
 It runs from a system-tray icon and opens a modern, mobile-friendly **React
 dashboard** at <http://localhost:8000> — with Overview, Devices, Alerts, and
 Shield views, plus an AI **device chat** for asking "what *is* this thing on my
-network?" Discovery, monitoring, and ad-blocking work out of the box; AI and the
-Security Lab are optional add-ons you can switch on when you want them.
+network?" The dashboard, monitoring, and ad-blocking run locally; device
+discovery and port scans require nmap. AI and the Security Lab are optional
+add-ons you can switch on when you want them.
 
 **Status:** active personal project / usable local prototype.
 **Safety:** use NetMon only on networks and devices you own or are explicitly authorized to test.
@@ -108,8 +109,11 @@ outage and per day, with cooldown and recovery windows to avoid reboot loops.
 **Easiest — download the installer:** grab `NetMon-Setup-<version>.exe` from the
 [latest release](https://github.com/landonlockhart15-rgb/netmon/releases/latest),
 run it, and launch NetMon from the Start Menu. No Python or git required. On first
-run it generates a dashboard login and shows it to you. (Windows SmartScreen may
-warn on the unsigned installer — choose **More info → Run anyway**.)
+run it generates a dashboard login, offers to copy the password, and opens the sign-in
+page. (Windows SmartScreen may warn on the unsigned installer — choose **More
+info → Run anyway**.) Install [nmap](https://nmap.org/download.html#windows) for
+device discovery and port scanning; NetMon checks for it at startup and links
+to the official download if it is missing.
 
 ## Quick Start (from source)
 
@@ -125,10 +129,11 @@ to `.env`, prompts you to create the dashboard login, and adds a desktop
 shortcut. `start.bat` requests administrator rights, which some features need
 (nmap discovery, firewall actions, DNS binding on port 53, packet capture).
 
-Requires Windows 10/11, Python 3.10+, and [nmap](https://nmap.org/download.html)
-on `PATH`. Optional: [Npcap](https://npcap.com) for deep traffic capture, Ollama
-for local AI. Full prerequisites, optional tools, AI setup, and troubleshooting
-are in the **[install guide](docs/INSTALL.md)**.
+Running from source requires Windows 10/11, Python 3.10+, PowerShell, git, and
+[nmap](https://nmap.org/download.html#windows). The downloadable installer does
+not require Python or git. Optional: [Npcap](https://npcap.com) for deep traffic
+capture and Ollama for local AI. Full prerequisites, optional tools, AI setup,
+and troubleshooting are in the **[install guide](docs/INSTALL.md)**.
 
 ## Documentation
 

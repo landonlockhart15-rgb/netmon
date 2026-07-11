@@ -1,7 +1,7 @@
 ; netmon.iss — Inno Setup script for the NetMon double-click installer.
 ;
 ; Build (after PyInstaller has produced dist\NetMon\):
-;     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\netmon.iss
+;     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=0.5.0 installer\netmon.iss
 ; or use tools\build_installer.ps1 which runs both steps.
 ;
 ; Produces: installer\Output\NetMon-Setup-<version>.exe
@@ -13,8 +13,10 @@
 ; launch — that's expected.
 
 #define AppName "NetMon"
-#define AppVersion "0.4.0"
-#define AppPublisher "Landon Lockhart"
+#ifndef AppVersion
+  #error AppVersion must be supplied by tools\build_installer.ps1 (/DAppVersion=x.y.z)
+#endif
+#define AppPublisher "LockhartLabs"
 #define AppURL "https://github.com/landonlockhart15-rgb/netmon"
 #define AppExeName "NetMon.exe"
 
@@ -37,6 +39,7 @@ OutputBaseFilename=NetMon-Setup-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\static\netmon.ico
 ; Installing into Program Files needs admin.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible

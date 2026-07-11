@@ -8,12 +8,12 @@ import SectionErrorBoundary from '@/components/shared/SectionErrorBoundary'
 
 export default function Shell() {
   return (
-    <div className="flex h-screen overflow-hidden bg-[#0a0a14]">
+    <div className="flex h-dvh overflow-hidden bg-[#0a0a14]">
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <TopBar />
         <StatStrip />
-        <main className="flex-1 overflow-y-auto p-4 md:p-6 pb-20 md:pb-6">
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 md:p-6 pb-20 md:pb-6">
           {/* Error boundary outside Suspense so a failed chunk load is caught too */}
           <SectionErrorBoundary>
             <Suspense fallback={<SectionFallback />}>

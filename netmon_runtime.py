@@ -20,7 +20,10 @@ everything lives in the repository directory and nothing here changes it.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
+import webbrowser
 from pathlib import Path
 
 _log_fh = None  # keep the redirected log handle alive for the process lifetime
@@ -136,8 +139,10 @@ def _ensure_password(env_path: Path) -> "tuple[str, str] | None":
             "NetMon dashboard login (created on first run)\n"
             f"  Username: {username}\n"
             f"  Password: {password}\n\n"
-            "Change it any time by deleting APP_PASSWORD_HASH from .env and\n"
-            "restarting, or with tools/set_password.py. You can delete this file.\n",
+            "Sign in at http://localhost:8000. The browser opens automatically.\n\n"
+            "This file contains your password. Delete it after you have signed in\n"
+            "and stored the login in your password manager. Your password remains\n"
+            "securely hashed in .env.\n",
             encoding="utf-8",
         )
     except Exception:
@@ -189,17 +194,81 @@ def bootstrap_env() -> "tuple[str, str] | None":
     return _ensure_password(env_path)
 
 
+def _copy_to_clipboard(text: str) -> bool:
+    """Copy text through Windows' built-in clip.exe without exposing it in argv."""
+    try:
+        subprocess.run(
+            ["clip.exe"],
+            input=text,
+            text=True,
+            check=True,
+            capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return True
+    except Exception:
+        return False
+
+
 def show_first_run_dialog(username: str, password: str) -> None:
-    """Show the generated login once, via a native message box (best-effort)."""
+    """Show the generated login once and offer an explicit clipboard action."""
+    login_file = data_home() / "FIRST-RUN-LOGIN.txt"
     msg = (
         "NetMon created your dashboard login:\n\n"
         f"    Username:  {username}\n"
         f"    Password:  {password}\n\n"
-        "Write this down — you'll need it to sign in at http://localhost:8000.\n"
-        "It's also saved to FIRST-RUN-LOGIN.txt in your NetMon data folder."
+        "The sign-in page will open automatically at http://localhost:8000.\n\n"
+        f"Recovery file:\n{login_file}\n\n"
+        "Choose Yes to copy the password to your clipboard so you can paste it "
+        "directly into the sign-in form, or No "
+        "to continue without copying. Delete the recovery file after signing in."
     )
     try:
         import ctypes
-        ctypes.windll.user32.MessageBoxW(0, msg, "NetMon — your login", 0x40)
+        # MB_YESNO | MB_ICONINFORMATION. Copy only with explicit user consent.
+        result = ctypes.windll.user32.MessageBoxW(0, msg, "NetMon — your login", 0x44)
+        if result == 6:  # IDYES
+            _copy_to_clipboard(password)
+    except Exception:
+        # Frozen stdout/stderr is redirected to netmon.log. Never put the
+        # plaintext password there if the native dialog is unavailable.
+        print(f"[startup] First-run login is available in {login_file}")
+
+
+NMAP_DOWNLOAD_URL = "https://nmap.org/download.html#windows"
+
+
+def find_nmap() -> "str | None":
+    """Find nmap on PATH or in either standard Windows installation folder."""
+    found = shutil.which("nmap")
+    if found:
+        return found
+    for candidate in (
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Nmap" / "nmap.exe",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Nmap" / "nmap.exe",
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def show_nmap_preflight() -> bool:
+    """Warn when nmap is absent, with an opt-in link to its official installer."""
+    if find_nmap():
+        return True
+    msg = (
+        "NetMon could not find nmap.\n\n"
+        "NetMon will still open, but device discovery and port scanning will not "
+        "work until nmap is installed.\n\n"
+        "Choose Yes to open the official nmap download page, or No to continue "
+        "in reduced mode. NetMon will never install external software silently."
+    )
+    try:
+        import ctypes
+        # MB_YESNO | MB_ICONWARNING
+        result = ctypes.windll.user32.MessageBoxW(0, msg, "NetMon — nmap required for scans", 0x34)
+        if result == 6:  # IDYES
+            webbrowser.open(NMAP_DOWNLOAD_URL)
     except Exception:
         print(msg)
+    return False

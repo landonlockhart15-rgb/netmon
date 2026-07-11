@@ -12,12 +12,30 @@ interface Props {
   onClose: () => void
 }
 
+interface ExtendedMitmStatus {
+  running?: boolean
+  active?: boolean
+  error?: string | null
+  targets?: string[]
+  active_count?: number
+  target_count?: number
+}
+type LearnedDevice = Device & { allow_json?: string | null }
+interface HttpActivity { time?: string; host?: string; uri?: string; full_url?: string }
+interface TlsActivity { time?: string; sni?: string; full_url?: string }
+interface DnsActivity { domain?: string }
+interface ActivityResponse {
+  http_requests?: HttpActivity[]
+  tls_sessions?: TlsActivity[]
+  dns_queries?: DnsActivity[]
+}
+type ActivityItem = (HttpActivity & { _type: 'http' }) | (TlsActivity & { _type: 'https' })
+
 export default function DeviceModal({ deviceId, onClose }: Props) {
   const qc = useQueryClient()
   const [label, setLabel] = useState('')
   const [trusted, setTrusted] = useState(false)
   const [initialized, setInitialized] = useState(false)
-  const [mitmDomains, setMitmDomains] = useState<string[]>([])
 
   const { data: devices = [] } = useQuery({
     queryKey: ['devices', 'current'],
@@ -47,8 +65,8 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
     queryFn: getMitmStatus,
     refetchInterval: 2000,
   })
-  const mitmStatus = mitmStatusRaw as any
-  const mitmActive = mitmStatus?.running ?? false
+  const mitmStatus = mitmStatusRaw as ExtendedMitmStatus | undefined
+  const mitmActive = mitmStatus?.running ?? mitmStatus?.active ?? false
   const mitmError = mitmStatus?.error ?? null
   const mitmTargets: string[] = mitmStatus?.targets ?? []
   const mitmTargetingThis = mitmActive && mitmTargets.includes(device?.ip ?? '')
@@ -59,7 +77,7 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
   const startMitmMutation = useMutation({
     mutationFn: async () => {
       // Always stop first — don't rely on stale closure for mitmActive check
-      try { await stopMitm() } catch {}
+      try { await stopMitm() } catch { /* already stopped */ }
       await new Promise(r => setTimeout(r, 500))
       // Start MitM + passive capture together so live feed works immediately
       const [mitmResult] = await Promise.all([
@@ -232,13 +250,13 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
   )
 }
 
-function LearnedSection({ device }: { device: any }) {
+function LearnedSection({ device }: { device: LearnedDevice }) {
   // allow_json stores learned_domains and last_activity_ip from MitM sessions
-  let learned: { learned_domains?: string[]; last_activity_ip?: string } = {}
-  try { learned = JSON.parse(device.allow_json || '{}') } catch {}
+  let learned: { learned_domains?: string[]; last_activity_ip?: string; behavior_profile?: string } = {}
+  try { learned = JSON.parse(device.allow_json || '{}') } catch { /* ignore malformed legacy metadata */ }
 
   const domains = learned.learned_domains ?? []
-  if (!domains.length && !device.vendor && !device.os_guess) return null
+  if (!domains.length && !device.vendor && !device.os_guess && !learned.behavior_profile) return null
 
   return (
     <div className="space-y-2 pt-1 border-t border-white/5">
@@ -246,6 +264,12 @@ function LearnedSection({ device }: { device: any }) {
         <span>Learned from traffic</span>
         <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-600/20 text-purple-400">MitM</span>
       </p>
+      {learned.behavior_profile && (
+        <p className="text-xs text-gray-300">
+          <span className="text-gray-500">Behavior profile: </span>
+          <span className="text-white font-medium">{learned.behavior_profile}</span>
+        </p>
+      )}
       {device.vendor && device.vendor !== 'unknown' && (
         <p className="text-xs text-gray-300">
           <span className="text-gray-500">Device type: </span>
@@ -297,7 +321,7 @@ function ProfileSection({ profile }: { profile?: DeviceProfile }) {
       )}
       {alternatives.length > 0 && (
         <p className="text-[10px] text-gray-600">
-          Also considered: {alternatives.map((alt: any) => alt.label).join(', ')}
+          Also considered: {alternatives.map(alt => alt.label).join(', ')}
         </p>
       )}
     </div>
@@ -313,21 +337,21 @@ function ActivityFeed({ deviceIp }: { deviceIp: string }) {
     refetchInterval: 5000,
   })
 
-  const d = raw as any
-  const http: any[]  = d?.http_requests ?? []
-  const tls: any[]   = d?.tls_sessions  ?? []
-  const dns: any[]   = d?.dns_queries   ?? []
+  const activity = raw as ActivityResponse | undefined
+  const http = activity?.http_requests ?? []
+  const tls = activity?.tls_sessions ?? []
+  const dns = activity?.dns_queries ?? []
 
   // Combined feed sorted by time
-  const allItems = [
-    ...http.map(i => ({ ...i, _type: 'http' })),
-    ...tls.map(i => ({ ...i, _type: 'https' })),
+  const allItems: ActivityItem[] = [
+    ...http.map(i => ({ ...i, _type: 'http' as const })),
+    ...tls.map(i => ({ ...i, _type: 'https' as const })),
   ].sort((a, b) => parseFloat(b.time || '0') - parseFloat(a.time || '0')).slice(0, 80)
 
-  const shown = tab === 'all' ? allItems
+  const shown: ActivityItem[] = tab === 'all' ? allItems
     : tab === 'http'  ? allItems.filter(i => i._type === 'http')
     : tab === 'https' ? allItems.filter(i => i._type === 'https')
-    : dns.slice(0, 60)
+    : []
 
   if (isLoading) return (
     <div className="flex items-center gap-2 text-gray-500">
@@ -347,13 +371,13 @@ function ActivityFeed({ deviceIp }: { deviceIp: string }) {
     <div className="space-y-2">
       {/* Stats + tabs */}
       <div className="flex items-center gap-1 flex-wrap">
-        {[
+        {([
           { id: 'all',   label: `All (${allItems.length})` },
           { id: 'http',  label: `HTTP ${http.length > 0 ? `(${http.length} unencrypted)` : ''}` },
           { id: 'https', label: `HTTPS (${tls.length})` },
           { id: 'dns',   label: `DNS (${dns.length})` },
-        ].map(t => (
-          <button key={t.id} onClick={() => setTab(t.id as any)}
+        ] satisfies { id: typeof tab; label: string }[]).map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
             className={`px-2 py-0.5 rounded text-[10px] transition-colors ${tab === t.id ? 'bg-orange-500/20 text-orange-300' : 'text-gray-600 hover:text-gray-300'}`}>
             {t.label}
           </button>

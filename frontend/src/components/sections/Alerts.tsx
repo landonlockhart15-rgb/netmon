@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { CheckCheck, Bell, BellRing, Inbox, Search, Trash2, MonitorSmartphone, Eraser, BrainCircuit, Loader2 } from 'lucide-react'
-import { getAlerts, readAlert, readAllAlerts, deleteAlert, clearReadAlerts, explainAlert, getContextualInsight } from '@/lib/api'
-import { formatRelativeTime, cn } from '@/lib/utils'
+import { getAlerts, readAlert, readAllAlerts, deleteAlert, clearReadAlerts, explainAlert, getContextualInsight, type Alert } from '@/lib/api'
+import { formatRelativeTime, cn, getErrorMessage } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
-import Badge, { type Variant } from '@/components/shared/Badge'
+import Badge from '@/components/shared/Badge'
+import type { Variant } from '@/components/shared/badgeVariants'
 import EmptyState from '@/components/shared/EmptyState'
 import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
@@ -13,15 +14,6 @@ import DeviceModal from '@/components/shared/DeviceModal'
 import Markdown from '@/components/shared/Markdown'
 
 // API shape: { unread_count: number, alerts: RawAlert[] }
-interface RawAlert {
-  id: number
-  created_at: string
-  alert_type: string
-  message: string
-  read: boolean
-  device_id: number | null
-}
-
 const PAGE_SIZE = 25
 
 // alert_type → badge color + friendly label
@@ -58,10 +50,10 @@ export default function Alerts() {
   const clearReadMutation = useMutation({ mutationFn: clearReadAlerts, onSuccess: invalidate })
 
   // API returns { unread_count, alerts: [] } — tolerate a bare array too
-  const raw = data as any
-  const list: RawAlert[] = Array.isArray(raw) ? raw : (raw?.alerts ?? [])
-  const unread = raw?.unread_count ?? list.filter(a => !a.read).length
-  const readCount = list.length - (raw?.unread_count ?? list.filter(a => !a.read).length)
+  const list = useMemo(() => Array.isArray(data) ? data : (data?.alerts ?? []), [data])
+  const serverUnread = !Array.isArray(data) ? data?.unread_count : undefined
+  const unread = serverUnread ?? list.filter(a => !a.read).length
+  const readCount = list.length - unread
 
   // Counts per filter chip, computed once over the full list
   const typeCounts = useMemo(() => {
@@ -203,7 +195,7 @@ function Chip({ label, count, active, onClick, accent }: {
 }
 
 function AlertRow({ alert: a, onRead, onDelete, onView }: {
-  alert: RawAlert; onRead: () => void; onDelete: () => void; onView?: () => void
+  alert: Alert; onRead: () => void; onDelete: () => void; onView?: () => void
 }) {
   const [explanation, setExplanation] = useState<string | null>(null)
   const [explaining, setExplaining] = useState(false)
@@ -222,8 +214,8 @@ function AlertRow({ alert: a, onRead, onDelete, onView }: {
     try {
       const res = await explainAlert(a.id)
       setExplanation(res.explanation)
-    } catch (e: any) {
-      setError(e.message || 'Failed to generate explanation')
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, 'Failed to generate explanation'))
     } finally {
       setExplaining(false)
     }
@@ -239,8 +231,8 @@ function AlertRow({ alert: a, onRead, onDelete, onView }: {
     try {
       const res = await getContextualInsight(a.message, `type: ${a.alert_type}, device_id: ${a.device_id || 'none'}`)
       setInsight(res.explanation)
-    } catch (e: any) {
-      setInsightError(e.message || 'Failed to generate insight')
+    } catch (e: unknown) {
+      setInsightError(getErrorMessage(e, 'Failed to generate insight'))
     } finally {
       setInsightLoading(false)
     }

@@ -11,8 +11,10 @@ import {
 } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Btn from '@/components/shared/Btn'
-import Badge, { severityVariant } from '@/components/shared/Badge'
-import StatTile, { ACCENT, type Accent } from '@/components/shared/StatTile'
+import Badge from '@/components/shared/Badge'
+import { severityVariant } from '@/components/shared/badgeVariants'
+import StatTile from '@/components/shared/StatTile'
+import { ACCENT, type Accent } from '@/components/shared/statTileStyles'
 import Markdown from '@/components/shared/Markdown'
 
 type ActionStatus = 'active' | 'reverted' | 'all'
@@ -123,8 +125,7 @@ export default function Shield() {
   const blocks = s?.blocks ?? []
   const dnsEvents = s?.dns_events ?? []
   const stats = s?.stats
-  const actionsRawAny = actionsRaw as any
-  const actions: any[] = Array.isArray(actionsRawAny) ? actionsRawAny : (actionsRawAny?.entries ?? [])
+  const actions = actionsRaw ?? []
 
   const activeLayers = layers.filter(l => l.enabled).length
 
@@ -243,7 +244,7 @@ export default function Shield() {
                             {a.reverted_at && <span className="text-emerald-600">reverted {formatRelativeTime(a.reverted_at)}</span>}
                           </div>
                         </div>
-                        {!a.reverted_at && a.revert && (
+                        {!a.reverted_at && a.revert_json && (
                           <Btn variant="ghost" size="sm" onClick={() => revertMutation.mutate(a.id)}>
                             <RotateCcw size={12} /> Undo
                           </Btn>
@@ -400,8 +401,8 @@ function ThreatRow({ e, onDismiss }: { e: ShieldEvent; onDismiss: () => void }) 
     try {
       const res = await getContextualInsight(e.summary, `category: ${e.category}, level: ${e.level}, ip: ${e.device_ip || 'none'}`)
       setInsight(res.explanation)
-    } catch (err: any) {
-      setError(err.message || 'Failed to generate contextual insight')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to generate contextual insight')
     } finally {
       setExplaining(false)
     }

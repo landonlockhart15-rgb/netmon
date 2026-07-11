@@ -77,7 +77,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     uac_admin=_uac,                # embed "requireAdministrator" manifest
-    icon=None,
+    icon="static/netmon.ico",
 )
 
 coll = COLLECT(

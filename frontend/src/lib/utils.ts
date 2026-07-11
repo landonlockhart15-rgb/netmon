@@ -35,3 +35,7 @@ export function escapeHtml(s: string): string {
 export function clamp(v: number, min: number, max: number) {
   return Math.min(max, Math.max(min, v))
 }
+
+export function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
+}

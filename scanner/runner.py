@@ -22,29 +22,8 @@ The flags we use:
   --host-timeout 30s : don't wait more than 30s per host (keeps scan fast)
 """
 
-import os
 import subprocess
-import shutil
-from typing import Optional
-
-
-def find_nmap() -> Optional[str]:
-    """
-    Locate the nmap executable on this system.
-    Checks PATH first, then common Windows install locations as a fallback
-    (the nmap installer doesn't always add itself to the system PATH).
-    Returns the full path if found, None if not installed.
-    """
-    found = shutil.which("nmap")
-    if found:
-        return found
-    for path in [
-        r"C:\Program Files (x86)\Nmap\nmap.exe",
-        r"C:\Program Files\Nmap\nmap.exe",
-    ]:
-        if os.path.isfile(path):
-            return path
-    return None
+from netmon_runtime import find_nmap
 
 
 def run_scan(target: str, quick: bool = False, vulners: bool = False) -> str:

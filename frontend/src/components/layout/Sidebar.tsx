@@ -25,7 +25,7 @@ const NAV = [
 
 export default function Sidebar() {
   return (
-    <aside className="hidden md:flex flex-col w-14 lg:w-52 border-r border-white/5 bg-[#0d0d1a] flex-shrink-0">
+    <aside className="hidden md:flex h-full overflow-hidden flex-col w-14 lg:w-52 border-r border-white/5 bg-[#0d0d1a] flex-shrink-0">
       {/* Logo */}
       <div className="flex items-center gap-2 px-3 py-4 border-b border-white/5">
         <img
@@ -40,7 +40,7 @@ export default function Sidebar() {
       </div>
 
       {/* Nav items */}
-      <nav className="flex-1 py-2 overflow-y-auto">
+      <nav className="nm-sidebar-scroll flex-1 py-2 overflow-y-auto overscroll-contain">
         {NAV.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Router, Laptop, Smartphone, Cpu, Globe, Server, RefreshCw, Activity, HelpCircle, Zap, ShieldAlert, Clock } from 'lucide-react'
 import { getTrafficDashboard, getNetworkInfo, getScans, getDevicesAtScan, type Device, type Scan } from '@/lib/api'
@@ -21,7 +21,7 @@ interface Link {
 export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 500 })
-  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({})
+  const [positionOverrides, setPositionOverrides] = useState<Record<string, { x: number; y: number }>>({})
   const [draggedNode, setDraggedNode] = useState<string | null>(null)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const [showInternet, setShowInternet] = useState(true)
@@ -47,7 +47,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     queryKey: ['scans'],
     queryFn: getScans,
     refetchInterval: 60_000,
-    select: (data) => (data as any[]).filter((s: any) => s.status === 'complete').reverse() as Scan[],
+    select: (data): Scan[] => data.filter(scan => scan.status === 'complete').reverse(),
   })
 
   // Fetch historical devices when replaying a past scan
@@ -55,14 +55,16 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     queryKey: ['devices-at-scan', historicalScanId],
     queryFn: () => getDevicesAtScan(historicalScanId!),
     enabled: historicalScanId !== null,
+    select: (data) => Array.isArray(data) ? data : [],
   })
 
   // The devices the map actually renders — live prop or historical snapshot
-  const displayDevices = historicalScanId !== null && historicalDevices ? historicalDevices : devices
+  const displayDevices = useMemo(
+    () => historicalScanId !== null ? (historicalDevices ?? []) : devices,
+    [historicalScanId, historicalDevices, devices],
+  )
 
   const gatewayIp = networkInfo?.gateway
-  const localIp = networkInfo?.local_ip
-
   const conversations = dashboard?.conversations
 
   // Track dimensions
@@ -80,80 +82,44 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
   }, [])
 
   // Helper: Is a device a gateway?
-  const isGateway = (d: Device) => {
+  const isGateway = useCallback((d: Device) => {
     if (d.ip === gatewayIp) return true
     if (d.ip.endsWith('.1') || d.ip.endsWith('.254')) return true
     const name = (d.hostname || d.label || '').toLowerCase()
     return name.includes('router') || name.includes('gateway') || name.includes('firewall')
-  }
+  }, [gatewayIp])
 
   const gatewayDevice = useMemo(() => {
     return displayDevices.find(isGateway) || displayDevices[0]
-  }, [displayDevices, gatewayIp])
+  }, [displayDevices, isGateway])
 
-  // Initialize/update node positions
-  useEffect(() => {
-    if (displayDevices.length === 0) return
+  const defaultPositions = useMemo(() => {
     const { width, height } = dimensions
     const cx = width / 2
     const cy = height / 2
-
-    setPositions(prev => {
-      const next = { ...prev }
-
-      // Internet node (top center)
-      if (!next['internet']) {
-        next['internet'] = { x: cx, y: 70 }
+    const next: Record<string, { x: number; y: number }> = { internet: { x: cx, y: 70 } }
+    const gatewayId = gatewayDevice ? `device-${gatewayDevice.id}` : 'gateway'
+    next[gatewayId] = { x: cx, y: cy }
+    const otherDevices = displayDevices.filter(d => d.id !== gatewayDevice?.id)
+    otherDevices.forEach((device, index) => {
+      const angle = (index / Math.max(1, otherDevices.length)) * 2 * Math.PI
+      const radius = Math.min(cx * 0.65, cy * 0.65)
+      next[`device-${device.id}`] = {
+        x: cx + radius * Math.cos(angle),
+        y: cy + radius * Math.sin(angle),
       }
-
-      // Gateway node (center)
-      const gatewayId = gatewayDevice ? `device-${gatewayDevice.id}` : 'gateway'
-      if (!next[gatewayId]) {
-        next[gatewayId] = { x: cx, y: cy }
-      }
-
-      // Non-gateway devices
-      const otherDevices = displayDevices.filter(d => d.id !== gatewayDevice?.id)
-      otherDevices.forEach((d, idx) => {
-        const id = `device-${d.id}`
-        if (!next[id]) {
-          const angle = (idx / Math.max(1, otherDevices.length)) * 2 * Math.PI
-          const radius = Math.min(cx * 0.65, cy * 0.65)
-          next[id] = {
-            x: cx + radius * Math.cos(angle),
-            y: cy + radius * Math.sin(angle)
-          }
-        }
-      })
-
-      return next
     })
+    return next
   }, [displayDevices, dimensions, gatewayDevice])
+
+  const positions = useMemo(
+    () => ({ ...defaultPositions, ...positionOverrides }),
+    [defaultPositions, positionOverrides],
+  )
 
   // Reset to default radial layout
   const resetLayout = () => {
-    const { width, height } = dimensions
-    const cx = width / 2
-    const cy = height / 2
-    const newPositions: Record<string, { x: number; y: number }> = {}
-
-    newPositions['internet'] = { x: cx, y: 70 }
-
-    const gatewayId = gatewayDevice ? `device-${gatewayDevice.id}` : 'gateway'
-    newPositions[gatewayId] = { x: cx, y: cy }
-
-    const otherDevices = displayDevices.filter(d => d.id !== gatewayDevice?.id)
-    otherDevices.forEach((d, idx) => {
-      const id = `device-${d.id}`
-      const angle = (idx / Math.max(1, otherDevices.length)) * 2 * Math.PI
-      const radius = Math.min(cx * 0.65, cy * 0.65)
-      newPositions[id] = {
-        x: cx + radius * Math.cos(angle),
-        y: cy + radius * Math.sin(angle)
-      }
-    })
-
-    setPositions(newPositions)
+    setPositionOverrides({})
   }
 
   const links = useMemo(() => {
@@ -183,11 +149,8 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
 
     const findDeviceByIp = (ip: string) => displayDevices.find(d => d.ip === ip)
 
-    // Helper check to satisfy test assertion d.ip === localIp
-    const hasLocal = displayDevices.some(d => d.ip === localIp)
-
     // 2. Overlay connections from conversations
-    if (conversations) {
+    if (Array.isArray(conversations)) {
       conversations.forEach(c => {
         if (!c.src_ip || !c.dst_ip) return
         const srcDevice = findDeviceByIp(c.src_ip)
@@ -281,7 +244,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     }
 
     return list
-  }, [displayDevices, conversations, gatewayIp, localIp])
+  }, [displayDevices, conversations, gatewayDevice, showInternet])
 
   // Drag handlers
   const handlePointerDown = (id: string, e: React.PointerEvent) => {
@@ -299,16 +262,16 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     const clampedX = Math.max(30, Math.min(rect.width - 30, x))
     const clampedY = Math.max(30, Math.min(rect.height - 30, y))
 
-    setPositions(prev => ({
+    setPositionOverrides(prev => ({
       ...prev,
       [draggedNode]: { x: clampedX, y: clampedY }
     }))
   }
 
-  const handlePointerUp = (id: string, e: React.PointerEvent) => {
+  const handlePointerUp = (e: React.PointerEvent) => {
     try {
       e.currentTarget.releasePointerCapture(e.pointerId)
-    } catch (_) {}
+    } catch { /* pointer capture may already be released */ }
     setDraggedNode(null)
   }
 
@@ -343,7 +306,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
   const hoveredNodeInfo = useMemo(() => {
     if (!hoveredNode) return null
     if (hoveredNode === 'internet') {
-      const convList = conversations || []
+      const convList = Array.isArray(conversations) ? conversations : []
       const wanTraffic = convList
         .filter(c => !displayDevices.some(d => d.ip === c.src_ip) || !displayDevices.some(d => d.ip === c.dst_ip))
         .reduce((acc, curr) => acc + curr.bytes, 0)
@@ -361,7 +324,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     const dev = displayDevices.find(d => d.id === Number(deviceId))
     if (!dev) return null
 
-    const convList = conversations || []
+    const convList = Array.isArray(conversations) ? conversations : []
     const devTraffic = convList
       .filter(c => c.src_ip === dev.ip || c.dst_ip === dev.ip)
       .reduce((acc, curr) => acc + curr.bytes, 0)
@@ -381,7 +344,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
       max_cve_risk: dev.max_cve_risk || null,
       raw: dev
     }
-  }, [hoveredNode, displayDevices, conversations])
+  }, [hoveredNode, displayDevices, conversations, isGateway])
 
   // Speed and size based on connection metrics
   const getPulseProps = (bytes: number) => {
@@ -487,7 +450,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
               id={`node-element-${id}`}
               style={{ left: pos.x, top: pos.y }}
               onPointerDown={e => handlePointerDown(id, e)}
-              onPointerUp={e => handlePointerUp(id, e)}
+              onPointerUp={handlePointerUp}
               onMouseEnter={() => setHoveredNode(id)}
               onMouseLeave={() => {
                 if (hoveredNode === id) setHoveredNode(null)
@@ -699,7 +662,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
           <div className="mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-xs text-gray-400">
             <span className="flex items-center gap-1 text-[11px]">
               <Zap className="w-3.5 h-3.5 text-yellow-500" />
-              Active Connections: <strong>{conversations ? conversations.length : 0}</strong>
+              Active Connections: <strong>{Array.isArray(conversations) ? conversations.length : 0}</strong>
             </span>
           </div>
         </div>

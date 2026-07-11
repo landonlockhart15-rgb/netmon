@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Save, Send, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import { getSettings, saveSettings, testNotification, getDiagnostics, detectNetwork, type Settings } from '@/lib/api'
@@ -166,11 +166,6 @@ function TextInput({ label, settingKey, type = 'text', settings, onSave, hint }:
   const raw = settings[settingKey]
   const initial = raw != null ? String(raw) : ''
   const [val, setVal] = useState(initial)
-
-  useEffect(() => {
-    const raw2 = settings[settingKey]
-    setVal(raw2 != null ? String(raw2) : '')
-  }, [settings, settingKey])
 
   return (
     <div className="space-y-1">

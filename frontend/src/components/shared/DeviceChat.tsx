@@ -15,8 +15,8 @@ interface Props {
 export default function DeviceChat({ deviceId, onDeviceUpdated }: Props) {
   const qc = useQueryClient()
   const [input, setInput] = useState('')
-  const [pendingProposal, setPendingProposal] = useState<DeviceChatProposal | null>(null)
-  const [pendingTool, setPendingTool] = useState<DeviceChatToolReq | null>(null)
+  const [pendingProposalOverride, setPendingProposal] = useState<DeviceChatProposal | null | undefined>()
+  const [pendingToolOverride, setPendingTool] = useState<DeviceChatToolReq | null | undefined>()
   const [autoApplied, setAutoApplied] = useState<{ name?: string; changes: string[] } | null>(null)
   const [editingProposalName, setEditingProposalName] = useState<string | null>(null)
   const [showNotes, setShowNotes] = useState(false)
@@ -29,25 +29,24 @@ export default function DeviceChat({ deviceId, onDeviceUpdated }: Props) {
   const history: DeviceChatTurn[] = data?.history ?? []
   const notes = data?.notes ?? []
 
-  // Initial scan of latest assistant turn to surface pending state on first load
-  useEffect(() => {
-    if (!history.length) return
+  // Derive unresolved server state during render; local actions become an
+  // explicit override so dismissed requests are not resurrected.
+  const historicalPending = (() => {
     for (let i = history.length - 1; i >= 0; i--) {
       const t = history[i]
       if (t.role !== 'assistant' || !t.meta) continue
-      if (pendingTool == null && t.meta.tool_request) {
-        // Only resurrect if we haven't already resolved it (no subsequent tool turn)
-        const subsequent = history.slice(i + 1).some(x => x.role === 'tool')
-        if (!subsequent) setPendingTool(t.meta.tool_request)
+      const toolResolved = history.slice(i + 1).some(x => x.role === 'tool')
+      const proposalResolved = history.slice(i + 1).some(x =>
+        x.role === 'system' && (x.meta?.manual_accept || x.meta?.manual_reject))
+      return {
+        tool: toolResolved ? null : (t.meta.tool_request ?? null),
+        proposal: proposalResolved ? null : (t.meta.proposal ?? null),
       }
-      if (pendingProposal == null && t.meta.proposal) {
-        const subsequent = history.slice(i + 1).some(x =>
-          x.role === 'system' && (x.meta?.manual_accept || x.meta?.manual_reject))
-        if (!subsequent) setPendingProposal(t.meta.proposal)
-      }
-      break
     }
-  }, [history.length])
+    return { tool: null, proposal: null }
+  })()
+  const pendingTool = pendingToolOverride === undefined ? historicalPending.tool : pendingToolOverride
+  const pendingProposal = pendingProposalOverride === undefined ? historicalPending.proposal : pendingProposalOverride
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -56,7 +55,7 @@ export default function DeviceChat({ deviceId, onDeviceUpdated }: Props) {
   const chatMutation = useMutation({
     mutationFn: (body: Parameters<typeof postDeviceChat>[1]) => postDeviceChat(deviceId, body),
     onSuccess: (res) => {
-      qc.setQueryData(['device-chat', deviceId], (old: any) => ({
+      qc.setQueryData<{ history: DeviceChatTurn[]; notes: typeof notes }>(['device-chat', deviceId], old => ({
         ...(old ?? { history: [], notes: [] }),
         history: [...(old?.history ?? []), ...res.appended],
         notes: res.notes,
@@ -83,7 +82,7 @@ export default function DeviceChat({ deviceId, onDeviceUpdated }: Props) {
     onSuccess: (res) => {
       if (res.applied) {
         setAutoApplied({
-          name: res.device?.label,
+          name: res.device?.label ?? undefined,
           changes: res.changes,
         })
         onDeviceUpdated?.()
@@ -118,11 +117,11 @@ export default function DeviceChat({ deviceId, onDeviceUpdated }: Props) {
   const explainMutation = useMutation({
     mutationFn: (turnId: number) => explainDeviceChatTurn(deviceId, turnId),
     onSuccess: (res, turnId) => {
-      qc.setQueryData(['device-chat', deviceId], (old: any) => {
+      qc.setQueryData<{ history: DeviceChatTurn[]; notes: typeof notes }>(['device-chat', deviceId], old => {
         if (!old) return old
         return {
           ...old,
-          history: old.history.map((t: any) => {
+          history: old.history.map(t => {
             if (t.id === turnId) {
               return {
                 ...t,

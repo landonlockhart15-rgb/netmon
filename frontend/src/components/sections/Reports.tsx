@@ -5,7 +5,8 @@ import { getReports, runReport, chatReport, type Report } from '@/lib/api'
 import { fmtDateTime, formatRelativeTime } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
-import Badge, { severityVariant } from '@/components/shared/Badge'
+import Badge from '@/components/shared/Badge'
+import { severityVariant } from '@/components/shared/badgeVariants'
 import EmptyState from '@/components/shared/EmptyState'
 import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
@@ -90,7 +91,7 @@ export default function Reports() {
                       <Badge variant={severityVariant(r.severity)}>{r.severity}</Badge>
                       <span className="text-xs text-gray-400">{fmtDateTime(r.created_at)}</span>
                     </div>
-                    <p className="text-xs text-gray-300 leading-relaxed line-clamp-2">{(r as any).headline ?? (r as any).summary ?? ''}</p>
+                    <p className="text-xs text-gray-300 leading-relaxed line-clamp-2">{r.headline ?? r.summary ?? ''}</p>
                   </div>
                 </div>
               </div>
@@ -105,8 +106,8 @@ export default function Reports() {
           <EmptyState icon="◎" text="Select a report above to chat about it" />
         ) : (
           <div className="space-y-3">
-            {((selected as any).body ?? (selected as any).detail) && (
-              <p className="text-xs text-gray-400 leading-relaxed border-b border-white/5 pb-3">{(selected as any).body ?? (selected as any).detail}</p>
+            {(selected.body ?? selected.detail) && (
+              <p className="text-xs text-gray-400 leading-relaxed border-b border-white/5 pb-3">{selected.body ?? selected.detail}</p>
             )}
             <div className="space-y-2 max-h-48 overflow-y-auto">
               {chatHistory.map((m, i) => (

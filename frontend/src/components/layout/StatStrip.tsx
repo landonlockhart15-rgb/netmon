@@ -16,11 +16,11 @@ export default function StatStrip() {
   })
 
   // health API: { status: "online"|"offline"|"degraded", latency_ms, ... }
-  const healthStatus = (health as any)?.status
+  const healthStatus = health?.status
   const online = healthStatus === 'online' ? true : healthStatus === 'offline' ? false : null
-  const latency = (health as any)?.latency_ms
+  const latency = health?.latency_ms
   // status API: { scan: { running, host_count, started_at, ... }, ai, capture }
-  const scanState = (status as any)?.scan
+  const scanState = status?.scan
   const deviceCount: number | null = scanState?.host_count ?? null
   const lastScan: string | null = scanState?.started_at ?? null
   const scanning: boolean = scanState?.running ?? false
@@ -80,7 +80,7 @@ export default function StatStrip() {
           <StatCard label="RTT">
             <span className="flex items-center gap-1 text-gray-400">
               <Timer size={12} />
-              {(health as any)?.local_latency_ms != null ? `${(health as any).local_latency_ms}ms local` : '—'}
+              {health?.local_latency_ms != null ? `${health.local_latency_ms}ms local` : '—'}
             </span>
           </StatCard>
         </>

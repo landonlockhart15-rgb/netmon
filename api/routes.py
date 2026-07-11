@@ -54,7 +54,7 @@ from fastapi import UploadFile, File, Form
 import hashlib
 from monitoring.activity import write_log
 from network.protection import explain_protected_target, filter_blockable_ips, validate_block_target
-from scanner.runner import run_scan
+from scanner.runner import find_nmap, run_scan
 from scanner.parser import parse_nmap_xml
 from scanner.diff import compute_diff, build_snapshot
 from scanner.presence import current_scan_ids, window_scan_ids, window_snapshot
@@ -774,7 +774,7 @@ def get_devices(db: Session = Depends(get_db)):
             "os_guess": dev.os_guess or "",
             "first_seen": _iso(dev.first_seen),
             "last_seen":  _iso(dev.last_seen)  if dev.last_seen  else None,
-            "is_known": dev.is_known, "device_id": dev.id,
+            "is_known": dev.is_known, "device_id": dev.id, "allow_json": dev.allow_json or "{}",
             "ghost_detection": _ghost_detection_for_device(dev, sd),
         })
     return {
@@ -953,7 +953,7 @@ def get_all_devices(current_only: bool = False, db: Session = Depends(get_db)):
             "scan_count": scan_count,
             "dhcp_option55": dev.dhcp_option55 or "",
             "dhcp_option60": dev.dhcp_option60 or "",
-            "dhcp_hostname": dev.dhcp_hostname or "",
+            "dhcp_hostname": dev.dhcp_hostname or "", "allow_json": dev.allow_json or "{}",
             "ghost_detection": _ghost_detection_for_device(dev, latest_sd),
         })
     return result
@@ -2085,7 +2085,6 @@ def ai_investigate(body: dict, db: Session = Depends(get_db)):
 
     elif is_ip:
         import socket as _socket
-        import shutil as _shutil
 
         # ── DB record ─────────────────────────────────────────────────────────
         progress_append("Checking device records...\n")
@@ -2187,13 +2186,7 @@ def ai_investigate(body: dict, db: Session = Depends(get_db)):
 
         # ── Nmap targeted service scan ────────────────────────────────────────
         progress_append("Running nmap service scan...\n")
-        _nmap = None
-        for _candidate in ["nmap",
-                           r"C:\Program Files (x86)\Nmap\nmap.exe",
-                           r"C:\Program Files\Nmap\nmap.exe"]:
-            if _shutil.which(_candidate) or (_candidate.startswith("C:\\") and os.path.isfile(_candidate)):
-                _nmap = _candidate
-                break
+        _nmap = find_nmap()
         if _nmap:
             try:
                 _cflags = getattr(_sp, "CREATE_NO_WINDOW", 0)

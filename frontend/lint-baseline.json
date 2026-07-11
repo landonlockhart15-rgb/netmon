@@ -1,0 +1,5 @@
+{
+  "errors": 0,
+  "warnings": 0,
+  "note": "Clean lint baseline. CI fails on any new ESLint error or warning and publishes the complete JSON report."
+}

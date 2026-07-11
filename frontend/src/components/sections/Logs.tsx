@@ -1,28 +1,13 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trash2, BrainCircuit, Filter, ScrollText, Activity, Users, Tag } from 'lucide-react'
-import { getLogs, getLogFacets, clearLogs, runHistorySynthesis } from '@/lib/api'
+import { getLogs, getLogFacets, clearLogs, runHistorySynthesis, type LogEntry } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import EmptyState from '@/components/shared/EmptyState'
 import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
-
-// API shape: { total, offset, limit, entries: LogEntry[] }
-interface LogEntry {
-  id: number
-  created_at: string
-  level: string
-  category: string
-  event: string
-  summary: string
-  detail: string | null
-  device_ip: string | null
-  actor: string
-  reversible: boolean
-  reverted_at: string | null
-}
 
 // Facets shape: { events: [{event, count}], actors: [{actor, count}], categories: [{category, count}] }
 interface Facets {
@@ -63,13 +48,12 @@ export default function Logs() {
 
   const synthMutation = useMutation({
     mutationFn: () => runHistorySynthesis(7),
-    onSuccess: (data: any) => setSynthResult(data?.summary ?? JSON.stringify(data)),
+    onSuccess: data => setSynthResult(data.summary),
   })
 
   // API returns { total, entries: [] } — handle both shapes
-  const raw = logsData as any
-  const logs: LogEntry[] = Array.isArray(raw) ? raw : (raw?.entries ?? [])
-  const total: number = raw?.total ?? logs.length
+  const logs = Array.isArray(logsData) ? logsData : (logsData?.entries ?? [])
+  const total = Array.isArray(logsData) ? logsData.length : (logsData?.total ?? 0)
 
   const facets = facetsData as Facets | undefined
 

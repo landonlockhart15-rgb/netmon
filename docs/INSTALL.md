@@ -5,15 +5,21 @@ This guide is the happy path for getting NetMon running on a Windows machine.
 ## Supported environment
 
 - Windows 10 or Windows 11
-- Python 3.10 or newer
-- PowerShell
 - Administrator access for network scans, firewall actions, DNS binding, and packet capture features
 
-## Required dependency
+The downloadable installer includes NetMon and its Python runtime. You only
+need Python 3.10+ and PowerShell when running NetMon from source.
 
-Install nmap and make sure it is available on `PATH`:
+## Required for network scans
 
-- <https://nmap.org/download.html>
+NetMon needs [nmap](https://nmap.org/download.html#windows) for device discovery
+and port scanning. On startup, the installed app checks for nmap and offers to
+open its official download page if it is missing. It never installs external
+software silently. You can continue without nmap, but scans will be unavailable.
+
+Use the standard Windows nmap installer. NetMon detects both `PATH` and the
+normal `C:\Program Files\Nmap` installation folders. Restart NetMon after
+installing nmap.
 
 Verify it from PowerShell:
 
@@ -53,10 +59,19 @@ User data (database, captures, logs, `.env`) is stored under
 displays it (also saved to `FIRST-RUN-LOGIN.txt` in that data folder).
 
 The installer is unsigned, so Windows SmartScreen may warn — choose
-**More info → Run anyway**. You'll still need **nmap** on `PATH` (below) for
-device discovery.
+**More info → Run anyway**. At first launch:
+
+1. NetMon creates a strong dashboard login and offers to copy its password to the clipboard.
+2. It shows the exact recovery-file path under `%LOCALAPPDATA%\NetMon`.
+3. It checks for nmap and offers the official download page if needed.
+4. The sign-in page opens automatically at <http://localhost:8000>.
+
+Delete `FIRST-RUN-LOGIN.txt` after signing in and saving the login in your
+password manager. NetMon keeps only the password hash in `.env` after that.
 
 ## Option B — from source
+
+Source installs require Python 3.10+, PowerShell, git, and nmap.
 
 ```powershell
 git clone https://github.com/landonlockhart15-rgb/netmon.git
@@ -69,7 +84,7 @@ The setup script creates a Python virtual environment, installs dependencies, co
 
 ## First run checklist
 
-1. Start NetMon with `start.bat`.
+1. Start NetMon from the Start Menu (installer) or with `start.bat` (source).
 2. Accept the administrator prompt when Windows asks.
 3. Open the dashboard at <http://localhost:8000>.
 4. Confirm the Settings or Network panel shows your active adapter, local IP, gateway, subnet, DNS servers, and public IP.
@@ -128,7 +143,9 @@ LAN IP (for example `http://192.168.1.64:2586`) instead of `localhost`.
 
 ### `nmap not found`
 
-Install nmap and add it to `PATH`, then open a new PowerShell window and run:
+Install nmap from its [official Windows download page](https://nmap.org/download.html#windows),
+then restart NetMon. NetMon checks `PATH` and both standard Program Files
+locations. To verify it manually, open a new PowerShell window and run:
 
 ```powershell
 nmap --version

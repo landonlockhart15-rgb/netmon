@@ -5,13 +5,14 @@ import {
   getHealthCurrent, getHealthHistory, runHealthCheck,
   getSpeedLatest, getSpeedHistory, runSpeedTest,
   getTelemetry,
-  type HealthStatus, type HealthPoint, type SpeedResult, type Telemetry,
+  type HealthStatus, type HealthPoint, type SpeedResult,
 } from '@/lib/api'
 import { fmtTime, fmtDate, formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import EmptyState from '@/components/shared/EmptyState'
-import StatTile, { ACCENT, type Accent } from '@/components/shared/StatTile'
+import StatTile from '@/components/shared/StatTile'
+import { ACCENT, type Accent } from '@/components/shared/statTileStyles'
 
 export default function Health() {
   const { data: health } = useQuery({
@@ -64,10 +65,9 @@ export default function Health() {
   })
 
   // API returns status: "online"|"offline"|"degraded" not boolean online
-  const hRaw = health as any
-  const h = hRaw ? { ...hRaw, online: hRaw.status === 'online' } as HealthStatus : undefined
-  const sl = speedLatest as SpeedResult | undefined
-  const tel = telemetry as Telemetry | undefined
+  const h = health
+  const sl = speedLatest
+  const tel = telemetry
 
   return (
     <div className="space-y-4">
@@ -119,11 +119,11 @@ export default function Health() {
         <Card title="System Telemetry">
           {tel ? (
             <div className="space-y-3">
-              <TelBar label="CPU" value={(tel as any).cpu_pct ?? (tel as any).cpu_percent ?? 0} color="blue" />
-              <TelBar label="RAM" value={(tel as any).mem_mb ?? (tel as any).ram_percent ?? 0} color="purple" label2={(tel as any).mem_mb != null ? 'MB' : '%'} />
+              <TelBar label="CPU" value={tel.cpu_pct ?? tel.cpu_percent ?? 0} color="blue" />
+              <TelBar label="RAM" value={tel.mem_mb ?? tel.ram_percent ?? 0} color="purple" label2={tel.mem_mb != null ? 'MB' : '%'} />
               <div className="flex justify-between text-xs pt-1">
                 <span className="text-gray-500">PID</span>
-                <span className="text-gray-500 font-mono">{(tel as any).pid ?? '—'}</span>
+                <span className="text-gray-500 font-mono">{tel.pid ?? '—'}</span>
               </div>
             </div>
           ) : (
@@ -143,7 +143,7 @@ function HealthHero({ h, sl, checking, speeding, onCheck, onSpeed }: {
   onCheck: () => void
   onSpeed: () => void
 }) {
-  const status = (h as any)?.status as string | undefined
+  const status = h?.status
   const view = status === 'online'
     ? { accent: 'emerald' as Accent, label: 'Connection Online', Icon: Wifi, sweep: 'rgba(16,185,129,0.5)', border: 'border-emerald-500/40', sub: 'Internet reachable — latency and loss within normal range.' }
     : status === 'degraded'

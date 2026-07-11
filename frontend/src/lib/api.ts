@@ -38,26 +38,35 @@ export const getStatus = () => apiFetch<AppStatus>('/api/status')
 export const runScan = (quick = false) =>
   apiFetch<void>('/api/scan', { method: 'POST', body: JSON.stringify({ quick }) })
 // Normalize is_known → trusted and latest_ip → ip across both device endpoints
-function normalizeDevice(d: any): Device {
+type RawDevice = Partial<Device> & { device_id?: number; latest_ip?: string; is_known?: boolean }
+type DeviceListResponse = RawDevice[] | { devices?: RawDevice[] }
+
+function normalizeDevice(d: RawDevice): Device {
   return {
     ...d,
-    id: d.id ?? d.device_id,
+    id: d.id ?? d.device_id ?? 0,
     ip: d.ip ?? d.latest_ip ?? '',
+    mac: d.mac ?? null,
+    hostname: d.hostname ?? null,
+    vendor: d.vendor ?? null,
+    label: d.label ?? null,
     trusted: d.trusted ?? d.is_known ?? false,
+    last_seen: d.last_seen ?? '',
     open_ports: d.open_ports ?? [],
+    os_guess: d.os_guess ?? null,
     ghost_detection: d.ghost_detection ?? null,
   }
 }
 
 export const getDevices = async (currentOnly = true): Promise<Device[]> => {
-  const raw = await apiFetch<any>(`/api/devices/all?current_only=${currentOnly}`)
-  const arr: any[] = Array.isArray(raw) ? raw : (raw?.devices ?? [])
+  const raw = await apiFetch<DeviceListResponse>(`/api/devices/all?current_only=${currentOnly}`)
+  const arr: RawDevice[] = Array.isArray(raw) ? raw : (raw.devices ?? [])
   return arr.map(normalizeDevice)
 }
 
 export const getDevicesSimple = async (): Promise<Device[]> => {
-  const raw = await apiFetch<any>('/api/devices')
-  const arr: any[] = Array.isArray(raw) ? raw : (raw?.devices ?? [])
+  const raw = await apiFetch<DeviceListResponse>('/api/devices')
+  const arr: RawDevice[] = Array.isArray(raw) ? raw : (raw.devices ?? [])
   return arr.map(normalizeDevice)
 }
 
@@ -65,7 +74,7 @@ export const trustAllDevices = () =>
   apiFetch<{ updated: number }>('/api/devices/trust-all', { method: 'POST' })
 export const getScans = () => apiFetch<Scan[]>('/api/scans')
 export const getDevicesAtScan = async (scanId: number): Promise<Device[]> => {
-  const raw = await apiFetch<any[]>(`/api/devices/at-scan/${scanId}`)
+  const raw = await apiFetch<RawDevice[]>(`/api/devices/at-scan/${scanId}`)
   return raw.map(normalizeDevice)
 }
 export const getDiffLatest = () => apiFetch<DiffResult>('/api/diff/latest')
@@ -73,13 +82,13 @@ export const getDeviceHistory = (id: number) => apiFetch<DeviceScan[]>(`/api/dev
 export const getDeviceProfile = (id: number) => apiFetch<DeviceProfile>(`/api/device/${id}/profile`)
 export const patchDevice = (id: number, body: Partial<Device & { is_known?: boolean }>) => {
   // Backend uses is_known, frontend uses trusted — normalize
-  const payload: any = { ...body }
+  const payload: Partial<Device> & { is_known?: boolean } = { ...body }
   if ('trusted' in payload) { payload.is_known = payload.trusted; delete payload.trusted }
   return apiFetch<Device>(`/api/device/${id}`, { method: 'PATCH', body: JSON.stringify(payload) })
 }
 
 export const getDeviceActivity = (deviceIp: string) =>
-  apiFetch<any>(`/api/traffic/device/${encodeURIComponent(deviceIp)}/activity`)
+  apiFetch<DeviceActivity>(`/api/traffic/device/${encodeURIComponent(deviceIp)}/activity`)
 
 // ── Health ────────────────────────────────────────────────────────────────────
 
@@ -115,7 +124,7 @@ export interface DeviceChatTurn {
   id: number
   role: 'user' | 'assistant' | 'tool' | 'system'
   content: string
-  meta?: any
+  meta?: DeviceChatMeta
   created_at: string
 }
 export interface DeviceChatNote {
@@ -128,8 +137,17 @@ export interface DeviceChatNote {
 }
 export interface DeviceChatToolReq {
   name: string
-  args?: Record<string, any>
+  args?: Record<string, unknown>
   rationale?: string
+}
+export interface DeviceChatMeta {
+  tool?: string
+  tool_request?: DeviceChatToolReq
+  proposal?: DeviceChatProposal
+  manual_accept?: boolean
+  manual_reject?: boolean
+  explanation?: string
+  [key: string]: unknown
 }
 export interface DeviceChatProposal {
   name?: string
@@ -165,10 +183,10 @@ export const postDeviceChatProposal = (id: number, body: {
   name?: string
   os?: string
 }) =>
-  apiFetch<{ applied: boolean; changes: string[]; device?: any }>(`/api/device/${id}/chat/proposal`,
+  apiFetch<{ applied: boolean; changes: string[]; device?: Partial<Device> }>(`/api/device/${id}/chat/proposal`,
     { method: 'POST', body: JSON.stringify(body) })
 export const undoDeviceChat = (id: number) =>
-  apiFetch<{ undone: boolean; device?: any; reason?: string }>(`/api/device/${id}/chat/undo`, { method: 'POST' })
+  apiFetch<{ undone: boolean; device?: Partial<Device>; reason?: string }>(`/api/device/${id}/chat/undo`, { method: 'POST' })
 export const clearDeviceChat = (id: number) =>
   apiFetch<{ cleared: boolean }>(`/api/device/${id}/chat`, { method: 'DELETE' })
 export const explainDeviceChatTurn = (deviceId: number, turnId: number) =>
@@ -176,7 +194,7 @@ export const explainDeviceChatTurn = (deviceId: number, turnId: number) =>
 
 // ── Alerts ───────────────────────────────────────────────────────────────────
 
-export const getAlerts = () => apiFetch<Alert[]>('/api/alerts')
+export const getAlerts = () => apiFetch<Alert[] | { unread_count: number; alerts: Alert[] }>('/api/alerts')
 export const readAlert = (id: number) => apiFetch<void>(`/api/alerts/${id}/read`, { method: 'POST' })
 export const readAllAlerts = () => apiFetch<void>('/api/alerts/read-all', { method: 'POST' })
 export const deleteAlert = (id: number) => apiFetch<void>(`/api/alerts/${id}`, { method: 'DELETE' })
@@ -212,7 +230,7 @@ export const updateFirmware = () =>
 
 export const getLogs = (params?: Record<string, string>) => {
   const q = params ? '?' + new URLSearchParams(params).toString() : ''
-  return apiFetch<LogEntry[]>(`/api/logs${q}`)
+  return apiFetch<LogEntry[] | { total: number; entries: LogEntry[] }>(`/api/logs${q}`)
 }
 export const getLogFacets = () => apiFetch<LogFacets>('/api/logs/facets')
 export const getLogInsights = (days = 7) => apiFetch<LogInsights>(`/api/logs/insights?days=${days}`)
@@ -262,11 +280,11 @@ export const revertAction = (id: number) =>
 
 // ── Uptime Guardian (auto-heal) ───────────────────────────────────────────────
 
-export const getAutoHeal = () => apiFetch<any>('/api/autoheal')
+export const getAutoHeal = () => apiFetch<AutoHealData>('/api/autoheal')
 export const saveAutoHealConfig = (body: Record<string, unknown>) =>
   apiFetch<{ saved: string[]; password_set: boolean }>('/api/autoheal/config', { method: 'POST', body: JSON.stringify(body) })
 export const autoHealRebootNow = (force = false) =>
-  apiFetch<any>('/api/autoheal/reboot-now', { method: 'POST', body: JSON.stringify({ force }) })
+  apiFetch<Record<string, unknown>>('/api/autoheal/reboot-now', { method: 'POST', body: JSON.stringify({ force }) })
 export const autoHealResetCounter = () =>
   apiFetch<{ status: string; cleared_reboots_today: number; counter_reset_at: string }>('/api/autoheal/reset-counter', { method: 'POST' })
 export const autoHealSimulate = () =>
@@ -300,7 +318,7 @@ export const getDiagnostics = () => apiFetch<Diagnostics>('/api/diagnostics/noti
 // ── Security Lab ─────────────────────────────────────────────────────────────
 
 export const checkWSL = () => apiFetch<WSLCheck>('/api/security/wsl/check', { method: 'POST' })
-export const getSecurityRuns = () => apiFetch<SecurityRun[]>('/api/security/runs', { method: 'POST', body: JSON.stringify({}) })
+export const getSecurityRuns = () => apiFetch<SecurityRun[] | { runs: SecurityRun[] }>('/api/security/runs', { method: 'POST', body: JSON.stringify({}) })
 export const startNikto = (body: object) =>
   apiFetch<{ run_id: number }>('/api/security/nikto/start', { method: 'POST', body: JSON.stringify(body) })
 export const startHydra = (body: object) =>
@@ -322,7 +340,7 @@ export const securityChat = (body: object) =>
 export const cancelSecurityRun = (body: object) =>
   apiFetch<void>('/api/security/run/cancel', { method: 'POST', body: JSON.stringify(body) })
 export const getSecLabHistory = (body: object) =>
-  apiFetch<SecurityRun[]>('/api/security/runs', { method: 'POST', body: JSON.stringify(body) })
+  apiFetch<SecurityRun[] | { runs: SecurityRun[] }>('/api/security/runs', { method: 'POST', body: JSON.stringify(body) })
 
 // ── Notifications / Command ───────────────────────────────────────────────────
 
@@ -340,6 +358,7 @@ export interface AppStatus {
   scanning: boolean
   last_scan: string | null
   device_count: number
+  scan?: { running?: boolean; host_count?: number; started_at?: string | null }
 }
 
 export interface Device {
@@ -357,6 +376,12 @@ export interface Device {
   vulnerability_count?: number
   max_cve_risk?: string | null
   ghost_detection?: GhostDetection | null
+}
+
+export interface DeviceActivity {
+  domains?: { domain: string; count?: number; last_seen?: string }[]
+  connections?: Connection[]
+  [key: string]: unknown
 }
 
 export interface GhostDetection {
@@ -420,12 +445,16 @@ export interface Scan {
   finished_at: string | null
   device_count: number
   new_devices: number
+  host_count?: number
+  status?: string
+  duration_s?: number
 }
 
 export interface DiffResult {
   new_devices: Device[]
   gone_devices: Device[]
   changed_devices: Device[]
+  changes?: { change_type?: string; message?: string; created_at?: string }[]
 }
 
 export interface DeviceScan {
@@ -456,6 +485,7 @@ export interface DeviceProfile {
 }
 
 export interface HealthStatus {
+  status?: 'online' | 'offline' | 'degraded'
   online: boolean
   latency_ms: number | null
   packet_loss: number | null
@@ -463,6 +493,31 @@ export interface HealthStatus {
   download_mbps: number | null
   upload_mbps: number | null
   checked_at: string
+}
+
+export interface AutoHealData {
+  config?: {
+    enabled: boolean; dry_run: boolean; interval_s: number; confirm_checks: number
+    method: string; router_host: string; router_user: string; has_password: boolean
+    max_per_outage: number; cooldown_s: number; max_per_day: number
+    recovery_window_s: number; internet_targets: string[]
+    router_ssl?: boolean; router_port?: number | null
+    smartplug_method?: string; smartplug_host?: string; smartplug_user?: string; smartplug_has_password?: boolean
+  }
+  state?: Record<string, unknown> & { offline?: boolean; consecutive_offline?: number; rebooted_this_outage?: boolean }
+  stats?: Record<string, unknown> & {
+    reboots_today?: number; last_reboot?: string; counter_reset_at?: string
+    uptime?: {
+      uptime_pct?: number; clean_uptime_pct?: number; degraded_pct?: number; offline_pct?: number; total_checks?: number
+      online_checks?: number; degraded_checks?: number; offline_checks?: number
+    }
+  }
+  events?: Record<string, unknown>[]
+  incidents?: Record<string, unknown>[]
+  playbook?: {
+    ai_enabled: boolean; diagnosis: string; proposed_action: string
+    safety_checks?: { name: string; passed: boolean; detail: string }[]
+  }
 }
 
 export interface HealthPoint {
@@ -482,6 +537,9 @@ export interface Telemetry {
   ram_percent: number
   disk_percent: number
   uptime_s: number
+  cpu_pct?: number
+  mem_mb?: number
+  pid?: number
 }
 
 export interface NetworkInfo {
@@ -536,12 +594,11 @@ export interface AISynthesisResult {
 
 export interface Alert {
   id: number
-  severity: 'low' | 'medium' | 'high' | 'critical'
-  title: string
-  detail: string | null
   created_at: string
+  alert_type: string
+  message: string
   read: boolean
-  device_ip: string | null
+  device_id: number | null
 }
 
 export interface LogEntry {
@@ -554,6 +611,9 @@ export interface LogEntry {
   created_at: string
   revert_json: string | null
   reverted_at: string | null
+  level?: string
+  category?: string
+  reversible?: boolean
 }
 
 export interface LogFacets {
@@ -701,6 +761,8 @@ export interface Report {
   severity: string
   summary: string
   detail: string | null
+  headline?: string
+  body?: string | null
 }
 
 export interface ChatResponse {
@@ -734,6 +796,8 @@ export interface WSLCheck {
   wsl_available: boolean
   distros: string[]
   tools: Record<string, boolean>
+  wsl_installed?: boolean
+  kali_present?: boolean
 }
 
 export interface SecurityRun {

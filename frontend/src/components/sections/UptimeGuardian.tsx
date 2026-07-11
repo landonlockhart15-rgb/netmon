@@ -1,14 +1,15 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { PlugZap, RotateCw, FlaskConical, Save, Power, Clock, Router as RouterIcon, Activity, ShieldCheck, Sparkles, CheckCircle2, XCircle, AlertCircle } from 'lucide-react'
-import { getAutoHeal, saveAutoHealConfig, autoHealRebootNow, autoHealResetCounter, autoHealSimulate } from '@/lib/api'
+import { getAutoHeal, saveAutoHealConfig, autoHealRebootNow, autoHealResetCounter, autoHealSimulate, type AutoHealData } from '@/lib/api'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge from '@/components/shared/Badge'
 import EmptyState from '@/components/shared/EmptyState'
 import PageHero from '@/components/shared/PageHero'
-import StatTile, { type Accent } from '@/components/shared/StatTile'
+import StatTile from '@/components/shared/StatTile'
+import type { Accent } from '@/components/shared/statTileStyles'
 
 interface Cfg {
   enabled: boolean; dry_run: boolean; interval_s: number; confirm_checks: number
@@ -19,6 +20,44 @@ interface Cfg {
   smartplug_method?: string; smartplug_host?: string; smartplug_user?: string; smartplug_has_password?: boolean
 }
 
+type FormValue = string | number | boolean | null | undefined
+type GuardianForm = Record<string, FormValue>
+type SimulationScenario = Awaited<ReturnType<typeof autoHealSimulate>>['scenarios'][number]
+interface GuardianEvent { id: number | string; summary: string; created_at: string }
+interface GuardianIncident {
+  id: number | string
+  type: string
+  status: string
+  start_time: string
+  downtime_s?: number | null
+  ai_narrative?: string | null
+  storyline?: string
+  events: GuardianEvent[]
+}
+
+function configForm(cfg: Cfg): GuardianForm {
+  return {
+    autoheal_enabled: cfg.enabled, autoheal_dry_run: cfg.dry_run,
+    autoheal_router_host: cfg.router_host, autoheal_router_user: cfg.router_user,
+    autoheal_confirm_checks: cfg.confirm_checks, autoheal_interval_s: cfg.interval_s,
+    autoheal_max_reboots_per_outage: cfg.max_per_outage,
+    autoheal_cooldown_min: Math.round(cfg.cooldown_s / 60),
+    autoheal_max_reboots_per_day: cfg.max_per_day,
+    autoheal_recovery_window_s: cfg.recovery_window_s,
+    autoheal_internet_targets: (cfg.internet_targets || []).join(', '),
+    autoheal_reboot_method: cfg.method,
+    autoheal_router_ssl: cfg.router_ssl ?? false,
+    autoheal_router_port: cfg.router_port ?? '',
+    autoheal_smartplug_method: cfg.smartplug_method ?? 'none',
+    autoheal_smartplug_host: cfg.smartplug_host ?? '',
+    autoheal_smartplug_user: cfg.smartplug_user ?? '',
+  }
+}
+
+function controlValue(value: FormValue): string | number {
+  return typeof value === 'string' || typeof value === 'number' ? value : ''
+}
+
 const ACTION_ACCENT: Record<string, Accent> = {
   online: 'emerald', confirming: 'amber', awaiting_recovery: 'blue',
   cooldown: 'blue', reboot: 'red', giveup: 'red', disabled: 'gray',
@@ -27,16 +66,16 @@ const ACTION_ACCENT: Record<string, Accent> = {
 export default function UptimeGuardian() {
   const qc = useQueryClient()
   const { data, isLoading } = useQuery({ queryKey: ['autoheal'], queryFn: getAutoHeal, refetchInterval: 15_000 })
-  const [form, setForm] = useState<Record<string, any>>({})
+  const [formOverrides, setFormOverrides] = useState<GuardianForm>({})
   const [pw, setPw] = useState('')
   const [spw, setSpw] = useState('')
-  const [sim, setSim] = useState<any[] | null>(null)
+  const [sim, setSim] = useState<SimulationScenario[] | null>(null)
 
   const cfg: Cfg | undefined = data?.config
   const state = data?.state
   const stats = data?.stats
-  const events: any[] = data?.events ?? []
-  const incidents: any[] = data?.incidents ?? []
+  const incidents = (data?.incidents ?? []) as unknown as GuardianIncident[]
+  const form: GuardianForm = cfg ? { ...configForm(cfg), ...formOverrides } : formOverrides
   const rebootsUsed = Number(stats?.reboots_today ?? 0)
   const maxReboots = Number(cfg?.max_per_day ?? 0)
   const rebootsRemaining = Math.max(maxReboots - rebootsUsed, 0)
@@ -48,31 +87,9 @@ export default function UptimeGuardian() {
   const offlinePct = uptime?.offline_pct
   const trackedChecks = Number(uptime?.total_checks ?? 0)
 
-  // Seed the editable form once config arrives
-  useEffect(() => {
-    if (cfg && Object.keys(form).length === 0) {
-      setForm({
-        autoheal_enabled: cfg.enabled, autoheal_dry_run: cfg.dry_run,
-        autoheal_router_host: cfg.router_host, autoheal_router_user: cfg.router_user,
-        autoheal_confirm_checks: cfg.confirm_checks, autoheal_interval_s: cfg.interval_s,
-        autoheal_max_reboots_per_outage: cfg.max_per_outage,
-        autoheal_cooldown_min: Math.round(cfg.cooldown_s / 60),
-        autoheal_max_reboots_per_day: cfg.max_per_day,
-        autoheal_recovery_window_s: cfg.recovery_window_s,
-        autoheal_internet_targets: (cfg.internet_targets || []).join(', '),
-        autoheal_reboot_method: cfg.method,
-        autoheal_router_ssl: cfg.router_ssl ?? false,
-        autoheal_router_port: cfg.router_port ?? '',
-        autoheal_smartplug_method: cfg.smartplug_method ?? 'none',
-        autoheal_smartplug_host: cfg.smartplug_host ?? '',
-        autoheal_smartplug_user: cfg.smartplug_user ?? '',
-      })
-    }
-  }, [cfg]) // eslint-disable-line react-hooks/exhaustive-deps
-
   const saveMut = useMutation({
     mutationFn: () => {
-      const body: Record<string, any> = { ...form }
+      const body: Record<string, unknown> = { ...form }
       if (pw.trim()) body.autoheal_router_pass = pw.trim()
       if (spw.trim()) body.autoheal_smartplug_pass = spw.trim()
       return saveAutoHealConfig(body)
@@ -86,7 +103,7 @@ export default function UptimeGuardian() {
   const resetMut = useMutation({
     mutationFn: autoHealResetCounter,
     onSuccess: d => {
-      qc.setQueryData(['autoheal'], (old: any) => old ? {
+      qc.setQueryData<AutoHealData>(['autoheal'], old => old ? {
         ...old,
         stats: {
           ...(old.stats ?? {}),
@@ -99,7 +116,7 @@ export default function UptimeGuardian() {
   })
   const simMut = useMutation({ mutationFn: autoHealSimulate, onSuccess: d => setSim(d.scenarios) })
 
-  const set = (k: string, v: any) => setForm(f => ({ ...f, [k]: v }))
+  const set = (k: string, v: FormValue) => setFormOverrides(current => ({ ...current, [k]: v }))
 
   // Hero theming
   const offline = state?.offline
@@ -179,7 +196,7 @@ export default function UptimeGuardian() {
                   loading={rebootMut.isPending}
                   onClick={() => {
                     if (cfg && !cfg.dry_run) {
-                      if (!confirm(`Execute proposed healing action: ${data.playbook.proposed_action}? This will cause a temporary network drop of ~2-4 minutes.`)) return;
+                      if (!confirm(`Execute proposed healing action: ${data.playbook?.proposed_action ?? 'router reboot'}? This will cause a temporary network drop of ~2-4 minutes.`)) return;
                     }
                     rebootMut.mutate(false);
                   }}
@@ -194,7 +211,7 @@ export default function UptimeGuardian() {
             <div>
               <span className="text-xs text-gray-500 block uppercase tracking-wider font-semibold mb-2">Safety Check Pre-requisites</span>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-                {data.playbook.safety_checks?.map((check: any, idx: number) => (
+                {data.playbook.safety_checks?.map((check, idx) => (
                   <div
                     key={idx}
                     className={cn(
@@ -334,7 +351,7 @@ export default function UptimeGuardian() {
               </div>
 
               <Field label="Reboot Method">
-                <select value={form.autoheal_reboot_method ?? 'netgear_soap'} onChange={e => set('autoheal_reboot_method', e.target.value)}
+                <select value={controlValue(form.autoheal_reboot_method) || 'netgear_soap'} onChange={e => set('autoheal_reboot_method', e.target.value)}
                   className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-purple-500 w-full">
                   <option value="netgear_soap" className="bg-[#0f0f1a]">Netgear SOAP (Orbi/CBR)</option>
                   <option value="tasmota" className="bg-[#0f0f1a]">Tasmota Smart Plug (local HTTP)</option>
@@ -344,12 +361,12 @@ export default function UptimeGuardian() {
               </Field>
 
               <Field label={form.autoheal_reboot_method === 'netgear_soap' ? 'Router admin host' : 'Smart plug host (IP/Name)'}>
-                <Input value={form.autoheal_router_host ?? ''} onChange={v => set('autoheal_router_host', v)} placeholder={form.autoheal_reboot_method === 'netgear_soap' ? '192.168.1.1 (auto)' : 'e.g. 192.168.1.100'} mono />
+                <Input value={controlValue(form.autoheal_router_host)} onChange={v => set('autoheal_router_host', v)} placeholder={form.autoheal_reboot_method === 'netgear_soap' ? '192.168.1.1 (auto)' : 'e.g. 192.168.1.100'} mono />
               </Field>
 
               {form.autoheal_reboot_method !== 'kasa' && (
                 <Field label={form.autoheal_reboot_method === 'netgear_soap' ? 'Router admin user' : 'Smart plug username'}>
-                  <Input value={form.autoheal_router_user ?? ''} onChange={v => set('autoheal_router_user', v)} placeholder={form.autoheal_reboot_method === 'netgear_soap' ? 'admin' : 'optional'} />
+                  <Input value={controlValue(form.autoheal_router_user)} onChange={v => set('autoheal_router_user', v)} placeholder={form.autoheal_reboot_method === 'netgear_soap' ? 'admin' : 'optional'} />
                 </Field>
               )}
 
@@ -359,7 +376,7 @@ export default function UptimeGuardian() {
 
               {form.autoheal_reboot_method === 'netgear_soap' && (
                 <Field label="Router port (blank = 443 with SSL, otherwise auto)">
-                  <Input value={form.autoheal_router_port ?? ''} onChange={v => set('autoheal_router_port', v)} placeholder="e.g. 443 or 5000" mono />
+                  <Input value={controlValue(form.autoheal_router_port)} onChange={v => set('autoheal_router_port', v)} placeholder="e.g. 443 or 5000" mono />
                 </Field>
               )}
 
@@ -371,7 +388,7 @@ export default function UptimeGuardian() {
                   </div>
 
                   <Field label="Smart Plug Fallback Method">
-                    <select value={form.autoheal_smartplug_method ?? 'none'} onChange={e => set('autoheal_smartplug_method', e.target.value)}
+                    <select value={controlValue(form.autoheal_smartplug_method) || 'none'} onChange={e => set('autoheal_smartplug_method', e.target.value)}
                       className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-purple-500 w-full">
                       <option value="none" className="bg-[#0f0f1a]">None (No fallback)</option>
                       <option value="tasmota" className="bg-[#0f0f1a]">Tasmota Smart Plug (local HTTP)</option>
@@ -383,12 +400,12 @@ export default function UptimeGuardian() {
                   {form.autoheal_smartplug_method && form.autoheal_smartplug_method !== 'none' && (
                     <>
                       <Field label="Fallback Plug Host (IP)">
-                        <Input value={form.autoheal_smartplug_host ?? ''} onChange={v => set('autoheal_smartplug_host', v)} placeholder="e.g. 192.168.1.100" mono />
+                        <Input value={controlValue(form.autoheal_smartplug_host)} onChange={v => set('autoheal_smartplug_host', v)} placeholder="e.g. 192.168.1.100" mono />
                       </Field>
                       
                       {form.autoheal_smartplug_method !== 'kasa' && (
                         <Field label="Fallback Plug Username">
-                          <Input value={form.autoheal_smartplug_user ?? ''} onChange={v => set('autoheal_smartplug_user', v)} placeholder="optional" />
+                          <Input value={controlValue(form.autoheal_smartplug_user)} onChange={v => set('autoheal_smartplug_user', v)} placeholder="optional" />
                         </Field>
                       )}
 
@@ -404,13 +421,13 @@ export default function UptimeGuardian() {
                 <span className="text-xs font-semibold text-purple-400 uppercase tracking-wider">Guardian Parameters</span>
               </div>
 
-              <Field label="Internet targets (comma-sep)"><Input value={form.autoheal_internet_targets ?? ''} onChange={v => set('autoheal_internet_targets', v)} mono /></Field>
-              <Field label="Confirm checks before acting"><Input type="number" value={form.autoheal_confirm_checks ?? ''} onChange={v => set('autoheal_confirm_checks', v)} /></Field>
-              <Field label="Check interval (seconds)"><Input type="number" value={form.autoheal_interval_s ?? ''} onChange={v => set('autoheal_interval_s', v)} /></Field>
-              <Field label="Max reboots per outage"><Input type="number" value={form.autoheal_max_reboots_per_outage ?? ''} onChange={v => set('autoheal_max_reboots_per_outage', v)} /></Field>
-              <Field label="Cooldown between reboots (min)"><Input type="number" value={form.autoheal_cooldown_min ?? ''} onChange={v => set('autoheal_cooldown_min', v)} /></Field>
-              <Field label="Max reboots per day"><Input type="number" value={form.autoheal_max_reboots_per_day ?? ''} onChange={v => set('autoheal_max_reboots_per_day', v)} /></Field>
-              <Field label="Recovery window (seconds)"><Input type="number" value={form.autoheal_recovery_window_s ?? ''} onChange={v => set('autoheal_recovery_window_s', v)} /></Field>
+              <Field label="Internet targets (comma-sep)"><Input value={controlValue(form.autoheal_internet_targets)} onChange={v => set('autoheal_internet_targets', v)} mono /></Field>
+              <Field label="Confirm checks before acting"><Input type="number" value={controlValue(form.autoheal_confirm_checks)} onChange={v => set('autoheal_confirm_checks', v)} /></Field>
+              <Field label="Check interval (seconds)"><Input type="number" value={controlValue(form.autoheal_interval_s)} onChange={v => set('autoheal_interval_s', v)} /></Field>
+              <Field label="Max reboots per outage"><Input type="number" value={controlValue(form.autoheal_max_reboots_per_outage)} onChange={v => set('autoheal_max_reboots_per_outage', v)} /></Field>
+              <Field label="Cooldown between reboots (min)"><Input type="number" value={controlValue(form.autoheal_cooldown_min)} onChange={v => set('autoheal_cooldown_min', v)} /></Field>
+              <Field label="Max reboots per day"><Input type="number" value={controlValue(form.autoheal_max_reboots_per_day)} onChange={v => set('autoheal_max_reboots_per_day', v)} /></Field>
+              <Field label="Recovery window (seconds)"><Input type="number" value={controlValue(form.autoheal_recovery_window_s)} onChange={v => set('autoheal_recovery_window_s', v)} /></Field>
             </div>
             <p className="text-[11px] text-gray-600">
               Supports Netgear SOAP API or local smart plug (Tasmota, Shelly, TP-Link Kasa) to power-cycle the router. Passwords are stored server-side and never leave your machine.
@@ -496,7 +513,7 @@ export default function UptimeGuardian() {
                         <span className="transition-transform group-open:rotate-90">▶</span> Technical sequence details
                       </summary>
                       <div className="mt-1.5 pl-3 border-l border-white/5 space-y-1">
-                        {inc.events.map((e: any) => (
+                        {inc.events.map(e => (
                           <div key={e.id} className="text-[11px] text-gray-400 flex items-center justify-between gap-4">
                             <span>• {e.summary}</span>
                             <span className="text-gray-600 font-mono text-[9px] flex-shrink-0">{formatRelativeTime(e.created_at)}</span>

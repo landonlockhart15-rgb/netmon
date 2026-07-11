@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ScanLine, Wifi, Network, History, BrainCircuit, Radar, MonitorSmartphone, Clock, Timer, Router, AlertTriangle, CheckCircle2, ArrowRight } from 'lucide-react'
 import {
@@ -9,7 +9,8 @@ import {
 import { fmtDateTime, formatRelativeTime, cn } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
-import Badge, { severityVariant } from '@/components/shared/Badge'
+import Badge from '@/components/shared/Badge'
+import { severityVariant } from '@/components/shared/badgeVariants'
 import EmptyState from '@/components/shared/EmptyState'
 import StatTile from '@/components/shared/StatTile'
 import DeviceModal from '@/components/shared/DeviceModal'
@@ -73,8 +74,10 @@ export default function Overview() {
     onSuccess: () => setTimeout(() => qc.invalidateQueries({ queryKey: ['ai-latest'] }), 5000),
   })
 
-  window._nm_scanning = scanMutation.isPending
-  window._nm_ai_running = !!aiProgress?.running
+  useEffect(() => {
+    window._nm_scanning = scanMutation.isPending
+    window._nm_ai_running = Boolean(aiProgress?.running)
+  }, [scanMutation.isPending, aiProgress?.running])
 
   const latestScan = scans[0] as Scan | undefined
 
@@ -150,8 +153,8 @@ export default function Overview() {
                 <div key={s.id} className="flex items-center justify-between text-xs py-1 border-b border-white/5 last:border-0">
                   <span className="text-gray-400">{fmtDateTime(s.started_at)}</span>
                   <div className="flex items-center gap-2">
-                    <span className="text-gray-300">{(s as any).host_count ?? (s as any).device_count ?? '—'} devices</span>
-                    {(s as any).status && (s as any).status !== 'complete' && <Badge variant="warn">{(s as any).status}</Badge>}
+                    <span className="text-gray-300">{s.host_count ?? s.device_count ?? '—'} devices</span>
+                    {s.status && s.status !== 'complete' && <Badge variant="warn">{s.status}</Badge>}
                   </div>
                 </div>
               ))}
@@ -174,8 +177,8 @@ function OverviewHero({ netinfo, latestScan, deviceCount, scanning, onScan }: {
   scanning: boolean
   onScan: () => void
 }) {
-  const hosts = (latestScan as any)?.host_count ?? (latestScan as any)?.device_count
-  const duration = (latestScan as any)?.duration_s
+  const hosts = latestScan?.host_count ?? latestScan?.device_count
+  const duration = latestScan?.duration_s
   return (
     <div className="relative overflow-hidden rounded-2xl border border-cyan-500/25 bg-[#0d0d18] shadow-[0_0_30px_-12px_rgba(34,211,238,0.4)]">
       <div className="absolute inset-0 nm-grid-bg opacity-40" />
@@ -307,7 +310,7 @@ const CHANGE_ICONS: Record<string, { icon: string; cls: string }> = {
 function DiffPanel({ diff }: { diff?: DiffResult }) {
   if (!diff) return <EmptyState icon="◎" text="Loading…" />
   // API returns { changes: [{change_type, message, created_at}] }
-  const rawChanges: any[] = (diff as any).changes ?? []
+  const rawChanges = diff.changes ?? []
   const allChanges = rawChanges.map(c => ({
     type: c.change_type ?? 'unknown',
     message: c.message ?? '',

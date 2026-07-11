@@ -36,11 +36,21 @@ html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
+  overflow: hidden;
   background: var(--color-bg-base);
   color: var(--color-text);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
+
+/* The app shell owns scrolling. Keep the sidebar usable in short viewports
+   without showing a second scrollbar beside the main content. */
+.nm-sidebar-scroll {
+  min-height: 0;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.nm-sidebar-scroll::-webkit-scrollbar { display: none; }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }

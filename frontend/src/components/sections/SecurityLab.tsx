@@ -1,24 +1,50 @@
 import { useState, useRef, useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import ReactECharts from 'echarts-for-react'
-import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal, FlaskConical, Wrench, GitFork, BrainCircuit, Loader2, Laptop, Server, Cpu, Smartphone, Router, Network, RefreshCw } from 'lucide-react'
+import { Play, Square, Send, AlertTriangle, Upload, ExternalLink, Info, Terminal, FlaskConical, Wrench, GitFork, BrainCircuit, Loader2, Router, RefreshCw } from 'lucide-react'
 import {
   checkWSL, getSecLabHistory,
   startNikto, startHydra, startJohn, startMetasploit,
   startWifiCapture, startAircrack, shodanCheck,
   securityChat, cancelSecurityRun, getContextualInsight,
-  getFirmwareStatus, updateFirmware,
+  getFirmwareStatus, updateFirmware, type ShodanResult,
 } from '@/lib/api'
-import { formatRelativeTime, cn } from '@/lib/utils'
+import { formatRelativeTime, cn, getErrorMessage } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
-import Badge, { severityVariant } from '@/components/shared/Badge'
+import Badge from '@/components/shared/Badge'
+import { severityVariant } from '@/components/shared/badgeVariants'
 import EmptyState from '@/components/shared/EmptyState'
 import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
 import Markdown from '@/components/shared/Markdown'
 
 type Tab = 'least_resistance' | 'cve' | 'attack_tree' | 'vulnerability' | 'password' | 'exploit' | 'wifi' | 'exposure'
+type FixSuggestion = { action_key: string; type: 'router_link' | 'info' | 'windows_cmd' | string; label: string }
+type StreamChunk = { content: string; sequence: number }
+type Remediation = { type?: string; admin_url?: string }
+type CveFinding = {
+  risk: string; cve: string; title: string; label?: string; hostname?: string; ip: string
+  service: string; port: number; evidence?: string; recommendation?: string
+  device_id?: number; remediation?: Remediation; product?: string; version?: string
+}
+type AttackNode = { name: string; ip?: string; reasons: string[]; remediation?: Remediation }
+type AttackStep = { title: string; detail: string }
+type AttackPath = {
+  id: string; risk: string; score: number; source: AttackNode; target: AttackNode
+  mitigations: string[]; steps: AttackStep[]
+}
+type AttackTreeData = {
+  paths?: AttackPath[]; scan?: { id?: number }; device_count?: number; source_count?: number
+  target_count?: number; assumptions?: string[]
+}
+type CveMappingData = { findings?: CveFinding[]; scan?: { id?: number }; scanned_devices?: number }
+type LeastResistanceHost = {
+  device_id: number; label?: string; hostname?: string; ip: string; overall_risk: string
+  open_ports: number[]; mapped_cves: CveFinding[]; remediation?: string
+  least_resistance_path: { steps: AttackStep[] }
+}
+type LeastResistanceData = { hosts?: LeastResistanceHost[] }
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'least_resistance', label: 'Least Resistance' },
@@ -43,13 +69,12 @@ async function uploadSecFile(file: File, fileType: string): Promise<number> {
 }
 
 export default function SecurityLab() {
-  const qc = useQueryClient()
   const [tab, setTab] = useState<Tab>('least_resistance')
   const [activeRunId, setActiveRunId] = useState<number | null>(null)
   const [streamOutput, setStreamOutput] = useState('')
   const [chatHistory, setChatHistory] = useState<{ role: string; content: string }[]>([])
   const [chatMsg, setChatMsg] = useState('')
-  const [fixSuggestions, setFixSuggestions] = useState<any[]>([])
+  const [fixSuggestions, setFixSuggestions] = useState<FixSuggestion[]>([])
   const [fixResult, setFixResult] = useState<{ text?: string; url?: string } | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -72,7 +97,7 @@ export default function SecurityLab() {
     queryFn: async () => {
       const res = await fetch('/api/security/least-resistance', { credentials: 'same-origin' })
       if (!res.ok) throw new Error(`Least resistance report failed: ${res.status}`)
-      return res.json()
+      return res.json() as Promise<LeastResistanceData>
     },
     refetchInterval: activeRunId ? 5000 : 30_000,
   })
@@ -82,7 +107,7 @@ export default function SecurityLab() {
     queryFn: async () => {
       const res = await fetch('/api/security/cve-mapping', { credentials: 'same-origin' })
       if (!res.ok) throw new Error(`CVE mapping failed: ${res.status}`)
-      return res.json()
+      return res.json() as Promise<CveMappingData>
     },
     refetchInterval: activeRunId ? 5000 : 30_000,
   })
@@ -92,16 +117,14 @@ export default function SecurityLab() {
     queryFn: async () => {
       const res = await fetch('/api/security/attack-tree', { credentials: 'same-origin' })
       if (!res.ok) throw new Error(`Attack tree failed: ${res.status}`)
-      return res.json()
+      return res.json() as Promise<AttackTreeData>
     },
     refetchInterval: activeRunId ? 5000 : 30_000,
   })
 
-  const w = wsl as any
-  const wslAvailable = w?.wsl_installed && w?.kali_present
-  const raw = historyRaw as any
-  const runs: any[] = Array.isArray(raw) ? raw : (raw?.runs ?? [])
-  const activeRun = runs.find((r: any) => r.id === activeRunId)
+  const wslAvailable = Boolean(wsl?.wsl_installed && wsl?.kali_present)
+  const runs = Array.isArray(historyRaw) ? historyRaw : (historyRaw?.runs ?? [])
+  const activeRun = runs.find(r => r.id === activeRunId)
 
   // Polling-based output — polls /api/security/run/stream until done
   const startPolling = useCallback((runId: number) => {
@@ -119,10 +142,10 @@ export default function SecurityLab() {
           body: JSON.stringify({ run_id: runId, after_sequence: lastSeqRef.current }),
         })
         if (!res.ok) return
-        const data = await res.json()
-        const chunks: any[] = data.chunks ?? []
+        const data = await res.json() as { chunks?: StreamChunk[]; status?: string }
+        const chunks = data.chunks ?? []
         if (chunks.length > 0) {
-          const text = chunks.map((c: any) => c.content).join('')
+          const text = chunks.map(c => c.content).join('')
           setStreamOutput(prev => prev + text)
           lastSeqRef.current = chunks[chunks.length - 1].sequence
         }
@@ -142,9 +165,9 @@ export default function SecurityLab() {
               const fixData = await fixRes.json()
               setFixSuggestions(fixData.suggestions ?? [])
             }
-          } catch {}
+          } catch { /* Suggestions are optional; streaming remains usable. */ }
         }
-      } catch {}
+      } catch { /* The next poll retries transient stream failures. */ }
     }, 1500)
   }, [refetchHistory])
 
@@ -167,8 +190,8 @@ export default function SecurityLab() {
         body: JSON.stringify({ run_id: runId, after_sequence: 0 }),
       })
       if (res.ok) {
-        const data = await res.json()
-        const text = (data.chunks ?? []).map((c: any) => c.content).join('')
+        const data = await res.json() as { chunks?: StreamChunk[] }
+        const text = (data.chunks ?? []).map(c => c.content).join('')
         setStreamOutput(text || '(no output was recorded for this run)')
       } else {
         setStreamOutput(`Could not load output (HTTP ${res.status}).`)
@@ -184,15 +207,15 @@ export default function SecurityLab() {
           const fixData = await fixRes.json()
           setFixSuggestions(fixData.suggestions ?? [])
         }
-      } catch {}
-    } catch (e: any) {
-      setStreamOutput(`Could not load output: ${e?.message ?? e}`)
+      } catch { /* Finished-run suggestions are optional. */ }
+    } catch (e: unknown) {
+      setStreamOutput(`Could not load output: ${getErrorMessage(e, 'unknown error')}`)
     }
   }, [startPolling])
 
   const chatMutation = useMutation({
     mutationFn: (msg: string) => securityChat({ message: msg, run_id: activeRunId }),
-    onSuccess: (data: any) => setChatHistory(h => [...h, { role: 'assistant', content: data.reply }]),
+    onSuccess: data => setChatHistory(h => [...h, { role: 'assistant', content: data.reply }]),
   })
 
   const runFix = async (actionKey: string) => {
@@ -234,8 +257,8 @@ export default function SecurityLab() {
     setActionError(null)
     try {
       await fn()
-    } catch (e: any) {
-      setActionError(e?.message ? String(e.message) : String(e))
+    } catch (e: unknown) {
+      setActionError(getErrorMessage(e, String(e)))
     }
   }
 
@@ -259,7 +282,7 @@ export default function SecurityLab() {
         }
       />
 
-      {w && !wslAvailable && (
+      {wsl && !wslAvailable && (
         <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 flex items-center gap-2 text-sm text-yellow-300">
           <AlertTriangle size={16} />
           WSL not available. Security Lab tools require WSL 2 with Kali Linux.
@@ -308,33 +331,33 @@ export default function SecurityLab() {
 
       {tab === 'vulnerability' && <NiktoPanel onStart={(target, opts) => runAction(async () => {
         const r = await startNikto({ target, ...opts, authorization_confirmed: true })
-        startPolling((r as any).run_id)
+        startPolling(r.run_id)
       })} />}
 
       {tab === 'password' && <PasswordPanel
         onStartHydra={(body) => runAction(async () => {
           const r = await startHydra({ ...body, authorization_confirmed: true })
-          startPolling((r as any).run_id)
+          startPolling(r.run_id)
         })}
         onStartJohn={(body) => runAction(async () => {
           const r = await startJohn({ ...body, authorization_confirmed: true })
-          startPolling((r as any).run_id)
+          startPolling(r.run_id)
         })}
       />}
 
       {tab === 'exploit' && <ExploitPanel onStart={(body) => runAction(async () => {
         const r = await startMetasploit({ ...body, authorization_confirmed: true })
-        startPolling((r as any).run_id)
+        startPolling(r.run_id)
       })} />}
 
       {tab === 'wifi' && <WifiPanel
         onStartCapture={(body) => runAction(async () => {
           const r = await startWifiCapture({ ...body, authorization_confirmed: true })
-          startPolling((r as any).run_id)
+          startPolling(r.run_id)
         })}
         onStartCrack={(body) => runAction(async () => {
           const r = await startAircrack({ ...body, authorization_confirmed: true })
-          startPolling((r as any).run_id)
+          startPolling(r.run_id)
         })}
       />}
 
@@ -344,7 +367,7 @@ export default function SecurityLab() {
       {activeRunId != null && (
         <Card title={`Live Output — Run #${activeRunId}`}
           action={
-            activeRun?.status === 'running' || pollingRef.current ? (
+            activeRunning ? (
               <Btn variant="danger" size="sm" loading={cancelMutation.isPending} onClick={() => cancelMutation.mutate()}>
                 <Square size={12} /> Cancel
               </Btn>
@@ -363,7 +386,7 @@ export default function SecurityLab() {
             <div className="mt-3 pt-3 border-t border-white/5 space-y-2">
               <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Suggested Fixes</p>
               <div className="flex flex-wrap gap-2">
-                {fixSuggestions.map((fix: any) => (
+                {fixSuggestions.map(fix => (
                   <button key={fix.action_key} onClick={() => runFix(fix.action_key)}
                     className={cn(
                       'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
@@ -439,7 +462,7 @@ export default function SecurityLab() {
                 </tr>
               </thead>
               <tbody>
-                {runs.map((r: any) => (
+                {runs.map(r => (
                   <tr key={r.id} onClick={() => showRun(r.id, r.status)}
                     className={cn('border-b border-white/5 cursor-pointer transition-colors',
                       r.id === activeRunId ? 'bg-purple-500/5' : 'hover:bg-white/[0.02]')}>
@@ -454,7 +477,7 @@ export default function SecurityLab() {
                     <td className="px-4 py-2">
                       {r.risk_level ? <Badge variant={severityVariant(r.risk_level)}>{r.risk_level}</Badge> : '—'}
                     </td>
-                    <td className="px-4 py-2 text-gray-500">{formatRelativeTime(r.created_at)}</td>
+                    <td className="px-4 py-2 text-gray-500">{formatRelativeTime(r.started_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -483,7 +506,7 @@ function RouterFirmwareCard() {
       if (!res.success) setActionError(res.error || 'Update failed.')
       else { setActionError(null); refetch() }
     },
-    onError: (e: any) => setActionError(e.message || 'Update failed.'),
+    onError: (e: unknown) => setActionError(getErrorMessage(e, 'Update failed.')),
   })
 
   if (!data) {
@@ -545,7 +568,7 @@ function RouterFirmwareCard() {
   )
 }
 
-function RemediationHint({ remediation }: { remediation: any }) {
+function RemediationHint({ remediation }: { remediation?: Remediation }) {
   if (!remediation) return null
   if (remediation.type === 'firmware') {
     return (
@@ -563,7 +586,7 @@ function RemediationHint({ remediation }: { remediation: any }) {
   )
 }
 
-function CveFindingRow({ f, idx }: { f: any; idx: number }) {
+function CveFindingRow({ f }: { f: CveFinding }) {
   const [insight, setInsight] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -580,8 +603,8 @@ function CveFindingRow({ f, idx }: { f: any; idx: number }) {
       const contextText = `Evidence: ${f.evidence || 'none'}. Recommendation: ${f.recommendation || 'none'}. Risk: ${f.risk}.`
       const res = await getContextualInsight(summaryText, contextText)
       setInsight(res.explanation)
-    } catch (e: any) {
-      setError(e.message || 'Failed to generate insight')
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, 'Failed to generate insight'))
     } finally {
       setLoading(false)
     }
@@ -648,10 +671,10 @@ function CveFindingRow({ f, idx }: { f: any; idx: number }) {
   )
 }
 
-function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boolean; onRefresh: () => void }) {
+function CveMappingPanel({ data, loading, onRefresh }: { data?: CveMappingData; loading: boolean; onRefresh: () => void }) {
   const [scanLoading, setScanLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const findings: any[] = data?.findings ?? []
+  const findings = data?.findings ?? []
   const runMappingScan = async () => {
     setError(null)
     setScanLoading(true)
@@ -664,8 +687,8 @@ function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boo
       })
       if (!res.ok) throw new Error(await res.text())
       onRefresh()
-    } catch (e: any) {
-      setError(e?.message ?? String(e))
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, String(e)))
     } finally {
       setScanLoading(false)
     }
@@ -722,7 +745,7 @@ function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boo
             </thead>
             <tbody>
               {findings.map((f, i) => (
-                <CveFindingRow key={`${f.device_id}-${f.cve}-${f.port}-${i}`} f={f} idx={i} />
+                <CveFindingRow key={`${f.device_id}-${f.cve}-${f.port}-${i}`} f={f} />
               ))}
             </tbody>
           </table>
@@ -736,27 +759,7 @@ function CveMappingPanel({ data, loading, onRefresh }: { data: any; loading: boo
   )
 }
 
-function getDeviceIcon(name: string) {
-  const n = name.toLowerCase()
-  if (n.includes('bulb') || n.includes('smart') || n.includes('light') || n.includes('iot')) {
-    return <Cpu className="w-5 h-5 text-amber-400" />
-  }
-  if (n.includes('nas') || n.includes('storage') || n.includes('backup') || n.includes('media')) {
-    return <Server className="w-5 h-5 text-blue-400" />
-  }
-  if (n.includes('pc') || n.includes('workstation') || n.includes('mac') || n.includes('laptop') || n.includes('desktop')) {
-    return <Laptop className="w-5 h-5 text-purple-400" />
-  }
-  if (n.includes('phone') || n.includes('mobile') || n.includes('tablet')) {
-    return <Smartphone className="w-5 h-5 text-green-400" />
-  }
-  if (n.includes('router') || n.includes('gateway') || n.includes('switch') || n.includes('firewall')) {
-    return <Router className="w-5 h-5 text-teal-400" />
-  }
-  return <Cpu className="w-5 h-5 text-gray-400" />
-}
-
-const attackGraphOption = (path: any) => {
+const attackGraphOption = (path?: AttackPath) => {
   if (!path) return {}
   const nodes = [
     {
@@ -833,7 +836,7 @@ const attackGraphOption = (path: any) => {
   }
 }
 
-function AttackPathExplain({ path }: { path: any }) {
+function AttackPathExplain({ path }: { path: AttackPath }) {
   const [insight, setInsight] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -848,8 +851,8 @@ function AttackPathExplain({ path }: { path: any }) {
       const contextText = `Foothold signals: ${(path.source.reasons || []).join('; ') || 'none'}. Target signals: ${(path.target.reasons || []).join('; ') || 'none'}. This path is backed by an actual vulnerability (CVE) NetMon found on the foothold device — it is a real, confirmed weakness, not a guess.`
       const res = await getContextualInsight(summaryText, contextText)
       setInsight(res.explanation)
-    } catch (e: any) {
-      setError(e.message || 'Failed to generate insight')
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, 'Failed to generate insight'))
     } finally {
       setLoading(false)
     }
@@ -881,7 +884,7 @@ function AttackPathExplain({ path }: { path: any }) {
   )
 }
 
-function AttackPathCard({ path, isSelected, onSelect }: { path: any; isSelected: boolean; onSelect: () => void }) {
+function AttackPathCard({ path, isSelected, onSelect }: { path: AttackPath; isSelected: boolean; onSelect: () => void }) {
   return (
     <div
       onClick={onSelect}
@@ -927,8 +930,8 @@ function AttackPathCard({ path, isSelected, onSelect }: { path: any; isSelected:
   )
 }
 
-function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boolean; onRefresh: () => void }) {
-  const paths: any[] = data?.paths ?? []
+function AttackTreePanel({ data, loading, onRefresh }: { data?: AttackTreeData; loading: boolean; onRefresh: () => void }) {
+  const paths = data?.paths ?? []
   const [selectedPathId, setSelectedPathId] = useState<string | null>(null)
 
   const activePath = paths.find(p => p.id === selectedPathId) || paths[0]
@@ -981,7 +984,7 @@ function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boo
 
               {/* Steps details */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {activePath.steps.map((step: any, i: number) => (
+                {activePath.steps.map((step, i) => (
                   <div key={step.title} className="relative rounded-lg border border-white/10 bg-white/[0.03] p-3 min-h-[112px]">
                     <div className="flex items-center gap-2 mb-2">
                       <div className="h-6 w-6 rounded-full bg-purple-500/15 border border-purple-500/30 text-purple-200 flex items-center justify-center text-xs">{i + 1}</div>
@@ -1002,9 +1005,9 @@ function AttackTreePanel({ data, loading, onRefresh }: { data: any; loading: boo
             ))}
           </div>
 
-          {data?.assumptions?.length > 0 && (
+          {(data?.assumptions?.length ?? 0) > 0 && (
             <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 text-[11px] text-blue-200/80 space-y-1">
-              {data.assumptions.map((a: string) => <p key={a}>{a}</p>)}
+              {data?.assumptions?.map(a => <p key={a}>{a}</p>)}
             </div>
           )}
         </div>
@@ -1261,7 +1264,7 @@ function WifiPanel({ onStartCapture, onStartCrack }: {
 function ShodanPanel() {
   const [ip, setIp] = useState('')
   const [apiKey, setApiKey] = useState('')
-  const [result, setResult] = useState<any>(null)
+  const [result, setResult] = useState<ShodanResult | null>(null)
   const [loading, setLoading] = useState(false)
   return (
     <Card title="Shodan — Internet Exposure">
@@ -1291,8 +1294,8 @@ function ShodanPanel() {
   )
 }
 
-function LeastResistancePanel({ data, loading, onRefresh }: { data: any; loading: boolean; onRefresh: () => void }) {
-  const hosts: any[] = data?.hosts ?? []
+function LeastResistancePanel({ data, loading, onRefresh }: { data?: LeastResistanceData; loading: boolean; onRefresh: () => void }) {
+  const hosts = data?.hosts ?? []
 
   return (
     <Card title="Path of Least Resistance" badge={hosts.length ? String(hosts.length) : undefined}
@@ -1336,7 +1339,7 @@ function LeastResistancePanel({ data, loading, onRefresh }: { data: any; loading
                       <p className="text-xs text-gray-500">No known vulnerable ports mapped.</p>
                     ) : (
                       <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                        {host.mapped_cves.map((cve: any, i: number) => (
+                        {host.mapped_cves.map((cve, i) => (
                           <div key={i} className="flex items-start gap-2 bg-white/[0.01] border border-white/5 rounded-lg p-2 text-xs">
                             <Badge variant={severityVariant(cve.risk)} className="mt-0.5 scale-90 origin-top-left shrink-0">
                               {cve.risk}
@@ -1355,7 +1358,7 @@ function LeastResistancePanel({ data, loading, onRefresh }: { data: any; loading
                   <div className="space-y-2">
                     <p className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Least Resistance Compromise Path</p>
                     <div className="space-y-2">
-                      {host.least_resistance_path.steps.map((step: any, idx: number) => (
+                      {host.least_resistance_path.steps.map((step, idx) => (
                         <div key={idx} className="flex gap-2">
                           <div className="flex flex-col items-center shrink-0">
                             <div className="h-5 w-5 rounded-full bg-purple-500/10 border border-purple-500/30 text-purple-300 flex items-center justify-center text-[10px] font-bold">

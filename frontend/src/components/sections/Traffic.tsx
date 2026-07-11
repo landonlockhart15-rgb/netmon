@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Play, Square, BrainCircuit, ShieldAlert, ShieldOff, ChevronDown, ChevronUp, Eye, Lock, Unlock, Globe, Radio, Gauge, MonitorSmartphone, Layers, AlertTriangle, CheckCircle2, ArrowRight } from 'lucide-react'
 import {
@@ -7,12 +7,13 @@ import {
   getMitmStatus, startMitm, stopMitm,
   getDNSLive, getDevices,
   getAILatest, getAIProgress,
-  type Interface, type AISummary,
+  type Interface, type AISummary, type Device,
 } from '@/lib/api'
 import { humanBytes, formatRelativeTime } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
-import Badge, { severityVariant } from '@/components/shared/Badge'
+import Badge from '@/components/shared/Badge'
+import { severityVariant } from '@/components/shared/badgeVariants'
 import EmptyState from '@/components/shared/EmptyState'
 import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
@@ -25,7 +26,22 @@ interface TrafficDashboardResponse {
   conversations: { src: string; dst: string; bytes: number; packets: number; country: string | null }[]
   incidents: { id: number; created_at: string; anomaly_type: string; device_ip: string | null }[]
 }
-interface MitmStatusResponse { active: boolean; interface: string | null; targets: string[] }
+interface MitmStatusResponse {
+  active?: boolean
+  running?: boolean
+  interface?: string | null
+  targets?: string[]
+  error?: string | null
+  active_count?: number
+  target_count?: number
+}
+type InterfacePayload = Interface[] | { interfaces?: Interface[] }
+type PerDeviceDns = Record<string, { domain: string; count: number }[]>
+
+function isPerDeviceDns(value: unknown): value is PerDeviceDns {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || 'queries' in value || 'error' in value) return false
+  return Object.values(value).every(entries => Array.isArray(entries))
+}
 
 export default function Traffic() {
   const qc = useQueryClient()
@@ -73,16 +89,18 @@ export default function Traffic() {
 
   const s = status as TrafficStatusResponse | undefined
   const d = dashboard as TrafficDashboardResponse | undefined
-  const mitm = mitmStatusRaw as any
-  const ifaceRaw = ifacesRaw as any
+  const mitm = mitmStatusRaw as MitmStatusResponse | undefined
+  const ifaceRaw = ifacesRaw as InterfacePayload | undefined
   const ifaceList: Interface[] = Array.isArray(ifaceRaw) ? ifaceRaw : (ifaceRaw?.interfaces ?? [])
-  const devices: any[] = Array.isArray(devicesRaw) ? devicesRaw : []
+  const devices: Device[] = Array.isArray(devicesRaw) ? devicesRaw : []
   const capturing = s?.running ?? d?.capture?.running ?? false
   // Backend state uses 'running' field
   const mitmActive = mitm?.running ?? mitm?.active ?? false
   const mitmError = mitm?.error ?? null
 
-  window._nm_capturing = capturing
+  useEffect(() => {
+    window._nm_capturing = capturing
+  }, [capturing])
 
   const toggleTarget = (ip: string) => {
     setMitmTargets(prev => prev.includes(ip) ? prev.filter(t => t !== ip) : [...prev, ip])
@@ -436,7 +454,7 @@ function AIPanel({ summary, progress }: {
 }
 
 function MitmTargetPicker({ devices, targets, onToggle, onAddManual, onRemove }: {
-  devices: any[]
+  devices: Device[]
   targets: string[]
   onToggle: (ip: string) => void
   onAddManual: (ip: string) => void
@@ -482,7 +500,7 @@ function MitmTargetPicker({ devices, targets, onToggle, onAddManual, onRemove }:
         <>
           <p className="text-[10px] text-gray-600 uppercase tracking-wider">Or pick from last scan</p>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 max-h-40 overflow-y-auto">
-            {devices.map((dev: any) => {
+            {devices.map(dev => {
               const selected = targets.includes(dev.ip)
               return (
                 <button key={dev.ip} onClick={() => onToggle(dev.ip)}
@@ -542,9 +560,8 @@ function LiveMonitor({ capturing, mitmActive }: { capturing: boolean; mitmActive
 
   // DNS live returns { "ip": [{"domain": "x", "count": n}] } (per-device)
   // OR { queries: [...] } — handle both
-  const raw = dnsRaw as any
-  const perDevice: Record<string, { domain: string; count: number }[]> =
-    raw && !raw.queries && !raw.error ? raw : {}
+  const raw: unknown = dnsRaw
+  const perDevice: PerDeviceDns = isPerDeviceDns(raw) ? raw : {}
 
   const deviceIPs = Object.keys(perDevice).sort()
   const activeDevice = selectedDevice && perDevice[selectedDevice] ? selectedDevice : (deviceIPs[0] ?? null)
