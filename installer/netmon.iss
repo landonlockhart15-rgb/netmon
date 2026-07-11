@@ -62,9 +62,9 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
-; Offer to launch after install. nostack+runascurrentuser keeps it tied to the
-; installing user; the exe self-elevates via its own manifest.
-Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName} now"; Flags: nowait postinstall skipifsilent
+; ShellExecute honors the exe's requireAdministrator manifest and shows the
+; expected UAC prompt when the installing user chooses to launch immediately.
+Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName} now"; Flags: nowait postinstall skipifsilent shellexec
 
 [UninstallDelete]
 ; Leave user data (%LOCALAPPDATA%\NetMon) in place on uninstall by default —
