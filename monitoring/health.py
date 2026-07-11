@@ -34,8 +34,10 @@ import socket
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from html.parser import HTMLParser
 from typing import Optional
 
 
@@ -156,6 +158,283 @@ def check_captive_portal(urls: tuple[str, ...] | list[str] | None = None, timeou
 
 probe_captive_portal = check_captive_portal
 test_captive_portal = check_captive_portal
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CAPTIVE PORTAL PAGE ANALYSIS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Cap on how much of a portal page body we read/analyze by default. Portal login
+# pages are small; anything larger is almost certainly not a login form and we do
+# not want to buffer megabytes of interception junk into memory.
+CAPTIVE_PORTAL_MAX_BYTES = 65536
+
+# Cap on the stored title so a hostile/oversized <title> cannot bloat the result.
+_CAPTIVE_PORTAL_TITLE_CAP = 256
+
+_IDENTITY_HINTS = (
+    "user", "email", "e-mail", "login", "phone", "mobile",
+    "account", "room", "guest", "member", "msisdn",
+)
+_OTP_HINTS = (
+    "otp", "one-time", "one time", "onetime", "totp", "2fa",
+    "verification code", "verify code", "auth code", "passcode",
+)
+
+
+class _PortalHTMLParser(HTMLParser):
+    """Tolerant HTML scanner that collects the title, forms, and input fields.
+
+    Uses the stdlib HTMLParser so malformed portal markup does not raise; it best
+    -effort extracts <title>, counts <form> elements, and records every input-like
+    control (including ones outside a <form>, which real portals frequently use).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._title_parts: list[str] = []
+        self._in_title = False
+        self.form_count = 0
+        self.inputs: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        t = tag.lower()
+        if t == "title":
+            self._in_title = True
+        elif t == "form":
+            self.form_count += 1
+        elif t in ("input", "select", "textarea"):
+            self.inputs.append({(k or "").lower(): (v or "") for k, v in attrs})
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self._title_parts.append(data)
+
+    @property
+    def title(self) -> str:
+        return "".join(self._title_parts).strip()
+
+
+def _classify_input(attr: dict[str, str]) -> Optional[str]:
+    """Return a coarse field kind (password/otp/username) or None for the input."""
+    field_type = (attr.get("type") or "text").lower()
+    if field_type == "hidden":
+        return "hidden"
+    if field_type == "password":
+        return "password"
+
+    name = attr.get("name", "").lower()
+    identifier = attr.get("id", "").lower()
+    placeholder = attr.get("placeholder", "").lower()
+    blob = " ".join((name, identifier, placeholder))
+
+    if any(hint in blob for hint in _OTP_HINTS) or "code" in name:
+        return "otp"
+    if any(hint in blob for hint in _IDENTITY_HINTS):
+        return "username"
+    return None
+
+
+def _parse_portal_forms(html_text: str) -> dict:
+    """Analyze portal HTML into a structured summary of its login affordances.
+
+    Returns title, form count, per-field descriptors, and boolean flags for the
+    identity/password/OTP inputs a captive portal login form typically requires.
+    Never raises on malformed input — a best-effort empty summary is returned.
+    """
+    parser = _PortalHTMLParser()
+    try:
+        parser.feed(html_text or "")
+        parser.close()
+    except Exception:
+        # HTMLParser is tolerant, but guard against pathological inputs anyway.
+        pass
+
+    fields: list[dict] = []
+    hidden_field_count = 0
+    requires_identity = requires_password = requires_otp = False
+
+    for attr in parser.inputs:
+        kind = _classify_input(attr)
+        if kind == "hidden":
+            hidden_field_count += 1
+            continue
+        if kind == "password":
+            requires_password = True
+        elif kind == "otp":
+            requires_otp = True
+        elif kind == "username":
+            requires_identity = True
+        fields.append(
+            {
+                "name": attr.get("name", ""),
+                "type": (attr.get("type") or "text").lower(),
+                "kind": kind,
+            }
+        )
+
+    title = parser.title[:_CAPTIVE_PORTAL_TITLE_CAP] if parser.title else None
+    return {
+        "title": title,
+        "form_count": parser.form_count,
+        "requires_identity": requires_identity,
+        "requires_password": requires_password,
+        "requires_otp": requires_otp,
+        "hidden_field_count": hidden_field_count,
+        "fields": fields,
+    }
+
+
+def _charset_from_content_type(content_type: str) -> Optional[str]:
+    """Extract a charset token from a Content-Type header value, if present."""
+    if not content_type or "charset=" not in content_type.lower():
+        return None
+    charset = content_type.lower().split("charset=", 1)[1].split(";")[0].strip()
+    return charset.strip('"\'') or None
+
+
+def _decode_portal_body(raw: bytes, content_type: str) -> str:
+    """Decode a portal response body, tolerating unknown or wrong charsets.
+
+    The declared charset may be unrecognized (LookupError) or simply wrong for the
+    bytes (UnicodeDecodeError). Both are caught here so an unusual portal cannot
+    crash the analyzer; decoding always falls back to a lossy UTF-8 decode.
+    """
+    for encoding in (_charset_from_content_type(content_type), "utf-8"):
+        if not encoding:
+            continue
+        try:
+            return raw.decode(encoding)
+        except (LookupError, UnicodeDecodeError, ValueError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def analyze_captive_portal_page(
+    urls: tuple[str, ...] | list[str] | None = None,
+    timeout: float = 5.0,
+    max_bytes: int = CAPTIVE_PORTAL_MAX_BYTES,
+) -> dict:
+    """Probe captive-portal endpoints and analyze any intercepting login page.
+
+    Extends check_captive_portal: on a captured page it fetches the (size-capped)
+    body and parses it into a structured `page` summary describing the login form.
+    A clean 204 is reported as open with no page; upstream 5xx responses are probe
+    failures and fall through to the next URL.
+    """
+    probe_urls = tuple(urls) if urls else tuple(CAPTIVE_PORTAL_PROBE_URLS)
+    if not probe_urls:
+        return {
+            "status": "unknown",
+            "captive": False,
+            "url": None,
+            "final_url": None,
+            "http_status": None,
+            "error": "No captive portal probe URLs configured",
+            "page": None,
+        }
+
+    errors: list[str] = []
+    read_cap = max(0, int(max_bytes)) if max_bytes else 0
+
+    for url in probe_urls:
+        scheme = urllib.parse.urlsplit(url).scheme.lower()
+        if scheme not in ("http", "https"):
+            errors.append(f"{url}: unsupported URL scheme")
+            continue
+
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "NetMon/1.0 CaptiveCheck"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                status = int(getattr(resp, "status", None) or resp.getcode() or 0)
+                final_url = _safe_geturl(resp, url)
+                if status == 204:
+                    return {
+                        "status": "open",
+                        "captive": False,
+                        "url": url,
+                        "final_url": final_url,
+                        "http_status": status,
+                        "error": None,
+                        "page": None,
+                    }
+                # Read one byte past the cap so we can tell if the body was clipped.
+                raw = resp.read(read_cap + 1) if read_cap else resp.read()
+                content_type = ""
+                try:
+                    content_type = resp.headers.get("content-type", "") or ""
+                except Exception:
+                    content_type = ""
+        except urllib.error.HTTPError as e:
+            status = int(getattr(e, "code", 0) or 0)
+            if status in (300, 301, 302, 303, 307, 308, 401, 403, 511):
+                return {
+                    "status": "captive",
+                    "captive": True,
+                    "url": url,
+                    "final_url": _safe_geturl(e, url),
+                    "http_status": status,
+                    "error": None,
+                    "page": None,
+                }
+            errors.append(f"{url}: HTTP {status}")
+            continue
+        except Exception as e:
+            errors.append(f"{url}: {e}")
+            continue
+
+        if 500 <= status <= 599:
+            errors.append(f"{url}: HTTP {status}")
+            continue
+
+        truncated = bool(read_cap) and len(raw) > read_cap
+        if truncated:
+            raw = raw[:read_cap]
+        bytes_read = len(raw)
+
+        page = _parse_portal_forms(_decode_portal_body(raw, content_type))
+        page["truncated"] = truncated
+        page["bytes_read"] = bytes_read
+
+        return {
+            "status": "captive",
+            "captive": True,
+            "url": url,
+            "final_url": final_url,
+            "http_status": status,
+            "error": None,
+            "page": page,
+        }
+
+    return {
+        "status": "unknown",
+        "captive": False,
+        "url": None,
+        "final_url": None,
+        "http_status": None,
+        "error": "; ".join(errors) if errors else "No captive portal probe URLs configured",
+        "page": None,
+    }
+
+
+def _safe_geturl(resp, fallback: str) -> str:
+    """Return resp.geturl() when available, else the requested URL."""
+    try:
+        geturl = getattr(resp, "geturl", None)
+        if callable(geturl):
+            value = geturl()
+            if value:
+                return value
+    except Exception:
+        pass
+    return fallback
+
 
 def run_ping(
     target: str = "8.8.8.8",
