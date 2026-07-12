@@ -131,7 +131,7 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
           </div>
 
           {/* Learned from traffic */}
-          <ProfileSection profile={profile} />
+          <ProfileSection profile={profile} onApplyLabel={setLabel} />
           <LearnedSection device={device} />
 
           {/* Open ports */}
@@ -293,37 +293,72 @@ function LearnedSection({ device }: { device: LearnedDevice }) {
   )
 }
 
-function ProfileSection({ profile }: { profile?: DeviceProfile }) {
+function ProfileSection({ profile, onApplyLabel }: { profile?: DeviceProfile; onApplyLabel: (label: string) => void }) {
   if (!profile) return null
   const confidence = Math.round((profile.confidence ?? 0) * 100)
   const alternatives = profile.alternatives ?? []
+  const signalRows = [
+    { label: 'Vendor', value: profile.signals.vendor },
+    { label: 'Hostname', value: profile.signals.hostname },
+    { label: 'OS guess', value: profile.signals.os_guess },
+    { label: 'DHCP 60', value: profile.signals.dhcp_option60 },
+    { label: 'DHCP 55', value: profile.signals.dhcp_option55 },
+    { label: 'Learned domains', value: profile.signals.learned_domains?.slice(0, 3).join(', ') },
+    { label: 'Open ports', value: profile.signals.open_ports?.length ? profile.signals.open_ports.join(', ') : '' },
+  ].filter(row => Boolean(row.value))
 
   return (
-    <div className="space-y-2 pt-1 border-t border-white/5">
+    <div className="space-y-3 pt-1 border-t border-white/5">
       <p className="text-xs text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
         <BrainCircuit size={11} />
-        <span>Profile inference</span>
+        <span>Profile suggestion</span>
         <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-600/20 text-cyan-300">
           {profile.source || 'model'}
         </span>
       </p>
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <Badge variant="ok">{profile.label}</Badge>
-        <span className="text-gray-400">{confidence}% confidence</span>
-        {profile.latest_ip && <span className="text-gray-600 font-mono">{profile.latest_ip}</span>}
+      <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <p className="text-[10px] uppercase tracking-wider text-gray-500">Likely profile</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="ok">{profile.label}</Badge>
+              <span className="text-xs text-gray-400">{confidence}% confidence</span>
+            </div>
+            {profile.latest_ip && <p className="text-[10px] text-gray-600 font-mono">Latest IP: {profile.latest_ip}</p>}
+          </div>
+          <Btn variant="ghost" size="sm" onClick={() => onApplyLabel(profile.label)}>
+            Use label
+          </Btn>
+        </div>
+
+        {signalRows.length > 0 && (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {signalRows.map(row => (
+              <div key={row.label} className="rounded-md border border-white/5 bg-black/10 px-2 py-1.5">
+                <p className="text-[10px] uppercase tracking-wider text-gray-500">{row.label}</p>
+                <p className="text-xs text-gray-200 truncate">{row.value}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {Array.isArray(profile.evidence) && profile.evidence.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-[10px] uppercase tracking-wider text-gray-500">Why this fit</p>
+            <ul className="space-y-1 text-xs text-gray-300">
+              {profile.evidence.slice(0, 4).map((item: string, i: number) => (
+                <li key={i}>• {item}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {alternatives.length > 0 && (
+          <p className="text-[10px] text-gray-600">
+            Also considered: {alternatives.map(alt => alt.label).join(', ')}
+          </p>
+        )}
       </div>
-      {Array.isArray(profile.evidence) && profile.evidence.length > 0 && (
-        <ul className="space-y-1 text-xs text-gray-400">
-          {profile.evidence.slice(0, 4).map((item: string, i: number) => (
-            <li key={i}>• {item}</li>
-          ))}
-        </ul>
-      )}
-      {alternatives.length > 0 && (
-        <p className="text-[10px] text-gray-600">
-          Also considered: {alternatives.map(alt => alt.label).join(', ')}
-        </p>
-      )}
     </div>
   )
 }
