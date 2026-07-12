@@ -280,6 +280,154 @@ class TestShadowDevices(unittest.TestCase):
         self.assertEqual(rotation[0]["ip"], "192.168.1.88")
         self.assertIn("3 different MAC", rotation[0]["body"])
 
+    def test_known_device_mac_change_triggers_identity_integrity_alert(self):
+        first, latest = self._scan(20), self._scan(5)
+        known = Device(mac="00:11:22:33:44:55", hostname="router", is_known=True)
+        replacement = Device(mac="aa:bb:cc:dd:ee:ff", hostname="router", is_known=False)
+        self.session.add_all([known, replacement])
+        self.session.flush()
+        self.session.add_all([
+            ScanDevice(scan_id=first.id, device_id=known.id, ip="192.168.1.1"),
+            ScanDevice(scan_id=latest.id, device_id=replacement.id, ip="192.168.1.1"),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+
+        integrity = [event for event in events if "Identity integrity" in event["title"]]
+        self.assertEqual(len(integrity), 1)
+        self.assertIn("established device identity changed", integrity[0]["body"])
+
+    def test_oui_shift_on_same_ip_triggers_identity_integrity_alert(self):
+        first, latest = self._scan(20), self._scan(5)
+        original = Device(mac="00:11:22:33:44:55", is_known=False)
+        replacement = Device(mac="aa:bb:cc:dd:ee:ff", is_known=False)
+        self.session.add_all([original, replacement])
+        self.session.flush()
+        self.session.add_all([
+            ScanDevice(scan_id=first.id, device_id=original.id, ip="192.168.1.2"),
+            ScanDevice(scan_id=latest.id, device_id=replacement.id, ip="192.168.1.2"),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+
+        integrity = [event for event in events if "Identity integrity" in event["title"]]
+        self.assertEqual(len(integrity), 1)
+        self.assertIn("hardware vendor prefix changed", integrity[0]["body"])
+
+    def test_oui_prefix_helper_directly(self):
+        # Direct unit tests for _oui_prefix helper
+        self.assertEqual(anomaly._oui_prefix("00:11:22:33:44:55"), "001122")
+        self.assertEqual(anomaly._oui_prefix("AA-BB-CC-DD-EE-FF"), "AABBCC")
+        self.assertEqual(anomaly._oui_prefix("aabbccddeeff"), "AABBCC")
+        self.assertEqual(anomaly._oui_prefix("AA:bb:CC:dd:EE:ff"), "AABBCC")
+        self.assertEqual(anomaly._oui_prefix(None), "")
+        self.assertEqual(anomaly._oui_prefix(""), "")
+        self.assertEqual(anomaly._oui_prefix("00:11"), "")
+        self.assertEqual(anomaly._oui_prefix("00:11:22:33:44:55:66"), "")
+        self.assertEqual(anomaly._oui_prefix("00:11:22:33:44:ZZ"), "")
+
+    def test_identity_integrity_with_none_or_empty_mac(self):
+        # Verify that None or empty MAC values do not cause crashes and do not trigger alerts
+        first, latest = self._scan(20), self._scan(5)
+        dev1 = Device(mac=None, is_known=True)
+        dev2 = Device(mac="", is_known=False)
+        self.session.add_all([dev1, dev2])
+        self.session.flush()
+        self.session.add_all([
+            ScanDevice(scan_id=first.id, device_id=dev1.id, ip="192.168.1.100"),
+            ScanDevice(scan_id=latest.id, device_id=dev2.id, ip="192.168.1.100"),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        integrity = [event for event in events if "Identity integrity" in event["title"]]
+        self.assertEqual(len(integrity), 0)
+
+    def test_identity_integrity_mac_normalization_and_formatting(self):
+        # Verify that different MAC formats and cases for the same OUI do not trigger OUI shift alerts
+        # for unrecognized devices.
+        first, latest = self._scan(20), self._scan(5)
+        original = Device(mac="00:11:22:33:44:55", is_known=False)
+        replacement = Device(mac="00-11-22-AA-BB-CC", is_known=False)
+        self.session.add_all([original, replacement])
+        self.session.flush()
+        self.session.add_all([
+            ScanDevice(scan_id=first.id, device_id=original.id, ip="192.168.1.101"),
+            ScanDevice(scan_id=latest.id, device_id=replacement.id, ip="192.168.1.101"),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        integrity = [event for event in events if "Identity integrity" in event["title"]]
+        self.assertEqual(len(integrity), 0)
+
+    def test_identity_integrity_invalid_mac_prefix_boundaries(self):
+        # Verify that malformed MAC addresses return empty OUI prefix and do not trigger OUI shift alerts
+        first, latest = self._scan(20), self._scan(5)
+        original = Device(mac="00:11:22", is_known=False)
+        replacement = Device(mac="aa:bb:cc:dd:ee:fg", is_known=False)
+        self.session.add_all([original, replacement])
+        self.session.flush()
+        self.session.add_all([
+            ScanDevice(scan_id=first.id, device_id=original.id, ip="192.168.1.102"),
+            ScanDevice(scan_id=latest.id, device_id=replacement.id, ip="192.168.1.102"),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        integrity = [event for event in events if "Identity integrity" in event["title"]]
+        self.assertEqual(len(integrity), 0)
+
+    def test_identity_integrity_chronological_ordering(self):
+        # Verify that scans are ordered chronologically by started_at when detecting changes,
+        # even if scan IDs are assigned/inserted out of chronological order.
+        scan_c = Scan(started_at=datetime.now(timezone.utc) - timedelta(minutes=30), status="complete")
+        scan_a = Scan(started_at=datetime.now(timezone.utc) - timedelta(minutes=20), status="complete")
+        scan_b = Scan(started_at=datetime.now(timezone.utc) - timedelta(minutes=10), status="complete")
+        
+        self.session.add_all([scan_c, scan_a, scan_b])
+        self.session.flush()
+        
+        known = Device(mac="00:11:22:33:44:55", is_known=True)
+        replacement = Device(mac="aa:bb:cc:dd:ee:ff", is_known=False)
+        self.session.add_all([known, replacement])
+        self.session.flush()
+        
+        self.session.add_all([
+            ScanDevice(scan_id=scan_c.id, device_id=known.id, ip="192.168.1.103"),
+            ScanDevice(scan_id=scan_a.id, device_id=known.id, ip="192.168.1.103"),
+            ScanDevice(scan_id=scan_b.id, device_id=replacement.id, ip="192.168.1.103"),
+        ])
+        self.session.commit()
+        
+        events = anomaly.check_shadow_devices(self.session)
+        integrity = [event for event in events if "Identity integrity" in event["title"]]
+        self.assertEqual(len(integrity), 1)
+        self.assertIn("established device identity changed", integrity[0]["body"])
+
+    def test_identity_integrity_cooldown(self):
+        # Verify that identity integrity alert respects the cooldown logic
+        first, latest = self._scan(20), self._scan(5)
+        known = Device(mac="00:11:22:33:44:55", is_known=True)
+        replacement = Device(mac="aa:bb:cc:dd:ee:ff", is_known=False)
+        self.session.add_all([known, replacement])
+        self.session.flush()
+        self.session.add_all([
+            ScanDevice(scan_id=first.id, device_id=known.id, ip="192.168.1.104"),
+            ScanDevice(scan_id=latest.id, device_id=replacement.id, ip="192.168.1.104"),
+        ])
+        self.session.commit()
+
+        events1 = anomaly.check_shadow_devices(self.session)
+        integrity1 = [event for event in events1 if "Identity integrity" in event["title"]]
+        self.assertEqual(len(integrity1), 1)
+
+        events2 = anomaly.check_shadow_devices(self.session)
+        integrity2 = [event for event in events2 if "Identity integrity" in event["title"]]
+        self.assertEqual(len(integrity2), 0)
+
 
 class TestPortScans(unittest.TestCase):
     def setUp(self):
