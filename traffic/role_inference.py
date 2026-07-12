@@ -143,49 +143,98 @@ def extract_flow_stats(device_ip: str, capture_dir: Path = CAPTURE_DIR, max_file
     }
 
 
-def infer_device_role(device_ip: str, activity_data: dict, flow_stats: dict) -> str:
+def infer_behavior_profile(device_ip: str, activity_data: dict, flow_stats: dict) -> str:
     """
     Classify the role of a device by analyzing its passive traffic patterns,
     including User-Agent strings, DNS query domains, destination ports,
     and TCP/IP packet headers (TTL, Window Size).
     """
+    # Defensive programming: ensure activity_data and flow_stats are dictionaries
+    if not isinstance(activity_data, dict):
+        activity_data = {}
+    if not isinstance(flow_stats, dict):
+        flow_stats = {}
+
     # 1. Gather and normalize all DNS/TLS/HTTP domain queries to construct a domain context string
     domains = []
     browser_header_hits = []
-    if activity_data:
-        http_requests = activity_data.get("http_requests", [])
-        tls_sessions = activity_data.get("tls_sessions", [])
-        dns_queries = activity_data.get("dns_queries", [])
-        
-        domains.extend([r.get("host", "").lower() for r in http_requests if r.get("host")])
-        domains.extend([s.get("sni", "").lower() for s in tls_sessions if s.get("sni")])
-        domains.extend([q.get("domain", "").lower() for q in dns_queries if q.get("domain")])
-        
-        top_domains = activity_data.get("summary", {}).get("top_domains", [])
-        domains.extend([d.get("domain", "").lower() for d in top_domains if d.get("domain")])
 
-        for req in http_requests:
-            accept = req.get("accept", "")
-            accept_language = req.get("accept_language", "")
-            accept_encoding = req.get("accept_encoding", "")
-            referer = req.get("referer", "")
-            connection = req.get("connection", "")
+    # Extract lists safely
+    http_requests = activity_data.get("http_requests")
+    if not isinstance(http_requests, list):
+        http_requests = []
+        
+    tls_sessions = activity_data.get("tls_sessions")
+    if not isinstance(tls_sessions, list):
+        tls_sessions = []
+        
+    dns_queries = activity_data.get("dns_queries")
+    if not isinstance(dns_queries, list):
+        dns_queries = []
+
+    # Process http_requests
+    for r in http_requests:
+        if isinstance(r, dict):
+            host = r.get("host")
+            if host and isinstance(host, str):
+                domains.append(host.lower())
+
+            # Parse headers for browser_header_hits
+            accept = r.get("accept")
+            accept_language = r.get("accept_language")
+            accept_encoding = r.get("accept_encoding")
+            referer = r.get("referer")
+            connection = r.get("connection")
+            
+            accept = accept if isinstance(accept, str) else ""
+            accept_language = accept_language if isinstance(accept_language, str) else ""
+            accept_encoding = accept_encoding if isinstance(accept_encoding, str) else ""
+            referer = referer if isinstance(referer, str) else ""
+            connection = connection if isinstance(connection, str) else ""
+            
             if accept or accept_language or accept_encoding or referer or connection:
                 browser_header_hits.append(" ".join(
                     part.lower()
                     for part in [accept, accept_language, accept_encoding, referer, connection]
                     if part
                 ))
-        
+
+    # Process tls_sessions
+    for s in tls_sessions:
+        if isinstance(s, dict):
+            sni = s.get("sni")
+            if sni and isinstance(sni, str):
+                domains.append(sni.lower())
+
+    # Process dns_queries
+    for q in dns_queries:
+        if isinstance(q, dict):
+            domain = q.get("domain")
+            if domain and isinstance(domain, str):
+                domains.append(domain.lower())
+
+    # Process summary top_domains
+    summary = activity_data.get("summary")
+    if isinstance(summary, dict):
+        top_domains = summary.get("top_domains")
+        if isinstance(top_domains, list):
+            for d in top_domains:
+                if isinstance(d, dict):
+                    domain = d.get("domain")
+                    if domain and isinstance(domain, str):
+                        domains.append(domain.lower())
+
     domains = list(set(domains))
     dom_str = " ".join(domains)
     header_str = " ".join(browser_header_hits)
 
     # 2. Gather User-Agent strings
     user_agents = []
-    if activity_data:
-        http_requests = activity_data.get("http_requests", [])
-        user_agents.extend([r.get("ua", "") for r in http_requests if r.get("ua")])
+    for r in http_requests:
+        if isinstance(r, dict):
+            ua = r.get("ua")
+            if ua and isinstance(ua, str):
+                user_agents.append(ua)
     user_agents = list(set(user_agents))
 
     # --- Heuristic Phase 1: HTTP User-Agents ---
@@ -224,12 +273,28 @@ def infer_device_role(device_ip: str, activity_data: dict, flow_stats: dict) -> 
 
     # --- Heuristic Phase 3: Flow characteristics and headers ---
     # Classify roles using statistical patterns of the network flow (port distributions, volume, average length, TTL).
-    if flow_stats:
-        dst_ports = flow_stats.get("destination_ports", [])
-        pkt_lengths = flow_stats.get("packet_lengths", [])
-        ttls = flow_stats.get("ttls", [])
-        win_sizes = flow_stats.get("window_sizes", [])
+    dst_ports = flow_stats.get("destination_ports")
+    if not isinstance(dst_ports, list):
+        dst_ports = []
+    # Filter out non-integers, keep only integers or digit strings converted to int
+    dst_ports = [int(p) for p in dst_ports if isinstance(p, int) or (isinstance(p, str) and p.isdigit())]
 
+    pkt_lengths = flow_stats.get("packet_lengths")
+    if not isinstance(pkt_lengths, list):
+        pkt_lengths = []
+    pkt_lengths = [int(l) for l in pkt_lengths if isinstance(l, int) or (isinstance(l, str) and l.isdigit())]
+
+    ttls = flow_stats.get("ttls")
+    if not isinstance(ttls, list):
+        ttls = []
+    ttls = [int(t) for t in ttls if isinstance(t, int) or (isinstance(t, str) and t.isdigit())]
+
+    win_sizes = flow_stats.get("window_sizes")
+    if not isinstance(win_sizes, list):
+        win_sizes = []
+    win_sizes = [int(w) for w in win_sizes if isinstance(w, int) or (isinstance(w, str) and w.isdigit())]
+
+    if dst_ports or pkt_lengths or ttls or win_sizes:
         # Count destination port frequencies to find top ports
         port_counts = {}
         for p in dst_ports:
@@ -280,3 +345,6 @@ def infer_device_role(device_ip: str, activity_data: dict, flow_stats: dict) -> 
         return "IoT Camera"
 
     return ""
+
+infer_device_role = infer_behavior_profile
+

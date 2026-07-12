@@ -4403,8 +4403,30 @@ def _learn_from_activity(device_ip: str, activity: dict, db) -> None:
         if not device:
             return
 
-        ua_strings = [r.get("ua", "") for r in activity.get("http_requests", []) if r.get("ua")]
-        domains    = [d["domain"] for d in activity.get("summary", {}).get("top_domains", [])]
+        if not isinstance(activity, dict):
+            activity = {}
+
+        http_reqs = activity.get("http_requests")
+        if not isinstance(http_reqs, list):
+            http_reqs = []
+        ua_strings = []
+        for r in http_reqs:
+            if isinstance(r, dict):
+                ua = r.get("ua")
+                if ua and isinstance(ua, str):
+                    ua_strings.append(ua)
+
+        summary = activity.get("summary")
+        domains = []
+        if isinstance(summary, dict):
+            top_doms = summary.get("top_domains")
+            if isinstance(top_doms, list):
+                for d in top_doms:
+                    if isinstance(d, dict):
+                        domain = d.get("domain")
+                        if domain and isinstance(domain, str):
+                            domains.append(domain)
+
         changed    = False
 
         # Infer device type from User-Agent
