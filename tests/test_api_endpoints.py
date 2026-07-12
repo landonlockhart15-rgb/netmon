@@ -1313,6 +1313,89 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(data[0]["vulnerability_count"], 4)
         self.assertEqual(data[0]["max_cve_risk"], "high")
 
+    def test_get_captive_portal_status_no_check_yet(self):
+        """GET /api/health/captive-portal before any analyze call returns an 'unknown' status, not an error."""
+        import monitoring.health as health
+
+        original_cache = dict(health._CAPTIVE_PORTAL_CACHE)
+        try:
+            health._CAPTIVE_PORTAL_CACHE.update({"result": None, "checked_at": None})
+            response = self.client.get("/api/health/captive-portal")
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["status"], "unknown")
+            self.assertFalse(data["captive"])
+            self.assertIsNone(data["page"])
+        finally:
+            health._CAPTIVE_PORTAL_CACHE.clear()
+            health._CAPTIVE_PORTAL_CACHE.update(original_cache)
+
+    @patch("monitoring.health.analyze_captive_portal_page")
+    def test_analyze_captive_portal_now_endpoint(self, mock_analyze):
+        """POST /api/health/captive-portal/analyze runs a fresh probe and returns its result."""
+        import monitoring.health as health
+
+        original_cache = dict(health._CAPTIVE_PORTAL_CACHE)
+        mock_analyze.return_value = {
+            "status": "captive",
+            "captive": True,
+            "url": "http://connectivitycheck.gstatic.com/generate_204",
+            "final_url": "http://portal.local/login",
+            "http_status": 200,
+            "error": None,
+            "page": {
+                "title": "Guest Portal",
+                "form_count": 1,
+                "fields": [{"name": "username", "type": "text", "kind": "username"}],
+                "hidden_field_count": 0,
+                "requires_password": False,
+                "requires_otp": False,
+                "requires_identity": True,
+                "truncated": False,
+                "bytes_read": 100,
+            },
+        }
+        try:
+            response = self.client.post("/api/health/captive-portal/analyze")
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["status"], "captive")
+            self.assertTrue(data["captive"])
+            self.assertEqual(data["page"]["title"], "Guest Portal")
+            mock_analyze.assert_called_once()
+        finally:
+            health._CAPTIVE_PORTAL_CACHE.clear()
+            health._CAPTIVE_PORTAL_CACHE.update(original_cache)
+
+    @patch("monitoring.health.analyze_captive_portal_page")
+    def test_captive_portal_status_reflects_last_analyze(self, mock_analyze):
+        """GET /api/health/captive-portal returns the cached result of the most recent /analyze call."""
+        import monitoring.health as health
+
+        original_cache = dict(health._CAPTIVE_PORTAL_CACHE)
+        mock_analyze.return_value = {
+            "status": "open",
+            "captive": False,
+            "url": "http://connectivitycheck.gstatic.com/generate_204",
+            "final_url": "http://connectivitycheck.gstatic.com/generate_204",
+            "http_status": 204,
+            "error": None,
+            "page": None,
+        }
+        try:
+            analyze_response = self.client.post("/api/health/captive-portal/analyze")
+            self.assertEqual(analyze_response.status_code, 200)
+
+            status_response = self.client.get("/api/health/captive-portal")
+            self.assertEqual(status_response.status_code, 200)
+            data = status_response.json()
+            self.assertEqual(data["status"], "open")
+            self.assertFalse(data["captive"])
+            self.assertIsNotNone(data["checked_at"])
+        finally:
+            health._CAPTIVE_PORTAL_CACHE.clear()
+            health._CAPTIVE_PORTAL_CACHE.update(original_cache)
+
     def test_route_security_discovery(self):
         """
         Dynamically discover all registered routes in the FastAPI app

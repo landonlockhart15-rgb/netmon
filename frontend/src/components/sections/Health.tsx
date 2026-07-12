@@ -1,10 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import ReactECharts from 'echarts-for-react'
-import { RefreshCw, Zap, Wifi, WifiOff, Timer, Activity, Download, Upload, Gauge, Waves } from 'lucide-react'
+import { RefreshCw, Zap, Wifi, WifiOff, Timer, Activity, Download, Upload, Gauge, Waves, ShieldAlert } from 'lucide-react'
 import {
   getHealthCurrent, getHealthHistory, runHealthCheck,
   getSpeedLatest, getSpeedHistory, runSpeedTest,
   getTelemetry,
+  getCaptivePortalStatus, analyzeCaptivePortal,
   type HealthStatus, type HealthPoint, type SpeedResult,
 } from '@/lib/api'
 import { fmtTime, fmtDate, formatRelativeTime, cn } from '@/lib/utils'
@@ -79,6 +80,8 @@ export default function Health() {
         onCheck={() => checkMutation.mutate()}
         onSpeed={() => speedMutation.mutate()}
       />
+
+      <CaptivePortalCard />
 
       {/* Latency chart */}
       <Card title="Latency History" badge={`${(history as HealthPoint[]).length} POINTS`}>
@@ -200,6 +203,100 @@ function HealthHero({ h, sl, checking, speeding, onCheck, onSpeed }: {
         </div>
       </div>
     </div>
+  )
+}
+
+function CaptivePortalCard() {
+  const qc = useQueryClient()
+  const { data: portal, isLoading } = useQuery({
+    queryKey: ['captive-portal-status'],
+    queryFn: getCaptivePortalStatus,
+    refetchInterval: 60_000,
+  })
+
+  const analyzeMutation = useMutation({
+    mutationFn: analyzeCaptivePortal,
+    onSuccess: (data) => {
+      qc.setQueryData(['captive-portal-status'], data)
+    },
+  })
+
+  if (isLoading && !portal) {
+    return (
+      <Card title="Captive Portal">
+        <div className="flex items-center gap-2 py-4 justify-center">
+          <RefreshCw className="animate-spin text-purple-500" size={18} />
+          <span className="text-sm text-gray-400">Loading captive portal status…</span>
+        </div>
+      </Card>
+    )
+  }
+
+  const captive = portal?.captive ?? false
+  const page = portal?.page ?? null
+  const badge = captive ? 'DETECTED' : portal?.status === 'unknown' ? 'NOT CHECKED' : 'CLEAR'
+
+  return (
+    <Card title="Captive Portal" badge={badge}>
+      <div className="space-y-3">
+        <div className="flex items-start gap-2">
+          {captive && <ShieldAlert size={16} className="text-amber-400 mt-0.5 flex-shrink-0" />}
+          <p className="text-sm text-gray-400">
+            {captive
+              ? 'A login page is intercepting this connection. NetMon only detects and displays what it found — open the landing page below and log in yourself.'
+              : portal?.status === 'unknown'
+              ? 'No captive-portal check has run yet.'
+              : 'No captive portal detected on the last check.'}
+          </p>
+        </div>
+
+        {captive && portal?.final_url && (
+          <div className="text-xs text-gray-500 break-all">
+            Landing page:{' '}
+            <a href={portal.final_url} target="_blank" rel="noreferrer" className="text-purple-400 hover:underline">
+              {portal.final_url}
+            </a>
+          </div>
+        )}
+
+        {captive && page && (
+          <div className="space-y-2">
+            {page.title && <div className="text-sm text-gray-300 font-medium">{page.title}</div>}
+            <div className="flex flex-wrap gap-2 text-xs">
+              <span className="text-gray-500">
+                {page.form_count} form{page.form_count === 1 ? '' : 's'} detected
+              </span>
+              {page.requires_identity && <span className="text-amber-400">asks for identity</span>}
+              {page.requires_password && <span className="text-amber-400">asks for password</span>}
+              {page.requires_otp && <span className="text-amber-400">asks for a code</span>}
+            </div>
+
+            {page.fields.length > 0 && (
+              <div className="rounded-lg border border-white/10 divide-y divide-white/5">
+                {page.fields.map((f, i) => (
+                  <div key={`${f.name || 'field'}-${i}`} className="flex items-center justify-between px-3 py-2 text-xs">
+                    <span className="text-gray-300 font-mono">{f.name || '(unnamed field)'}</span>
+                    <span className="text-gray-500">{f.kind || f.type}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <p className="text-[11px] text-gray-600">
+              Read-only — NetMon never fills in or submits this form on your behalf.
+            </p>
+          </div>
+        )}
+
+        {portal?.error && <div className="text-xs text-red-400">{portal.error}</div>}
+
+        <div className="flex justify-end">
+          <Btn variant="secondary" size="sm" loading={analyzeMutation.isPending} onClick={() => analyzeMutation.mutate()}>
+            <RefreshCw size={13} /> Analyze Now
+          </Btn>
+        </div>
+      </div>
+    </Card>
   )
 }
 

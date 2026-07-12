@@ -11,7 +11,10 @@ Endpoints:
   GET  /api/device/{id}/history     Device scan history
   GET  /api/health/current          Latest health check result
   GET  /api/health/history          Recent health checks for the chart
-  POST /api/health/check            Run an immediate health check
+  POST /api/health/check             Run an immediate health check
+  GET  /api/health/captive-portal    Cached captive-portal status (read-only)
+  POST /api/health/captive-portal/analyze
+                                     Probe + analyze a captive portal now
   POST /api/speed/test              Run an on-demand speed test (slow ~10s)
   GET  /api/speed/latest            Latest speed test result
   GET  /api/settings                All current settings as a dict
@@ -1486,6 +1489,32 @@ def run_health_check_now(db: Session = Depends(get_db)):
         "checked_at":  _iso(hc.checked_at),
         "error":       hc.error,
     }
+
+
+@router.get("/api/health/captive-portal")
+def get_captive_portal_status():
+    """
+    Return the most recent captive-portal analysis (in-process cache, no
+    network probe). Read-only visibility only: reports whether a portal was
+    detected and, if so, the landing page and the login fields it asked for —
+    it never fills in or submits anything. Use the /analyze route to refresh.
+    """
+    from monitoring.health import get_cached_captive_portal_status
+
+    return get_cached_captive_portal_status()
+
+
+@router.post("/api/health/captive-portal/analyze")
+def analyze_captive_portal_now():
+    """
+    Probe for a captive portal and analyze the intercepting login page on
+    demand, then cache the result for GET /api/health/captive-portal.
+    Read-only: detects and describes login form fields but never submits
+    credentials or any form data to the portal.
+    """
+    from monitoring.health import analyze_and_cache_captive_portal
+
+    return analyze_and_cache_captive_portal()
 
 
 # ═════════════════════════════════════════════════════════════════════════════

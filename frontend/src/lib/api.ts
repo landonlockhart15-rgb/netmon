@@ -102,6 +102,41 @@ export const getTelemetry = () => apiFetch<Telemetry>('/api/telemetry')
 export const getNetworkInfo = () => apiFetch<NetworkInfo>('/api/network/info')
 export const detectNetwork = () => apiFetch<NetworkInfo>('/api/network/detect', { method: 'POST' })
 
+// ── Captive portal (read-only detection — never fills in or submits a form) ───
+
+export interface CaptivePortalField {
+  name: string
+  type: string
+  kind: string | null
+}
+
+export interface CaptivePortalPage {
+  title: string | null
+  form_count: number
+  fields: CaptivePortalField[]
+  hidden_field_count: number
+  requires_identity: boolean
+  requires_password: boolean
+  requires_otp: boolean
+  truncated: boolean
+  bytes_read: number
+}
+
+export interface CaptivePortalStatus {
+  status: 'open' | 'captive' | 'unknown'
+  captive: boolean
+  url: string | null
+  final_url: string | null
+  http_status: number | null
+  error: string | null
+  page: CaptivePortalPage | null
+  checked_at: string | null
+}
+
+export const getCaptivePortalStatus = () => apiFetch<CaptivePortalStatus>('/api/health/captive-portal')
+export const analyzeCaptivePortal = () =>
+  apiFetch<CaptivePortalStatus>('/api/health/captive-portal/analyze', { method: 'POST' })
+
 // ── AI ────────────────────────────────────────────────────────────────────────
 
 export const getAILatest = () => apiFetch<AISummary>('/api/ai/latest')

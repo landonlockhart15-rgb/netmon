@@ -37,6 +37,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Optional
 
@@ -434,6 +435,51 @@ def _safe_geturl(resp, fallback: str) -> str:
     except Exception:
         pass
     return fallback
+
+
+# In-process cache of the last analyze_captive_portal_page() result, so a cheap
+# "what's the status right now" read (e.g. a dashboard poll) does not have to
+# fire a fresh network probe on every request. Same short-term, in-memory
+# pattern as autoheal._STATE — not persisted across a restart.
+_CAPTIVE_PORTAL_CACHE: dict = {
+    "result": None,      # last analyze_captive_portal_page() result dict, or None
+    "checked_at": None,  # datetime the cache was last refreshed, or None
+}
+
+
+def get_cached_captive_portal_status() -> dict:
+    """Return the last analyze_captive_portal_page() result without probing again.
+
+    Read-only: callers that want a fresh probe should call
+    analyze_and_cache_captive_portal() (or analyze_captive_portal_page()
+    directly) instead.
+    """
+    result = _CAPTIVE_PORTAL_CACHE["result"]
+    checked_at = _CAPTIVE_PORTAL_CACHE["checked_at"]
+    if result is None:
+        return {
+            "status": "unknown",
+            "captive": False,
+            "url": None,
+            "final_url": None,
+            "http_status": None,
+            "error": "No captive portal check has run yet",
+            "page": None,
+            "checked_at": None,
+        }
+    return {**result, "checked_at": checked_at.isoformat() if checked_at else None}
+
+
+def analyze_and_cache_captive_portal(
+    urls: tuple[str, ...] | list[str] | None = None,
+    timeout: float = 5.0,
+    max_bytes: int = CAPTIVE_PORTAL_MAX_BYTES,
+) -> dict:
+    """Run analyze_captive_portal_page() and cache the result for get_cached_captive_portal_status()."""
+    result = analyze_captive_portal_page(urls=urls, timeout=timeout, max_bytes=max_bytes)
+    _CAPTIVE_PORTAL_CACHE["result"] = result
+    _CAPTIVE_PORTAL_CACHE["checked_at"] = datetime.now(timezone.utc)
+    return {**result, "checked_at": _CAPTIVE_PORTAL_CACHE["checked_at"].isoformat()}
 
 
 def run_ping(
