@@ -144,6 +144,54 @@ class TestRoleInference(unittest.TestCase):
             self.assertEqual(stats["destination_ports"], [443, 443, 53, 443])
             self.assertEqual(stats["packet_lengths"], [1200, 60, 80, 1200])
 
+    def test_infer_behavior_profile_robustness(self):
+        from traffic.role_inference import infer_behavior_profile, infer_device_role
+        
+        # Test case: None and empty values
+        res = infer_behavior_profile("192.168.1.1", None, None)
+        self.assertEqual(res, "")
+        
+        # Test case: Non-dict inputs
+        res2 = infer_behavior_profile("192.168.1.1", "invalid_activity", [1, 2, 3])
+        self.assertEqual(res2, "")
+        
+        # Test case: Metadata keys are None
+        bad_act = {
+            "http_requests": None,
+            "tls_sessions": None,
+            "dns_queries": None,
+            "summary": None
+        }
+        bad_flow = {
+            "destination_ports": None,
+            "packet_lengths": None,
+            "ttls": None,
+            "window_sizes": None
+        }
+        res3 = infer_behavior_profile("192.168.1.1", bad_act, bad_flow)
+        self.assertEqual(res3, "")
+        
+        # Test case: Metadata keys contain non-dict elements or unexpected formats
+        bad_act2 = {
+            "http_requests": [None, 123, "string_ua", {"ua": 456}],
+            "tls_sessions": [None, 123, {"sni": 456}],
+            "dns_queries": [None, 123, {"domain": 456}],
+            "summary": "not_a_dict"
+        }
+        bad_flow2 = {
+            "destination_ports": [None, "not_a_port", 443],
+            "packet_lengths": [None, "not_a_len", 1200],
+            "ttls": [None, "not_a_ttl", 64],
+            "window_sizes": [None, "not_a_win", 14600]
+        }
+        res4 = infer_behavior_profile("192.168.1.1", bad_act2, bad_flow2)
+        # Should not crash, and might match flow rules or user-agents if they get parsed safely
+        self.assertIsInstance(res4, str)
+
+        # Test both aliases point to/do the same thing
+        res_alias = infer_device_role("192.168.1.1", bad_act2, bad_flow2)
+        self.assertEqual(res_alias, res4)
+
 
 if __name__ == "__main__":
     unittest.main()
