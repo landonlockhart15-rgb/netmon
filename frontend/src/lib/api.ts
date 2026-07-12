@@ -32,6 +32,23 @@ async function apiFetch<T = unknown>(
   return res.text() as unknown as T
 }
 
+// ── Guest Mode ────────────────────────────────────────────────────────────────
+
+export interface GuestModeState {
+  guest_mode: boolean
+  blocked_features: string[]
+  suppressed: string[]
+  changed?: boolean
+}
+
+export const getGuestMode = () => apiFetch<GuestModeState>('/api/settings/guest-mode')
+
+export const setGuestMode = (enabled: boolean) =>
+  apiFetch<GuestModeState>('/api/settings/guest-mode', {
+    method: 'POST',
+    body: JSON.stringify({ enabled }),
+  })
+
 // ── Scan / Devices ────────────────────────────────────────────────────────────
 
 export const getStatus = () => apiFetch<AppStatus>('/api/status')

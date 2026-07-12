@@ -249,6 +249,14 @@ class MitmEngine:
         targets:    List[str],
         gateway_ip: Optional[str] = None,
     ) -> Dict:
+        # Layer-2 hard guard: ARP MitM is the most invasive operation NetMon has;
+        # never poison a network you don't own. Refuse outright in Guest Mode.
+        from monitoring.guest_mode import is_guest_mode_now
+        if is_guest_mode_now():
+            return {"status": "guest_mode_blocked",
+                    "message": "Guest Mode is ON — traffic interception is disabled "
+                               "on untrusted networks. Turn Guest Mode off on your own network."}
+
         with self._lock:
             if self._state["running"]:
                 return {"status": "already_running"}

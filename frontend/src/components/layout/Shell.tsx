@@ -5,6 +5,7 @@ import TopBar from './TopBar'
 import StatStrip from './StatStrip'
 import MobileNav from './MobileNav'
 import SectionErrorBoundary from '@/components/shared/SectionErrorBoundary'
+import { GuestModeBanner } from '@/components/shared/GuestModeBanner'
 
 export default function Shell() {
   return (
@@ -13,6 +14,7 @@ export default function Shell() {
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <TopBar />
         <StatStrip />
+        <GuestModeBanner />
         <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 md:p-6 pb-20 md:pb-6">
           {/* Error boundary outside Suspense so a failed chunk load is caught too */}
           <SectionErrorBoundary>

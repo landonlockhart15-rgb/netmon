@@ -35,6 +35,7 @@ from datetime import datetime, timezone, timedelta
 
 from app.database import SessionLocal
 from models.tables import HealthCheck, Setting, TrafficSummary
+from monitoring.guest_mode import should_block
 
 # Worker threads — sized so a slow port-refresh or SSL-cert deep scan can run
 # without blocking any other loop. Loops: health, traffic, auto-scan, anomaly,
@@ -126,17 +127,20 @@ def _get_health_check_settings() -> tuple[int, bool]:
 
 
 def _get_active_discovery_settings() -> tuple[int, bool]:
+    # Guest Mode suppresses active device discovery (an active/invasive feature).
     db = SessionLocal()
     try:
         interval_s = _get_int(db, "active_discovery_interval_s", 300)
         netmon_on  = _netmon_enabled(db)
         enabled    = _get_str(db, "active_discovery_enabled", "true").lower() == "true"
-        return interval_s, netmon_on and enabled
+        blocked    = should_block("active_discovery", db)
+        return interval_s, netmon_on and enabled and not blocked
     finally:
         db.close()
 
 
 def _should_run_startup_scan() -> tuple[bool, float | None, float]:
+    # Guest Mode suppresses the startup auto-scan (nmap sweep — active/invasive).
     db = SessionLocal()
     try:
         from models.tables import Scan
@@ -144,8 +148,9 @@ def _should_run_startup_scan() -> tuple[bool, float | None, float]:
         netmon_on  = _netmon_enabled(db)
         enabled    = _get_str(db, "auto_scan_enabled", "true").lower()
         interval_h = _get_float(db, "auto_scan_interval_h", 1.0)
-        
-        if not netmon_on or enabled != "true":
+        blocked    = should_block("auto_scan", db)
+
+        if not netmon_on or enabled != "true" or blocked:
             return False, None, interval_h
             
         last_scan  = (
@@ -169,11 +174,14 @@ def _should_run_startup_scan() -> tuple[bool, float | None, float]:
 
 
 def _get_auto_scan_settings() -> tuple[bool, str, float]:
+    # Guest Mode suppresses the recurring auto-scan (nmap sweep — active/invasive).
     db = SessionLocal()
     try:
         netmon_on  = _netmon_enabled(db)
         enabled    = _get_str(db, "auto_scan_enabled",    "true").lower()
         interval_h = _get_float(db, "auto_scan_interval_h", 1.0)
+        if should_block("auto_scan", db):
+            enabled = "false"
         return netmon_on, enabled, interval_h
     finally:
         db.close()
@@ -452,6 +460,10 @@ def _watchdog_capture() -> None:
             return row.value if (row and row.value) else d
 
         if _g("capture_enabled") != "true":
+            return
+        # Guest Mode suppresses packet capture (records traffic on a network
+        # we don't own) — don't (re)start the capture watchdog.
+        if should_block("capture", db):
             return
         if capture_engine.get_status()["running"]:
             return
@@ -853,10 +865,13 @@ async def health_check_loop() -> None:
 # ── Uptime Guardian (auto-heal) loop ──────────────────────────────────────────
 
 def _run_autoheal_cycle() -> None:
-    """Synchronous wrapper — runs one auto-heal cycle in a worker thread."""
+    """Synchronous wrapper — runs one auto-heal cycle in a worker thread.
+    Guest Mode suppresses autoheal (it acts on the network — router reboot)."""
     db = SessionLocal()
     try:
         if not _netmon_enabled(db):
+            return
+        if should_block("autoheal", db):
             return
     finally:
         db.close()
@@ -1641,6 +1656,9 @@ def _run_periodic_port_refresh() -> None:
 
     db = SessionLocal()
     try:
+        # Guest Mode suppresses the deep port-refresh scan (active nmap -sV).
+        if should_block("port_refresh", db):
+            return
         # Collect current-scan IPs (devices that showed up in the most recent
         # completed scan — so we don't waste time on devices that have left
         # the network).
@@ -1806,6 +1824,9 @@ def _run_ssl_cert_scan() -> None:
 
     db = SessionLocal()
     try:
+        # Guest Mode suppresses the SSL/TLS cert scan (connects out to hosts).
+        if should_block("ssl_cert_scan", db):
+            return
         latest_scan = (
             db.query(Scan).filter(Scan.status == "complete")
             .order_by(Scan.id.desc()).first()
@@ -2024,6 +2045,9 @@ def _run_deep_scan_ai_analysis() -> None:
             return
         if _s("deep_scan_ai_enabled", "true") != "true":
             return
+        # Guest Mode suppresses the AI deep-scan synthesis.
+        if should_block("deep_scan_ai", db):
+            return
 
         # Events we care about for deep-scan analysis.
         notable_events = (
@@ -2180,6 +2204,9 @@ def _run_hunt_rules() -> None:
     db = SessionLocal()
     now = datetime.now(timezone.utc)
     try:
+        # Guest Mode suppresses active host hunting.
+        if should_block("hunt", db):
+            return
         rules = db.query(HuntRule).filter(HuntRule.enabled == True).all()  # noqa: E712
         for rule in rules:
             try:

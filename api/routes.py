@@ -1669,6 +1669,63 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Guest Mode — master switch that suppresses active/invasive features while
+# NetMon is connected to a network the user does not own (hotel/airport
+# Wi-Fi). See monitoring/guest_mode.py for the single source of truth on
+# policy; these two endpoints just read/write the "guest_mode" Setting.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _guest_mode_state(db: Session) -> dict:
+    from monitoring.guest_mode import is_guest_mode, BLOCKED_FEATURES
+    suppressed = sorted(BLOCKED_FEATURES)
+    return {
+        "guest_mode": is_guest_mode(db),
+        "blocked_features": suppressed,
+        "suppressed": suppressed,
+    }
+
+
+@router.get("/api/settings/guest-mode")
+def get_guest_mode(db: Session = Depends(get_db)):
+    """Return current Guest Mode state and the list of features it suppresses."""
+    return _guest_mode_state(db)
+
+
+@router.post("/api/settings/guest-mode")
+async def set_guest_mode(request: Request, db: Session = Depends(get_db)):
+    """
+    Enable/disable Guest Mode.
+    Body: { "enabled": true|false }
+    Returns the same shape as GET plus { "changed": <bool> }.
+
+    Robust to a missing/invalid body — on bad input, no change is made and
+    the current state is returned (never 500s on a malformed payload).
+    """
+    from monitoring.guest_mode import is_guest_mode, GUEST_MODE_KEY
+
+    changed = False
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+
+    if isinstance(body, dict) and isinstance(body.get("enabled"), bool):
+        new_value = "true" if body["enabled"] else "false"
+        before = is_guest_mode(db)
+        row = db.query(Setting).filter(Setting.key == GUEST_MODE_KEY).first()
+        if row:
+            row.value = new_value
+        else:
+            db.add(Setting(key=GUEST_MODE_KEY, value=new_value))
+        db.commit()
+        changed = before != (new_value == "true")
+
+    result = _guest_mode_state(db)
+    result["changed"] = changed
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Notification diagnostics — used by the Settings UI to verify ntfy delivery.
 # Reads the current ntfy config, masks the password, optionally sends a real
 # test notification. Helps users debug why they're not getting alerts.
@@ -3049,6 +3106,12 @@ def ai_resolve(body: dict, db: Session = Depends(get_db)):
 
     if action_type == "block_ip_firewall":
         import subprocess as _fwsp
+        from monitoring.guest_mode import should_block
+        # Layer-2 hard guard: don't add firewall rules against hosts on a
+        # network you don't own.
+        if should_block("blocker", db):
+            raise HTTPException(status_code=403,
+                                detail="Guest Mode is ON — device blocking is disabled on untrusted networks.")
         ip = params.get("ip", "")
         if not ip:
             raise HTTPException(status_code=400, detail="ip required")

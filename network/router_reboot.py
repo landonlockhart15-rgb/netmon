@@ -300,6 +300,12 @@ def reboot_router(
     the "error" field so the caller (auto-heal loop) can log/notify and back off
     rather than crash a background task.
     """
+    # Layer-2 hard guard: never log into and reboot a router you don't own.
+    from monitoring.guest_mode import is_guest_mode_now
+    if is_guest_mode_now():
+        return {"success": False, "method": method, "detail": "",
+                "error": "Guest Mode is ON — router control is disabled on untrusted networks."}
+
     driver = _DRIVERS.get(method)
     if driver is None:
         return {"success": False, "method": method, "detail": "",

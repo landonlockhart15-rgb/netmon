@@ -5,6 +5,7 @@ import { getSettings, saveSettings, testNotification, getDiagnostics, detectNetw
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import PageHero from '@/components/shared/PageHero'
+import { GuestModeToggle } from '@/components/shared/GuestModeToggle'
 
 export default function Settings() {
   const qc = useQueryClient()
@@ -30,6 +31,9 @@ export default function Settings() {
         title="Settings"
         subtitle="Tune scanning, health checks, AI, notifications, and anomaly detection. Changes save instantly."
       />
+
+      {/* Guest Mode — master safety switch for untrusted networks */}
+      <GuestModeToggle />
 
       {/* Service controls */}
       <CfgCard title="Service Controls" icon="⏻">

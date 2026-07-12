@@ -779,6 +779,10 @@ def run_anomaly_checks() -> None:
             try:
                 _row = _db.query(Setting).filter(Setting.key == "incident_capture_enabled").first()
                 _enabled = (_row.value if _row else "true").lower() == "true"
+                # Guest Mode suppresses incident pcap capture (records traffic).
+                from monitoring.guest_mode import should_block as _should_block
+                if _should_block("incident_capture", _db):
+                    _enabled = False
             finally:
                 _db.close()
             if _enabled:

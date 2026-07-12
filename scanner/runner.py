@@ -47,7 +47,13 @@ def run_scan(target: str, quick: bool = False, vulners: bool = False) -> str:
 
     Raises:
         RuntimeError: if nmap is not found or the scan fails.
+        GuestModeBlocked: if Guest Mode is on (never scan a network you don't own).
     """
+    # Layer-2 hard guard: refuse to launch nmap against any network while Guest
+    # Mode is active, even if a manual button or stray call reaches here.
+    from monitoring.guest_mode import guard_now
+    guard_now("auto_scan")
+
     nmap_path = find_nmap()
     if not nmap_path:
         raise RuntimeError(
