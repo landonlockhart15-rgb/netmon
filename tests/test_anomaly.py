@@ -297,6 +297,8 @@ class TestShadowDevices(unittest.TestCase):
         integrity = [event for event in events if "Identity integrity" in event["title"]]
         self.assertEqual(len(integrity), 1)
         self.assertIn("established device identity changed", integrity[0]["body"])
+        # A known device is involved (the prior identity), so this escalates to critical.
+        self.assertEqual(integrity[0]["level"], "critical")
 
     def test_oui_shift_on_same_ip_triggers_identity_integrity_alert(self):
         first, latest = self._scan(20), self._scan(5)
@@ -315,6 +317,76 @@ class TestShadowDevices(unittest.TestCase):
         integrity = [event for event in events if "Identity integrity" in event["title"]]
         self.assertEqual(len(integrity), 1)
         self.assertIn("hardware vendor prefix changed", integrity[0]["body"])
+        # Neither device is known, so severity stays at warning.
+        self.assertEqual(integrity[0]["level"], "warning")
+
+    def test_identity_integrity_critical_when_latest_device_is_known(self):
+        # The *latest* device (not the prior one) is the known/established identity
+        # this time — severity should still escalate to critical.
+        first, latest = self._scan(20), self._scan(5)
+        original = Device(mac="00:11:22:33:44:55", is_known=False)
+        known_now = Device(mac="aa:bb:cc:dd:ee:ff", hostname="router", is_known=True)
+        self.session.add_all([original, known_now])
+        self.session.flush()
+        self.session.add_all([
+            ScanDevice(scan_id=first.id, device_id=original.id, ip="192.168.1.3"),
+            ScanDevice(scan_id=latest.id, device_id=known_now.id, ip="192.168.1.3"),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+
+        integrity = [event for event in events if "Identity integrity" in event["title"]]
+        self.assertEqual(len(integrity), 1)
+        self.assertEqual(integrity[0]["level"], "critical")
+
+    def test_identity_integrity_body_includes_vendor_names(self):
+        first, latest = self._scan(20), self._scan(5)
+        known = Device(mac="00:11:22:33:44:55", hostname="router", is_known=True)
+        replacement = Device(mac="aa:bb:cc:dd:ee:ff", hostname="router", is_known=False)
+        self.session.add_all([known, replacement])
+        self.session.flush()
+        self.session.add_all([
+            ScanDevice(scan_id=first.id, device_id=known.id, ip="192.168.1.4"),
+            ScanDevice(scan_id=latest.id, device_id=replacement.id, ip="192.168.1.4"),
+        ])
+        self.session.commit()
+
+        with patch("monitoring.anomaly.lookup_vendor") as mock_lookup:
+            mock_lookup.side_effect = lambda mac: {
+                "00:11:22:33:44:55": "VendorX",
+                "aa:bb:cc:dd:ee:ff": "VendorY",
+            }.get(mac)
+            events = anomaly.check_shadow_devices(self.session)
+
+        integrity = [event for event in events if "Identity integrity" in event["title"]]
+        self.assertEqual(len(integrity), 1)
+        body = integrity[0]["body"]
+        self.assertIn("00:11:22:33:44:55".upper(), body)
+        self.assertIn("(VendorX)", body)
+        self.assertIn("AA:BB:CC:DD:EE:FF", body)
+        self.assertIn("(VendorY)", body)
+
+    def test_identity_integrity_body_unknown_vendor_fallback(self):
+        # When the OUI database has no match, the body should say "unknown"
+        # rather than crash or show a stray None.
+        first, latest = self._scan(20), self._scan(5)
+        known = Device(mac="00:11:22:33:44:55", hostname="router", is_known=True)
+        replacement = Device(mac="aa:bb:cc:dd:ee:ff", hostname="router", is_known=False)
+        self.session.add_all([known, replacement])
+        self.session.flush()
+        self.session.add_all([
+            ScanDevice(scan_id=first.id, device_id=known.id, ip="192.168.1.5"),
+            ScanDevice(scan_id=latest.id, device_id=replacement.id, ip="192.168.1.5"),
+        ])
+        self.session.commit()
+
+        with patch("monitoring.anomaly.lookup_vendor", return_value=None):
+            events = anomaly.check_shadow_devices(self.session)
+
+        integrity = [event for event in events if "Identity integrity" in event["title"]]
+        self.assertEqual(len(integrity), 1)
+        self.assertIn("(unknown)", integrity[0]["body"])
 
     def test_oui_prefix_helper_directly(self):
         # Direct unit tests for _oui_prefix helper

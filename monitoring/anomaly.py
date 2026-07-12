@@ -27,6 +27,7 @@ from app.database import SessionLocal
 from models.tables import TrafficSummary, HealthCheck, Device, Scan, ScanDevice, ActivityLog
 from monitoring.activity import write_log
 import monitoring.notifier as notifier
+from network.oui import lookup_vendor
 from network.protection import explain_protected_target, validate_block_target
 try:
     from ai import knowledge_bridge as _kb
@@ -541,14 +542,30 @@ def check_shadow_devices(db) -> list[dict]:
             if _is_cooled_down(key, "shadow_device"):
                 _stamp(key)
                 reason = "an established device identity changed" if established_identity_changed else "the hardware vendor prefix changed"
+                # Name the specific prior MAC that drove the alert (a known
+                # device for an identity change, the OUI-shifted MAC otherwise).
+                if established_identity_changed:
+                    prior_mac = next((mac for mac, dev in older_macs.items() if dev.is_known), "")
+                else:
+                    latest_oui = _oui_prefix(latest_mac)
+                    prior_mac = next((mac for mac in older_macs if _oui_prefix(mac) and _oui_prefix(mac) != latest_oui), "")
+                # Escalate to critical when a known device's identity is on either
+                # side of the change — an unrecognized-to-unrecognized OUI shift
+                # stays a warning.
+                involves_known = established_identity_changed or latest_row.device.is_known
+                level = "critical" if involves_known else "warning"
+                prior_vendor = (lookup_vendor(prior_mac) or "unknown") if prior_mac else "unknown"
+                latest_vendor = lookup_vendor(latest_mac) or "unknown"
                 events.append({
                     "type": "shadow_device",
                     "ip": ip,
                     "device_id": latest_row.device_id,
-                    "level": "warning",
+                    "level": level,
                     "title": f"Identity integrity alert — {ip}",
                     "body": (
-                        f"{ip} is now using MAC {latest_mac.upper()} after {reason}. "
+                        f"{ip} is now using MAC {latest_mac.upper()} after {reason} "
+                        f"from {prior_mac.upper() if prior_mac else 'an unknown MAC'} ({prior_vendor}) "
+                        f"to {latest_mac.upper()} ({latest_vendor}). "
                         "This can indicate MAC spoofing or a shadow device impersonating known hardware."
                     ),
                     "actions": [notifier.investigate_action(ip), notifier.dismiss_action()],
