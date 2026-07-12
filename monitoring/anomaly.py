@@ -435,10 +435,17 @@ def _is_locally_administered_mac(mac: str | None) -> bool:
         return False
 
 
+def _oui_prefix(mac: str | None) -> str:
+    """Return a normalized OUI prefix, or an empty string for malformed MACs."""
+    compact = (mac or "").replace(":", "").replace("-", "").upper()
+    return compact[:6] if len(compact) == 12 and all(c in "0123456789ABCDEF" for c in compact) else ""
+
+
 def check_shadow_devices(db) -> list[dict]:
     """
     Detect devices that behave unlike stable inventory:
       - brief untrusted appearances that are already absent from the current scan
+      - an IP whose established MAC identity changes or OUI shifts
       - one IP seen with several different MAC addresses in the recent window
 
     This deliberately uses only persisted scan history, so it is a safe first
@@ -511,6 +518,44 @@ def check_shadow_devices(db) -> list[dict]:
             })
 
     for ip, rows in rows_by_ip.items():
+        rows.sort(key=lambda row: (_utc_naive(row.scan.started_at), row.id))
+        latest_rows = [row for row in rows if row.scan_id == latest.id]
+        latest_row = latest_rows[-1] if latest_rows else None
+        latest_mac = (latest_row.device.mac or "").lower() if latest_row else ""
+        older_rows = [row for row in rows if latest_row and row.scan_id != latest_row.scan_id]
+        older_macs = {
+            (row.device.mac or "").lower(): row.device
+            for row in older_rows
+            if row.device.mac and (row.device.mac or "").lower() != latest_mac
+        }
+
+        # A recognized device changing MAC is a direct spoofing signal.  For an
+        # unrecognized device, require an OUI change to avoid flagging ordinary
+        # privacy-MAC rotation (which is handled below after repeated changes).
+        prior_ouis = {_oui_prefix(mac) for mac in older_macs}
+        oui_shifted = bool(latest_mac and _oui_prefix(latest_mac) and
+                           any(oui and oui != _oui_prefix(latest_mac) for oui in prior_ouis))
+        established_identity_changed = bool(older_macs and any(dev.is_known for dev in older_macs.values()))
+        if latest_mac and (established_identity_changed or oui_shifted):
+            key = f"shadow_device:identity_integrity:{ip}:{latest_mac}"
+            if _is_cooled_down(key, "shadow_device"):
+                _stamp(key)
+                reason = "an established device identity changed" if established_identity_changed else "the hardware vendor prefix changed"
+                events.append({
+                    "type": "shadow_device",
+                    "ip": ip,
+                    "device_id": latest_row.device_id,
+                    "level": "warning",
+                    "title": f"Identity integrity alert — {ip}",
+                    "body": (
+                        f"{ip} is now using MAC {latest_mac.upper()} after {reason}. "
+                        "This can indicate MAC spoofing or a shadow device impersonating known hardware."
+                    ),
+                    "actions": [notifier.investigate_action(ip), notifier.dismiss_action()],
+                })
+            # Do not also emit the less-specific rotation alert for this IP.
+            continue
+
         macs: dict[str, Device] = {}
         for sd in rows:
             mac = (sd.device.mac or "").lower()
