@@ -35,6 +35,7 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
   const qc = useQueryClient()
   const [label, setLabel] = useState('')
   const [trusted, setTrusted] = useState(false)
+  const [profileOverride, setProfileOverride] = useState('')
   const [initialized, setInitialized] = useState(false)
 
   const { data: devices = [] } = useQuery({
@@ -52,12 +53,20 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
   if (device && !initialized) {
     setLabel(device.label ?? '')
     setTrusted(device.trusted)
+    let parsedAllow: { profile_override?: string } = {}
+    try {
+      parsedAllow = JSON.parse(device.allow_json || '{}')
+    } catch { /* ignore parsing errors */ }
+    setProfileOverride(parsedAllow.profile_override ?? '')
     setInitialized(true)
   }
 
   const patchMutation = useMutation({
     mutationFn: (body: Partial<Device>) => patchDevice(deviceId, body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['devices'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['devices'] })
+      qc.invalidateQueries({ queryKey: ['device-profile', deviceId] })
+    },
   })
 
   const { data: mitmStatusRaw, refetch: refetchMitm } = useQuery({
@@ -158,6 +167,25 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
                 className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500"
               />
             </div>
+            <div className="space-y-1">
+              <label className="text-[10px] text-gray-500 uppercase tracking-wider">Profile Category Override</label>
+              <select
+                value={profileOverride}
+                onChange={e => setProfileOverride(e.target.value)}
+                className="w-full bg-[#1a1a2e] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-purple-500 font-sans"
+              >
+                <option value="" className="bg-[#1a1a2e] text-white">Automatically inferred (heuristics)</option>
+                <option value="router" className="bg-[#1a1a2e] text-white">Router / gateway</option>
+                <option value="phone" className="bg-[#1a1a2e] text-white">Phone / tablet</option>
+                <option value="computer" className="bg-[#1a1a2e] text-white">Computer / workstation</option>
+                <option value="camera" className="bg-[#1a1a2e] text-white">Camera / security device</option>
+                <option value="printer" className="bg-[#1a1a2e] text-white">Printer</option>
+                <option value="storage" className="bg-[#1a1a2e] text-white">Storage / server</option>
+                <option value="streaming" className="bg-[#1a1a2e] text-white">Streaming / media device</option>
+                <option value="iot" className="bg-[#1a1a2e] text-white">Smart home / IoT</option>
+                <option value="unknown" className="bg-[#1a1a2e] text-white">Unknown / mixed</option>
+              </select>
+            </div>
             <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-300">
               <input
                 type="checkbox"
@@ -171,7 +199,11 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
               variant="primary"
               size="sm"
               loading={patchMutation.isPending}
-              onClick={() => patchMutation.mutate({ label: label || null, trusted })}
+              onClick={() => patchMutation.mutate({
+                label: label || null,
+                trusted,
+                allow: { profile_override: profileOverride || null }
+              })}
             >
               <Save size={13} />
               Save Changes

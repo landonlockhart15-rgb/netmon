@@ -156,6 +156,164 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertGreaterEqual(data["confidence"], 0.6)
         self.assertTrue(any("router" in reason.lower() for reason in data["evidence"]))
 
+    def test_get_device_profile_manual_override(self):
+        """Test that profile inference respects manual category override in allow_json."""
+        scan = Scan(id=99, status="complete")
+        device = Device(
+            id=120,
+            mac="00:11:22:33:44:99",
+            vendor="Unknown",
+            allow_json='{"profile_override": "camera"}'
+        )
+        scan_device = ScanDevice(
+            id=99,
+            scan_id=99,
+            device_id=120,
+            ip="192.168.1.99",
+            open_ports="[]",
+        )
+        self.db.add_all([scan, device, scan_device])
+        self.db.commit()
+
+        response = self.client.get("/api/device/120/profile")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["category"], "camera")
+        self.assertEqual(data["label"], "Camera / security device")
+        self.assertEqual(data["confidence"], 1.0)
+        self.assertEqual(data["source"], "user-defined")
+        self.assertIn("Manually configured by user", data["evidence"])
+
+        # Test override to unknown
+        device.allow_json = '{"profile_override": "unknown"}'
+        self.db.commit()
+        response2 = self.client.get("/api/device/120/profile")
+        self.assertEqual(response2.status_code, 200)
+        data2 = response2.json()
+        self.assertEqual(data2["category"], "unknown")
+        self.assertEqual(data2["label"], "Unknown / mixed")
+        self.assertEqual(data2["confidence"], 1.0)
+        self.assertEqual(data2["source"], "user-defined")
+
+    def test_get_device_profile_override_edge_cases(self):
+        """Test profile override under malformed JSON, invalid types, and missing scan records."""
+        # 1. Malformed JSON in allow_json
+        device = Device(
+            id=121,
+            mac="00:11:22:33:44:aa",
+            vendor="Generic",
+            allow_json='{"profile_override": "camera",MalformedJSON'
+        )
+        self.db.add(device)
+        self.db.commit()
+        # Should gracefully fall back to heuristics (no scan record, so unknown)
+        response = self.client.get("/api/device/121/profile")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["category"], "unknown")
+
+        # 2. Non-dict JSON in allow_json
+        device.allow_json = '"not-a-dict"'
+        self.db.commit()
+        response = self.client.get("/api/device/121/profile")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["category"], "unknown")
+
+        # 3. Non-string profile_override type (e.g. integer or list)
+        device.allow_json = '{"profile_override": 123}'
+        self.db.commit()
+        response = self.client.get("/api/device/121/profile")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["category"], "unknown")
+
+        # 4. Unrecognized category (e.g. "spaceship")
+        device.allow_json = '{"profile_override": "spaceship"}'
+        self.db.commit()
+        response = self.client.get("/api/device/121/profile")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["category"], "unknown")
+
+        # 5. Empty/null profile_override (e.g. empty string or null)
+        device.allow_json = '{"profile_override": ""}'
+        self.db.commit()
+        response = self.client.get("/api/device/121/profile")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["category"], "unknown")
+
+        device.allow_json = '{"profile_override": null}'
+        self.db.commit()
+        response = self.client.get("/api/device/121/profile")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["category"], "unknown")
+
+        # 6. Valid override when ScanDevice is missing entirely
+        device.allow_json = '{"profile_override": "router"}'
+        self.db.commit()
+        response = self.client.get("/api/device/121/profile")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["category"], "router")
+        self.assertEqual(data["confidence"], 1.0)
+        self.assertEqual(data["source"], "user-defined")
+        self.assertEqual(data["signals"]["vendor"], "Generic")
+        self.assertEqual(data["signals"]["open_ports"], [])
+
+    def test_patch_device_profile_override_integration(self):
+        """Test patching profile_override through PATCH /api/device/{id} and fetching it."""
+        device = Device(
+            id=122,
+            mac="00:11:22:33:44:bb",
+            vendor="PrintersInc",
+            label="My Printer",
+        )
+        scan = Scan(id=98, status="complete")
+        scan_device = ScanDevice(
+            id=98,
+            scan_id=98,
+            device_id=122,
+            ip="192.168.1.98",
+            open_ports="[9100]",  # matches printer heuristic
+        )
+        self.db.add_all([device, scan, scan_device])
+        self.db.commit()
+
+        # 1. Fetch initial profile (should infer printer via heuristics)
+        response = self.client.get("/api/device/122/profile")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["category"], "printer")
+        self.assertEqual(response.json()["source"], "heuristic-v1")
+
+        # 2. Patch device to override profile to computer
+        patch_payload = {
+            "allow": {
+                "profile_override": "computer"
+            }
+        }
+        patch_response = self.client.patch("/api/device/122", json=patch_payload)
+        self.assertEqual(patch_response.status_code, 200)
+        
+        # 3. Verify override is active
+        response = self.client.get("/api/device/122/profile")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["category"], "computer")
+        self.assertEqual(data["confidence"], 1.0)
+        self.assertEqual(data["source"], "user-defined")
+
+        # 4. Patch device to restore/remove override (profile_override = null/empty string)
+        patch_payload = {
+            "allow": {
+                "profile_override": None
+            }
+        }
+        patch_response = self.client.patch("/api/device/122", json=patch_payload)
+        self.assertEqual(patch_response.status_code, 200)
+
+        # 5. Verify it falls back to heuristics
+        response = self.client.get("/api/device/122/profile")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["category"], "printer")
+        self.assertEqual(response.json()["source"], "heuristic-v1")
+
     def test_get_device_profile_device_not_found(self):
         """Test GET /api/device/{id}/profile when the device does not exist."""
         response = self.client.get("/api/device/999/profile")
@@ -1446,6 +1604,74 @@ class TestAPIEndpoints(unittest.TestCase):
                         self.assertEqual(response.headers.get("location"), "/login")
         finally:
             self.patch_auth.start()
+
+    @patch("traffic.analyzer.get_device_activity")
+    @patch("traffic.role_inference.extract_flow_stats")
+    def test_device_activity_endpoint(self, mock_extract, mock_activity):
+        """Test GET /api/traffic/device/{device_ip}/activity and learning from traffic."""
+        # 1. Setup mock device and scan device in database
+        scan = Scan(id=50, status="complete")
+        device = Device(
+            id=50,
+            mac="00:11:22:33:44:50",
+            vendor="",
+            label=""
+        )
+        scan_device = ScanDevice(
+            id=50,
+            scan_id=50,
+            device_id=50,
+            ip="192.168.1.50",
+            open_ports="[80]"
+        )
+        self.db.add_all([scan, device, scan_device])
+        self.db.commit()
+
+        # 2. Setup mock return values for IoT Camera flow
+        mock_activity.return_value = {
+            "http_requests": [{"ua": "Blink/1.0.0 (Camera)", "host": "camera-telemetry.ring.com"}],
+            "tls_sessions": [],
+            "dns_queries": [],
+            "summary": {"top_domains": [{"domain": "camera-telemetry.ring.com"}]}
+        }
+        mock_extract.return_value = {
+            "destination_ports": [8883],
+            "packet_lengths": [100],
+            "ttls": [64]
+        }
+
+        # 3. Request the activity endpoint
+        response = self.client.get("/api/traffic/device/192.168.1.50/activity")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        # 4. Verify endpoint returns the activity and inferred info
+        self.assertEqual(data["inferred_role"], "IoT Camera")
+        self.assertEqual(data["inferred_vendor"], "")
+
+        # 5. Verify database was updated
+        db_device = self.db.query(Device).filter(Device.id == 50).first()
+        self.assertEqual(db_device.label, "IoT Camera")
+        
+        # 6. Verify allow_json learned_domains
+        allow_json = json.loads(db_device.allow_json)
+        self.assertIn("camera-telemetry.ring.com", allow_json["learned_domains"])
+        self.assertEqual(allow_json["last_activity_ip"], "192.168.1.50")
+
+        # 7. Test non-existent device handles gracefully
+        mock_activity.return_value = {
+            "http_requests": [],
+            "tls_sessions": [],
+            "dns_queries": [],
+            "summary": {"top_domains": []}
+        }
+        mock_extract.return_value = {}
+        
+        response2 = self.client.get("/api/traffic/device/192.168.1.99/activity")
+        self.assertEqual(response2.status_code, 200)
+        data2 = response2.json()
+        self.assertEqual(data2["inferred_role"], "")
+        self.assertEqual(data2["inferred_vendor"], "")
 
 
 if __name__ == "__main__":

@@ -407,6 +407,62 @@ def _device_profile_for(dev: Device, sd: ScanDevice | None) -> dict | None:
     """Best-effort profile inference from existing device signals."""
     text, ports, domains = _device_profile_context(dev, sd)
 
+    # Check for manual profile override in allow_json
+    allow = {}
+    if dev.allow_json:
+        try:
+            parsed = json.loads(dev.allow_json)
+            if isinstance(parsed, dict):
+                allow = parsed
+        except Exception:
+            pass
+    override_category = allow.get("profile_override")
+    if override_category:
+        if override_category == "unknown":
+            return {
+                "category": "unknown",
+                "label": "Unknown / mixed",
+                "confidence": 1.0,
+                "score": 0.0,
+                "evidence": ["Manually configured by user as unknown"],
+                "signals": {
+                    "vendor": dev.vendor or "",
+                    "hostname": dev.hostname or "",
+                    "os_guess": dev.os_guess or "",
+                    "dhcp_option60": dev.dhcp_option60 or "",
+                    "dhcp_option55": dev.dhcp_option55 or "",
+                    "learned_domains": domains[:8],
+                    "open_ports": sorted(ports)[:12],
+                },
+                "alternatives": [],
+                "source": "user-defined",
+            }
+        else:
+            matched_rule = None
+            for rule in _PROFILE_RULES:
+                if rule["key"] == override_category:
+                    matched_rule = rule
+                    break
+            if matched_rule:
+                return {
+                    "category": matched_rule["key"],
+                    "label": matched_rule["label"],
+                    "confidence": 1.0,
+                    "score": 10.0,
+                    "evidence": ["Manually configured by user"],
+                    "signals": {
+                        "vendor": dev.vendor or "",
+                        "hostname": dev.hostname or "",
+                        "os_guess": dev.os_guess or "",
+                        "dhcp_option60": dev.dhcp_option60 or "",
+                        "dhcp_option55": dev.dhcp_option55 or "",
+                        "learned_domains": domains[:8],
+                        "open_ports": sorted(ports)[:12],
+                    },
+                    "alternatives": [],
+                    "source": "user-defined",
+                }
+
     scores: list[tuple[float, dict, list[str]]] = []
     for rule in _PROFILE_RULES:
         score, reasons = _profile_rule_score(rule, text, ports, domains)

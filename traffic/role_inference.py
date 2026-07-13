@@ -58,17 +58,18 @@ def extract_flow_stats(device_ip: str, capture_dir: Path = CAPTURE_DIR, max_file
     files = get_readable_files(capture_dir, max_files=max_files)
     if not files:
         return {}
-
     ttls: List[int] = []
     window_sizes: List[int] = []
     dst_ports: List[int] = []
     pkt_lengths: List[int] = []
+    dst_ips: List[str] = []
+    timestamps: List[float] = []
 
     for pcap in files:
         try:
             # Query all required packet fields in a single tshark call to minimize IO/CPU overhead.
             # Tab-separated output matches the sequence of -e parameters in order:
-            # ip.ttl, tcp.window_size, tcp.flags.syn, tcp.flags.ack, tcp.dstport, udp.dstport, frame.len
+            # ip.ttl, tcp.window_size, tcp.flags.syn, tcp.flags.ack, tcp.dstport, udp.dstport, frame.len, ip.dst, frame.time_epoch
             r = subprocess.run(
                 [tshark, "-r", str(pcap),
                  "-Y", f"ip.src == {device_ip}",
@@ -79,7 +80,9 @@ def extract_flow_stats(device_ip: str, capture_dir: Path = CAPTURE_DIR, max_file
                  "-e", "tcp.flags.ack",
                  "-e", "tcp.dstport",
                  "-e", "udp.dstport",
-                 "-e", "frame.len"],
+                 "-e", "frame.len",
+                 "-e", "ip.dst",
+                 "-e", "frame.time_epoch"],
                 capture_output=True, text=True, timeout=15,
                 creationflags=_no_window(),
             )
@@ -132,14 +135,41 @@ def extract_flow_stats(device_ip: str, capture_dir: Path = CAPTURE_DIR, max_file
                         window_sizes.append(int(win_str.split(",")[0]))
                     except ValueError:
                         pass
+
+                # Parse destination IP address
+                if len(parts) > 7:
+                    dst_ip_str = parts[7].strip()
+                    if dst_ip_str:
+                        try:
+                            dst_ips.append(dst_ip_str.split(",")[0])
+                        except Exception:
+                            pass
+
+                # Parse timestamp for packet frequency
+                if len(parts) > 8:
+                    time_str = parts[8].strip()
+                    if time_str:
+                        try:
+                            timestamps.append(float(time_str.split(",")[0]))
+                        except ValueError:
+                            pass
         except Exception:
             pass
+
+    packet_frequency = 0.0
+    if len(timestamps) > 1:
+        duration = max(timestamps) - min(timestamps)
+        if duration > 0:
+            packet_frequency = len(timestamps) / duration
 
     return {
         "ttls": ttls,
         "window_sizes": window_sizes,
         "destination_ports": dst_ports,
         "packet_lengths": pkt_lengths,
+        "destination_ips": dst_ips,
+        "timestamps": timestamps,
+        "packet_frequency": packet_frequency,
     }
 
 
@@ -266,6 +296,10 @@ def infer_behavior_profile(device_ip: str, activity_data: dict, flow_stats: dict
         return "Smart Home Device"
     if any(x in dom_str for x in ["courier.push.apple", "fcm.googleapis.com", "mtalk.google.com", "crashlytics.com", "firebase"]):
         return "Mobile Phone"
+    if any(x in dom_str for x in ["honeypot", "cowrie", "kippo", "dshield.org", "honeynet.org"]):
+        return "Honeypot"
+    if any(x in dom_str for x in ["sensor", "telemetry", "weather", "aqi", "temp", "humidity", "coap", "dht"]):
+        return "IoT Sensor"
     if header_str and any(x in dom_str for x in ["github.com", "gitlab.com", "slack.com", "teams.microsoft.com", "office.com", "zoom.us", "aws.amazon.com", "jira", "atlassian", "bitbucket", "okta.com"]):
         return "Work Laptop"
     if header_str and any(x in dom_str for x in ["courier.push.apple", "fcm.googleapis.com", "mtalk.google.com", "crashlytics.com", "firebase", "icloud.com", "apple.com"]):
@@ -294,7 +328,17 @@ def infer_behavior_profile(device_ip: str, activity_data: dict, flow_stats: dict
         win_sizes = []
     win_sizes = [int(w) for w in win_sizes if isinstance(w, int) or (isinstance(w, str) and w.isdigit())]
 
-    if dst_ports or pkt_lengths or ttls or win_sizes:
+    destination_ips = flow_stats.get("destination_ips", [])
+    if not isinstance(destination_ips, list):
+        destination_ips = []
+    else:
+        destination_ips = [dip for dip in destination_ips if isinstance(dip, str)]
+
+    packet_frequency = flow_stats.get("packet_frequency", 0.0)
+    if not isinstance(packet_frequency, (int, float)):
+        packet_frequency = 0.0
+
+    if dst_ports or pkt_lengths or ttls or win_sizes or destination_ips:
         # Count destination port frequencies to find top ports
         port_counts = {}
         for p in dst_ports:
@@ -304,11 +348,32 @@ def infer_behavior_profile(device_ip: str, activity_data: dict, flow_stats: dict
         is_low_volume = len(pkt_lengths) < 200
         avg_pkt_len = sum(pkt_lengths) / len(pkt_lengths) if pkt_lengths else 0
 
-        # Check for camera or smart home ports
-        if is_low_volume:
+        # Honeypot checks based on ports or destination IPs
+        is_honeypot_domain = any(x in dom_str for x in ["honeypot", "cowrie", "kippo", "dshield", "honeynet"])
+        is_honeypot_dest = any(any(x in dip for x in ["dshield.org", "honeynet.org"]) for dip in destination_ips)
+        if is_honeypot_domain or is_honeypot_dest:
+            return "Honeypot"
+
+        # Check for camera, smart home, or sensor devices
+        if is_low_volume or avg_pkt_len < 300:
             # IoT Cameras often use MQTT (8883/1883) for telemetry
             if any(p in [8883, 1883] for p in top_ports) or "cam" in dom_str:
+                # If it explicitly matches sensor/telemetry keywords, classify as IoT Sensor instead
+                if any(x in dom_str for x in ["sensor", "telemetry", "weather", "aqi", "temp", "humidity", "coap", "dht"]) or any(any(x in dip for x in ["thingspeak", "adafruit", "dweet", "aws-iot"]) for dip in destination_ips):
+                    return "IoT Sensor"
                 return "IoT Camera"
+
+            # IoT Sensors typically use CoAP (5683/5684) or specific telemetry domains/destinations
+            is_sensor_port = any(p in [5683, 5684] for p in top_ports)
+            is_sensor_domain = any(x in dom_str for x in ["sensor", "telemetry", "weather", "aqi", "temp", "humidity", "coap", "dht"])
+            is_sensor_dest = any(any(x in dip for x in ["thingspeak", "adafruit", "dweet", "aws-iot"]) for dip in destination_ips)
+            if is_sensor_port or is_sensor_domain or is_sensor_dest:
+                return "IoT Sensor"
+                
+            # Frequency-based heuristic for sensors: steady low frequency of small packets
+            if 0.01 <= packet_frequency <= 5.0 and any(p in [123, 80, 443] for p in top_ports):
+                return "IoT Sensor"
+
             # Smart Home Devices typically use UPnP (1900), mDNS (5353), or NTP (123)
             if any(p in [1900, 5353, 123] for p in top_ports) or any(x in dom_str for x in ["iot", "smart"]):
                 return "Smart Home Device"
@@ -343,8 +408,11 @@ def infer_behavior_profile(device_ip: str, activity_data: dict, flow_stats: dict
         return "Mobile Phone"
     if "cam" in dom_str:
         return "IoT Camera"
+    if "sensor" in dom_str or "telemetry" in dom_str:
+        return "IoT Sensor"
+    if "honeypot" in dom_str:
+        return "Honeypot"
 
     return ""
 
 infer_device_role = infer_behavior_profile
-
