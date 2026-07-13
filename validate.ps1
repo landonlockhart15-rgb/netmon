@@ -31,9 +31,13 @@ $script:UsePyLauncher = $false
 $script:PythonExe = $null
 
 $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
+$SetupPython = if ($env:pythonLocation) { Join-Path $env:pythonLocation "python.exe" } else { $null }
 if (Test-Path $VenvPython) {
     $script:PythonExe = $VenvPython
     Write-Host "Using virtual environment Python: $script:PythonExe" -ForegroundColor Yellow
+} elseif ($SetupPython -and (Test-Path $SetupPython)) {
+    $script:PythonExe = $SetupPython
+    Write-Host "Using setup-python interpreter: $script:PythonExe" -ForegroundColor Yellow
 } elseif (Get-Command py.exe -ErrorAction SilentlyContinue) {
     $script:UsePyLauncher = $true
     Write-Host "Using Python launcher: py -3" -ForegroundColor Yellow

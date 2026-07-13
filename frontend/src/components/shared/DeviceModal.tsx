@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, Save, ShieldAlert, ShieldOff, Globe, AlertTriangle, BrainCircuit } from 'lucide-react'
-import { getDevices, getDeviceProfile, patchDevice, startMitm, stopMitm, getMitmStatus, getDeviceActivity, startCapture, type Device, type DeviceProfile } from '@/lib/api'
+import { getDevices, getDeviceProfile, patchDevice, startMitm, stopMitm, getMitmStatus, getDeviceActivity, startCapture, type Device, type DeviceProfile, type DeviceUpdate } from '@/lib/api'
 import { formatRelativeTime } from '@/lib/utils'
 import Btn from './Btn'
 import Badge from './Badge'
@@ -20,7 +20,6 @@ interface ExtendedMitmStatus {
   active_count?: number
   target_count?: number
 }
-type LearnedDevice = Device & { allow_json?: string | null }
 interface HttpActivity { time?: string; host?: string; uri?: string; full_url?: string }
 interface TlsActivity { time?: string; sni?: string; full_url?: string }
 interface DnsActivity { domain?: string }
@@ -62,7 +61,7 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
   }
 
   const patchMutation = useMutation({
-    mutationFn: (body: Partial<Device>) => patchDevice(deviceId, body),
+    mutationFn: (body: DeviceUpdate) => patchDevice(deviceId, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['devices'] })
       qc.invalidateQueries({ queryKey: ['device-profile', deviceId] })
@@ -282,7 +281,7 @@ export default function DeviceModal({ deviceId, onClose }: Props) {
   )
 }
 
-function LearnedSection({ device }: { device: LearnedDevice }) {
+function LearnedSection({ device }: { device: Device }) {
   // allow_json stores learned_domains and last_activity_ip from MitM sessions
   let learned: { learned_domains?: string[]; last_activity_ip?: string; behavior_profile?: string } = {}
   try { learned = JSON.parse(device.allow_json || '{}') } catch { /* ignore malformed legacy metadata */ }

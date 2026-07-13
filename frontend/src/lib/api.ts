@@ -97,9 +97,14 @@ export const getDevicesAtScan = async (scanId: number): Promise<Device[]> => {
 export const getDiffLatest = () => apiFetch<DiffResult>('/api/diff/latest')
 export const getDeviceHistory = (id: number) => apiFetch<DeviceScan[]>(`/api/device/${id}/history`)
 export const getDeviceProfile = (id: number) => apiFetch<DeviceProfile>(`/api/device/${id}/profile`)
-export const patchDevice = (id: number, body: Partial<Device & { is_known?: boolean }>) => {
+export interface DeviceUpdate extends Partial<Device> {
+  is_known?: boolean
+  allow?: Record<string, unknown>
+}
+
+export const patchDevice = (id: number, body: DeviceUpdate) => {
   // Backend uses is_known, frontend uses trusted — normalize
-  const payload: Partial<Device> & { is_known?: boolean } = { ...body }
+  const payload: DeviceUpdate = { ...body }
   if ('trusted' in payload) { payload.is_known = payload.trusted; delete payload.trusted }
   return apiFetch<Device>(`/api/device/${id}`, { method: 'PATCH', body: JSON.stringify(payload) })
 }
@@ -428,6 +433,7 @@ export interface Device {
   vulnerability_count?: number
   max_cve_risk?: string | null
   ghost_detection?: GhostDetection | null
+  allow_json?: string | null
 }
 
 export interface DeviceActivity {

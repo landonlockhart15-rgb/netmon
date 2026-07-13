@@ -946,6 +946,7 @@ class TestAPIEndpoints(unittest.TestCase):
                 Setting(key="autoheal_reboot_method", value="weirdbox"),
                 Setting(key="autoheal_max_reboots_per_day", value="0"),
                 Setting(key="autoheal_router_port", value="abc"),
+                Setting(key="autoheal_router_host", value="192.168.1.1"),
             ])
             self.db.commit()
 
