@@ -1,0 +1,1 @@
+import{an as e}from"./index-CRN4AMNK.js";var t=e(`waves-horizontal`,[[`path`,{d:`M2 12q2.5 2 5 0t5 0 5 0 5 0`,key:`8ddzzs`}],[`path`,{d:`M2 19q2.5 2 5 0t5 0 5 0 5 0`,key:`1wj4st`}],[`path`,{d:`M2 5q2.5 2 5 0t5 0 5 0 5 0`,key:`69x50u`}]]);export{t};
