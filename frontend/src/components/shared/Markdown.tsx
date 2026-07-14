@@ -75,7 +75,40 @@ function inline(text: string): React.ReactNode {
     }
     const linkMatch = part.match(/^\[(.+)\]\((.+)\)$/)
     if (linkMatch) {
-      return <a key={i} href={linkMatch[2]} target="_blank" rel="noopener noreferrer" className="text-purple-400 underline hover:text-purple-300">{linkMatch[1]}</a>
+      const url = linkMatch[2].trim()
+      const lowercaseUrl = url.toLowerCase()
+      // Prevent javascript:, data:, and vbscript: protocols to mitigate XSS
+      const isBlocked =
+        lowercaseUrl.startsWith('javascript:') ||
+        lowercaseUrl.startsWith('data:') ||
+        lowercaseUrl.startsWith('vbscript:')
+
+      const isSafe = !isBlocked && (
+        lowercaseUrl.startsWith('http://') ||
+        lowercaseUrl.startsWith('https://') ||
+        lowercaseUrl.startsWith('mailto:') ||
+        lowercaseUrl.startsWith('tel:') ||
+        lowercaseUrl.startsWith('/') ||
+        lowercaseUrl.startsWith('#')
+      )
+
+      if (isSafe) {
+        return (
+          <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="text-purple-400 underline hover:text-purple-300">
+            {linkMatch[1]}
+          </a>
+        )
+      } else {
+        return (
+          <span
+            key={i}
+            className="text-gray-400 font-medium cursor-help"
+            title="Link blocked for security reasons"
+          >
+            {linkMatch[1]}
+          </span>
+        )
+      }
     }
     return part
   })
