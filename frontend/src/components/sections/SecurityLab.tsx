@@ -671,6 +671,85 @@ function CveFindingRow({ f }: { f: CveFinding }) {
   )
 }
 
+function normalizeEvidenceItems(finding: CveFinding) {
+  const raw = finding.evidence?.trim()
+  const items = raw
+    ? raw
+        .split(/(?:\r?\n|;|\u2022|\s+\|\s+)/)
+        .map(item => item.trim())
+        .filter(Boolean)
+    : []
+
+  if (items.length > 0) return items.slice(0, 4)
+
+  const fallback = [
+    finding.port ? `Port ${finding.port} is open` : '',
+    finding.service ? `Service banner shows ${finding.service}` : '',
+    [finding.product, finding.version].filter(Boolean).join(' ').trim(),
+  ].filter(Boolean) as string[]
+
+  return fallback.length > 0 ? fallback : ['Evidence not captured in this scan']
+}
+
+function ProofOfVulnerabilityCard({ finding }: { finding?: CveFinding }) {
+  if (!finding) return null
+
+  const evidenceItems = normalizeEvidenceItems(finding)
+
+  return (
+    <div className="mb-4 rounded-xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+      <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-cyan-200/70">Proof of Vulnerability</p>
+          <p className="text-sm text-gray-100 mt-1">Evidence is linked directly to the CVE row that generated it.</p>
+        </div>
+        <Badge variant={severityVariant(finding.risk)}>{finding.risk}</Badge>
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-stretch">
+        <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+          <p className="text-[10px] uppercase tracking-wider text-gray-500">Detected vulnerability</p>
+          <div className="mt-2 space-y-1">
+            <p className="text-sm font-medium text-gray-100">{finding.cve}</p>
+            <p className="text-xs text-gray-400 leading-relaxed">{finding.title}</p>
+            <p className="text-[11px] text-gray-500">
+              {finding.label || finding.hostname || finding.ip || 'Unknown host'} · {finding.service}:{finding.port}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-center text-cyan-200/70">
+          <div className="flex flex-col items-center gap-1">
+            <div className="h-8 w-px bg-cyan-500/30" />
+            <div className="rounded-full border border-cyan-500/25 bg-cyan-500/10 p-2">
+              <ExternalLink size={14} />
+            </div>
+            <div className="h-8 w-px bg-cyan-500/30" />
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+          <p className="text-[10px] uppercase tracking-wider text-gray-500">Evidence found</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {evidenceItems.map(item => (
+              <span
+                key={item}
+                className="inline-flex items-center gap-1 rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2.5 py-1 text-[11px] text-cyan-100"
+              >
+                <Info size={11} />
+                {item}
+              </span>
+            ))}
+          </div>
+          <p className="mt-3 text-[11px] leading-relaxed text-gray-400">
+            The backend evidence field is preserved here so the row can be audited without guessing from the CVE label alone.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function CveMappingPanel({ data, loading, onRefresh }: { data?: CveMappingData; loading: boolean; onRefresh: () => void }) {
   const [scanLoading, setScanLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -726,6 +805,8 @@ function CveMappingPanel({ data, loading, onRefresh }: { data?: CveMappingData; 
       )}
 
       {findings.some(f => f.remediation?.type === 'firmware') && <RouterFirmwareCard />}
+
+      {findings.length > 0 && <ProofOfVulnerabilityCard finding={findings[0]} />}
 
       {findings.length === 0 ? (
         <EmptyState icon="◎" text="No CVE matches yet" hint="Run a mapping scan to collect service banners and check the offline CVE signatures." />
