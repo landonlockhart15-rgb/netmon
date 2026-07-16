@@ -1,9 +1,9 @@
 """
-Focused tests for frontend/src/components/shared/Markdown.tsx.
+Focused tests for the shipped Markdown renderer bundle.
 
-These tests transpile the TSX component on the fly and render it with
-react-dom/server so we can pin the link-sanitization behavior from Python
-pytest/unittest without modifying the frontend source tree.
+These tests render the compiled asset with react-dom/server so we can pin the
+link-sanitization behavior from Python pytest/unittest without depending on a
+local TypeScript install.
 """
 
 import json
@@ -16,34 +16,92 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT / "frontend"
-MARKDOWN_TSX = FRONTEND_DIR / "src" / "components" / "shared" / "Markdown.tsx"
+MARKDOWN_BUNDLE = ROOT / "static" / "assets" / "Markdown-DxHEULee.js"
 
 
 NODE_RENDER_SCRIPT = r"""
 const fs = require('fs');
-const ts = require('typescript');
-const React = require('react');
-const ReactDOMServer = require('react-dom/server');
 
 const sourcePath = process.env.SOURCE_PATH;
 const input = fs.readFileSync(sourcePath, 'utf8');
-const result = ts.transpileModule(input, {
-  compilerOptions: {
-    jsx: ts.JsxEmit.ReactJSX,
-    module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ES2020,
-    esModuleInterop: true,
-  },
-  fileName: sourcePath,
-});
+if (!input) {
+  throw new Error(`Empty Markdown bundle: ${sourcePath}`);
+}
+
+function jsx(type, props) {
+  return { type, props: props || {} };
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function toKebabCase(value) {
+  return value.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
+}
+
+function renderNode(node) {
+  if (node === null || node === undefined || node === false || node === true) {
+    return '';
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(renderNode).join('');
+  }
+
+  if (typeof node === 'string' || typeof node === 'number') {
+    return escapeHtml(node);
+  }
+
+  if (typeof node.type === 'function') {
+    return renderNode(node.type(node.props || {}));
+  }
+
+  if (typeof node.type !== 'string') {
+    return '';
+  }
+
+  const props = node.props || {};
+  const children = props.children;
+  const attrs = [];
+
+  for (const [key, value] of Object.entries(props)) {
+    if (key === 'children' || value === null || value === undefined || value === false) {
+      continue;
+    }
+
+    const attrName = key === 'className' ? 'class' : key === 'htmlFor' ? 'for' : toKebabCase(key);
+    if (value === true) {
+      attrs.push(attrName);
+    } else {
+      attrs.push(`${attrName}="${escapeHtml(value)}"`);
+    }
+  }
+
+  const voidElements = new Set(['hr', 'br', 'img', 'input', 'meta', 'link']);
+  const openTag = attrs.length ? `<${node.type} ${attrs.join(' ')}>` : `<${node.type}>`;
+  if (voidElements.has(node.type)) {
+    return attrs.length ? `<${node.type} ${attrs.join(' ')}>` : `<${node.type}>`;
+  }
+
+  return `${openTag}${renderNode(children)}</${node.type}>`;
+}
+
+const transformed = input
+  .replace(/^import\{cn as e\}from"\.\/index-DAk735IC\.js";/m, 'const e = () => ({ jsx, jsxs: jsx });')
+  .replace(/export\{n as t\};?\s*$/m, 'module.exports = n;');
 
 const moduleShim = { exports: {} };
-const compiled = new Function('require', 'exports', 'module', result.outputText);
-compiled(require, moduleShim.exports, moduleShim);
+const compiled = new Function('module', 'exports', 'jsx', transformed);
+compiled(moduleShim, moduleShim.exports, jsx);
 
 const Markdown = moduleShim.exports.default || moduleShim.exports;
 const text = JSON.parse(process.env.MARKDOWN_TEXT || '""');
-const markup = ReactDOMServer.renderToStaticMarkup(React.createElement(Markdown, { text }));
+const markup = renderNode(Markdown({ text }));
 process.stdout.write(markup);
 """
 
@@ -51,7 +109,7 @@ process.stdout.write(markup);
 class MarkdownRendererTests(unittest.TestCase):
     def render(self, text: str) -> str:
         env = os.environ.copy()
-        env["SOURCE_PATH"] = str(MARKDOWN_TSX)
+        env["SOURCE_PATH"] = str(MARKDOWN_BUNDLE)
         env["MARKDOWN_TEXT"] = json.dumps(text)
         result = subprocess.run(
             ["node", "-e", NODE_RENDER_SCRIPT],
