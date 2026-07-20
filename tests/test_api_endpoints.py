@@ -1078,6 +1078,22 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertIn("queryKey: ['least-resistance']", text)
         self.assertIn("/api/security/least-resistance", text)
 
+    def test_security_lab_renders_proof_of_vulnerability_card(self):
+        from pathlib import Path
+        source = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "sections" / "SecurityLab.tsx"
+        text = source.read_text(encoding="utf-8")
+        self.assertIn("function ProofOfVulnerabilityCard", text)
+        self.assertIn("Proof of Vulnerability", text)
+        self.assertIn("normalizeEvidenceItems", text)
+        self.assertIn("ProofOfVulnerabilityCard finding={findings[0]}", text)
+        self.assertIn("Evidence is linked directly to the CVE row that generated it", text)
+        self.assertIn("Evidence found", text)
+        self.assertIn("(finding.service || finding.port)", text)
+        self.assertNotIn(
+            "{finding.label || finding.hostname || finding.ip || 'Unknown host'} · {finding.service}:{finding.port}",
+            text,
+        )
+
     @patch("ai.provider.get_investigation_provider")
     def test_explain_chat_turn(self, mock_get_provider):
         """Test POST /api/device/{device_id}/chat/{turn_id}/explain route."""

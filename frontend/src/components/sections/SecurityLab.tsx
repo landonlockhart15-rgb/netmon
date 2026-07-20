@@ -713,7 +713,8 @@ function ProofOfVulnerabilityCard({ finding }: { finding?: CveFinding }) {
             <p className="text-sm font-medium text-gray-100">{finding.cve}</p>
             <p className="text-xs text-gray-400 leading-relaxed">{finding.title}</p>
             <p className="text-[11px] text-gray-500">
-              {finding.label || finding.hostname || finding.ip || 'Unknown host'} · {finding.service}:{finding.port}
+              {finding.label || finding.hostname || finding.ip || 'Unknown host'}
+              {(finding.service || finding.port) ? ` · ${[finding.service, finding.port ? `:${finding.port}` : ''].filter(Boolean).join('')}` : ''}
             </p>
           </div>
         </div>
