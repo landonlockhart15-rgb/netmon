@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Router, Laptop, Smartphone, Cpu, Globe, Server, RefreshCw, Activity, HelpCircle, Zap, ShieldAlert, Clock } from 'lucide-react'
+import { Router, Laptop, Smartphone, Cpu, Globe, Server, RefreshCw, Activity, HelpCircle, Zap, ShieldAlert, Clock, Play, Pause, SkipBack, SkipForward, UserPlus, Radio } from 'lucide-react'
 import { getTrafficDashboard, getNetworkInfo, getScans, getDevicesAtScan, type Device, type Scan } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -28,6 +28,8 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
   const [colorMode, setColorMode] = useState<'network' | 'security'>('network')
   // Temporal state: null = live, scan id = historical replay
   const [historicalScanId, setHistoricalScanId] = useState<number | null>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [playbackSpeed] = useState(1500)
 
   // Fetch traffic dashboard for conversations
   const { data: dashboard } = useQuery({
@@ -50,19 +52,107 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     select: (data): Scan[] => data.filter(scan => scan.status === 'complete').reverse(),
   })
 
+  const sliderScans = useMemo(() => (scans ? scans.slice(-20) : []), [scans])
+  const liveIndex = sliderScans.length
+
+  const currentIndex = useMemo(() => {
+    if (historicalScanId === null) return liveIndex
+    const idx = sliderScans.findIndex(s => s.id === historicalScanId)
+    return idx === -1 ? liveIndex : idx
+  }, [historicalScanId, sliderScans, liveIndex])
+
+  const selectedScan = useMemo(() => {
+    if (currentIndex < liveIndex) return sliderScans[currentIndex]
+    return null
+  }, [currentIndex, sliderScans, liveIndex])
+
+  const previousScanId = useMemo(() => {
+    if (currentIndex <= 0 || currentIndex > liveIndex) return null
+    return sliderScans[currentIndex - 1]?.id ?? null
+  }, [currentIndex, sliderScans, liveIndex])
+
+  // Fetch previous scan devices to compute snapshot deltas (who joined)
+  const { data: previousDevices } = useQuery({
+    queryKey: ['devices-at-scan', previousScanId],
+    queryFn: () => getDevicesAtScan(previousScanId!),
+    enabled: previousScanId !== null && historicalScanId !== null,
+    select: (data) => (Array.isArray(data) ? data : []),
+  })
+
   // Fetch historical devices when replaying a past scan
   const { data: historicalDevices } = useQuery({
     queryKey: ['devices-at-scan', historicalScanId],
     queryFn: () => getDevicesAtScan(historicalScanId!),
     enabled: historicalScanId !== null,
-    select: (data) => Array.isArray(data) ? data : [],
+    select: (data) => (Array.isArray(data) ? data : []),
   })
 
   // The devices the map actually renders — live prop or historical snapshot
   const displayDevices = useMemo(
-    () => historicalScanId !== null ? (historicalDevices ?? []) : devices,
+    () => (historicalScanId !== null ? (historicalDevices ?? []) : devices),
     [historicalScanId, historicalDevices, devices],
   )
+
+  // Identify devices newly added in current snapshot relative to previous snapshot
+  const newlyJoinedDeviceIds = useMemo(() => {
+    if (historicalScanId === null || !previousDevices || !previousDevices.length) return new Set<number>()
+    const prevSet = new Set(previousDevices.map(d => d.id))
+    const joined = new Set<number>()
+    displayDevices.forEach(d => {
+      if (!prevSet.has(d.id)) {
+        joined.add(d.id)
+      }
+    })
+    return joined
+  }, [historicalScanId, previousDevices, displayDevices])
+
+  // Auto-play timer for synchronized time scrubber
+  useEffect(() => {
+    if (!isPlaying) return
+    if (!sliderScans.length) {
+      setIsPlaying(false)
+      return
+    }
+
+    const interval = setInterval(() => {
+      setHistoricalScanId(prevId => {
+        const curIdx = prevId !== null ? sliderScans.findIndex(s => s.id === prevId) : liveIndex
+        const nextIdx = curIdx + 1
+        if (nextIdx >= liveIndex) {
+          setIsPlaying(false)
+          return null
+        }
+        return sliderScans[nextIdx].id
+      })
+    }, playbackSpeed)
+
+    return () => clearInterval(interval)
+  }, [isPlaying, sliderScans, liveIndex, playbackSpeed])
+
+  const handleStepBack = () => {
+    if (currentIndex > 0) {
+      setHistoricalScanId(sliderScans[currentIndex - 1].id)
+    }
+  }
+
+  const handleStepForward = () => {
+    if (currentIndex < liveIndex - 1) {
+      setHistoricalScanId(sliderScans[currentIndex + 1].id)
+    } else if (currentIndex === liveIndex - 1) {
+      setHistoricalScanId(null)
+    }
+  }
+
+  const handleTogglePlay = () => {
+    if (isPlaying) {
+      setIsPlaying(false)
+    } else {
+      if (currentIndex >= liveIndex && sliderScans.length > 0) {
+        setHistoricalScanId(sliderScans[0].id)
+      }
+      setIsPlaying(true)
+    }
+  }
 
   const gatewayIp = networkInfo?.gateway
   const conversations = dashboard?.conversations
@@ -422,24 +512,27 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
 
           const isSecurityMode = colorMode === 'security'
           const risk = device?.max_cve_risk?.toLowerCase()
+          const isNewlyJoined = device ? newlyJoinedDeviceIds.has(device.id) : false
 
           const glowClass = isInternet
             ? "shadow-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:border-cyan-400"
-            : isSecurityMode
-              ? device
-                ? (risk === 'critical' || risk === 'high')
-                  ? "shadow-red-500/25 text-red-400 border-red-500/40 hover:border-red-400 bg-red-950/10"
-                  : risk === 'medium'
-                    ? "shadow-orange-500/20 text-orange-400 border-orange-500/40 hover:border-orange-400 bg-orange-950/10"
-                    : risk === 'low'
-                      ? "shadow-yellow-500/15 text-yellow-400 border-yellow-500/30 hover:border-yellow-400 bg-yellow-950/5"
-                      : "shadow-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:border-emerald-400"
-                : "shadow-purple-500/20 text-purple-400 border-purple-500/30 hover:border-purple-400"
-              : isGway
-                ? "shadow-purple-500/20 text-purple-400 border-purple-500/30 hover:border-purple-400"
-                : device?.trusted
-                  ? "shadow-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:border-emerald-400"
-                  : "shadow-amber-500/15 text-amber-400 border-amber-500/30 hover:border-amber-400"
+            : isNewlyJoined
+              ? "shadow-emerald-500/40 text-emerald-300 border-emerald-400 animate-pulse bg-emerald-950/20"
+              : isSecurityMode
+                ? device
+                  ? (risk === 'critical' || risk === 'high')
+                    ? "shadow-red-500/25 text-red-400 border-red-500/40 hover:border-red-400 bg-red-950/10"
+                    : risk === 'medium'
+                      ? "shadow-orange-500/20 text-orange-400 border-orange-500/40 hover:border-orange-400 bg-orange-950/10"
+                      : risk === 'low'
+                        ? "shadow-yellow-500/15 text-yellow-400 border-yellow-500/30 hover:border-yellow-400 bg-yellow-950/5"
+                        : "shadow-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:border-emerald-400"
+                  : "shadow-purple-500/20 text-purple-400 border-purple-500/30 hover:border-purple-400"
+                : isGway
+                  ? "shadow-purple-500/20 text-purple-400 border-purple-500/30 hover:border-purple-400"
+                  : device?.trusted
+                    ? "shadow-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:border-emerald-400"
+                    : "shadow-amber-500/15 text-amber-400 border-amber-500/30 hover:border-amber-400"
 
           const isHovered = hoveredNode === id
           const isDragged = draggedNode === id
@@ -465,11 +558,17 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
               )}
             >
               <div className={cn(
-                "w-11 h-11 rounded-full bg-[#16162a]/95 border flex items-center justify-center shadow-lg transition-all duration-300",
+                "relative w-11 h-11 rounded-full bg-[#16162a]/95 border flex items-center justify-center shadow-lg transition-all duration-300",
                 glowClass,
                 isHovered && "shadow-xl border-opacity-70 bg-[#22223a]/90"
               )}>
                 {getNodeIcon(id, device)}
+                {isNewlyJoined && (
+                  <span className="absolute -top-1.5 -right-1.5 flex items-center gap-0.5 bg-emerald-500 text-black text-[7px] font-bold px-1 py-0.5 rounded-full shadow-[0_0_8px_#10b981]">
+                    <UserPlus className="w-2 h-2" />
+                    NEW
+                  </span>
+                )}
               </div>
 
               <div className="mt-1 bg-black/60 backdrop-blur-md px-1.5 py-0.5 rounded text-[9px] font-mono text-gray-400 border border-white/5 max-w-[100px] truncate">
@@ -478,6 +577,23 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
             </div>
           )
         })}
+
+        {/* Header Overlay for Time Replay Mode */}
+        {historicalScanId !== null && (
+          <div className="absolute top-3 left-3 flex items-center gap-2 bg-amber-950/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-amber-500/30 text-xs pointer-events-auto shadow-lg select-none">
+            <Clock className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+            <span className="text-amber-200 font-medium text-[11px]">
+              Snapshot {selectedScan ? `#${selectedScan.id}` : ''}
+            </span>
+            <span className="text-gray-400 text-[10px]">&bull; {displayDevices.length} Hosts</span>
+            {newlyJoinedDeviceIds.size > 0 && (
+              <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] px-1.5 py-0.5 rounded font-bold flex items-center gap-1 ml-1">
+                <UserPlus className="w-2.5 h-2.5" />
+                +{newlyJoinedDeviceIds.size} Joined
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Toolbar */}
         <div className="absolute top-3 right-3 flex items-center gap-2 bg-black/40 backdrop-blur-md px-2 py-1.5 rounded-lg border border-white/5 text-xs pointer-events-auto">
@@ -525,41 +641,79 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
           </button>
         </div>
 
-        {/* Temporal slider — only shown when we have scan history */}
-        {scans && scans.length > 1 && (() => {
-          const sliderScans = scans.slice(-20)
-          const liveIndex = sliderScans.length
-          const currentIndex = historicalScanId !== null
-            ? sliderScans.findIndex(s => s.id === historicalScanId)
-            : liveIndex
-          const selectedScan = historicalScanId !== null
-            ? sliderScans.find(s => s.id === historicalScanId)
-            : null
-          return (
-            <div className="absolute bottom-3 left-3 right-3 flex flex-col items-center gap-1 pointer-events-auto">
-              <div className="w-full max-w-md bg-black/60 backdrop-blur-md px-3 py-2 rounded-lg border border-white/5">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[9px] text-gray-500 flex items-center gap-1">
-                    <Clock className="w-2.5 h-2.5" />
-                    {selectedScan
-                      ? new Date(selectedScan.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                      : 'Live View'}
+        {/* Synchronized Time-Travel Scrubber Bar */}
+        {sliderScans.length > 0 ? (
+          <div className="absolute bottom-3 left-3 right-3 flex flex-col items-center gap-1.5 pointer-events-auto">
+            <div className="w-full max-w-lg bg-[#0d0d18]/90 backdrop-blur-md px-3.5 py-2.5 rounded-xl border border-white/10 shadow-2xl">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleTogglePlay}
+                    className={cn(
+                      "p-1.5 rounded-lg transition-colors flex items-center justify-center",
+                      isPlaying
+                        ? "bg-amber-500 text-black hover:bg-amber-400 shadow-[0_0_8px_#f59e0b]"
+                        : "bg-white/10 text-white hover:bg-white/20 border border-white/10"
+                    )}
+                    title={isPlaying ? "Pause topology replay" : "Play topology snapshot sequence"}
+                  >
+                    {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 fill-current ml-0.5" />}
+                  </button>
+
+                  <button
+                    onClick={handleStepBack}
+                    disabled={currentIndex <= 0}
+                    className="p-1.5 text-gray-400 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:hover:bg-transparent rounded-lg transition-colors"
+                    title="Previous snapshot"
+                  >
+                    <SkipBack className="w-3.5 h-3.5" />
+                  </button>
+
+                  <button
+                    onClick={handleStepForward}
+                    disabled={currentIndex >= liveIndex}
+                    className="p-1.5 text-gray-400 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:hover:bg-transparent rounded-lg transition-colors"
+                    title="Next snapshot"
+                  >
+                    <SkipForward className="w-3.5 h-3.5" />
+                  </button>
+
+                  <span className="text-[10px] text-gray-300 font-mono flex items-center gap-1 ml-1">
+                    <Clock className="w-3 h-3 text-amber-400" />
+                    {selectedScan ? (
+                      <span>
+                        Scan #{selectedScan.id} &bull; {new Date(selectedScan.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    ) : (
+                      <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                        <Radio className="w-3 h-3 animate-pulse text-emerald-400" />
+                        Live Network View
+                      </span>
+                    )}
                   </span>
-                  {historicalScanId !== null && (
-                    <button
-                      onClick={() => setHistoricalScanId(null)}
-                      className="text-[9px] text-amber-400 hover:text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded transition-colors"
-                    >
-                      Return to Live
-                    </button>
-                  )}
                 </div>
+
+                {historicalScanId !== null && (
+                  <button
+                    onClick={() => {
+                      setIsPlaying(false)
+                      setHistoricalScanId(null)
+                    }}
+                    className="text-[10px] text-amber-400 hover:text-amber-300 border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 rounded-md transition-colors font-medium flex items-center gap-1"
+                  >
+                    Return to Live
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
                 <input
                   type="range"
                   min={0}
                   max={liveIndex}
-                  value={currentIndex === -1 ? liveIndex : currentIndex}
+                  value={currentIndex}
                   onChange={e => {
+                    setIsPlaying(false)
                     const idx = Number(e.target.value)
                     if (idx === liveIndex) {
                       setHistoricalScanId(null)
@@ -567,22 +721,24 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
                       setHistoricalScanId(sliderScans[idx].id)
                     }
                   }}
-                  className="w-full h-1 accent-amber-400 cursor-pointer"
+                  className="w-full h-1.5 accent-amber-400 cursor-pointer rounded-lg bg-gray-800"
                 />
-                <div className="flex justify-between text-[8px] text-gray-600 mt-0.5">
-                  <span>{sliderScans.length > 0 ? new Date(sliderScans[0].started_at).toLocaleDateString() : ''}</span>
-                  <span className={cn(historicalScanId === null ? 'text-emerald-400' : 'text-gray-600')}>Live</span>
-                </div>
+              </div>
+
+              <div className="flex justify-between text-[8px] text-gray-500 mt-1 font-mono">
+                <span>{sliderScans.length > 0 ? new Date(sliderScans[0].started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                {newlyJoinedDeviceIds.size > 0 && (
+                  <span className="text-emerald-400 font-semibold">+ {newlyJoinedDeviceIds.size} new device(s) joined</span>
+                )}
+                <span className={cn(historicalScanId === null ? 'text-emerald-400 font-bold' : 'text-gray-500')}>LIVE</span>
               </div>
             </div>
-          )
-        })()}
-
-        {!scans || scans.length <= 1 ? (
+          </div>
+        ) : (
           <div className="absolute bottom-3 left-3 bg-black/40 backdrop-blur-md px-2 py-1 rounded border border-white/5 text-[9px] text-gray-500 pointer-events-none">
             Drag devices to organize topology. Click node to see details.
           </div>
-        ) : null}
+        )}
       </div>
 
       {/* Detail Sidebar */}
@@ -636,6 +792,12 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
                     )}>{hoveredNodeInfo.max_cve_risk || 'None'}</span></div>
                     <div className="flex justify-between"><span className="text-gray-500">Vulnerabilities:</span> <span className="text-gray-300 font-mono">{hoveredNodeInfo.vulnerability_count || 0}</span></div>
                   </>
+                )}
+                {hoveredNodeInfo.isNewlyJoined && (
+                  <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-2 py-1 rounded text-[10px] font-semibold my-1">
+                    <UserPlus className="w-3 h-3 text-emerald-400" />
+                    Joined Network in Snapshot
+                  </div>
                 )}
                 {hoveredNodeInfo.details && (
                   <p className="text-[10px] text-gray-500 leading-normal">{hoveredNodeInfo.details}</p>

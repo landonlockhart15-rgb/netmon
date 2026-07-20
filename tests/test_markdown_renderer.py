@@ -16,7 +16,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT / "frontend"
-MARKDOWN_BUNDLE = ROOT / "static" / "assets" / "Markdown-DxHEULee.js"
+_markdown_bundles = list((ROOT / "static" / "assets").glob("Markdown-*.js"))
+MARKDOWN_BUNDLE = _markdown_bundles[0] if _markdown_bundles else (ROOT / "static" / "assets" / "Markdown-DxHEULee.js")
 
 
 NODE_RENDER_SCRIPT = r"""
@@ -92,7 +93,7 @@ function renderNode(node) {
 }
 
 const transformed = input
-  .replace(/^import\{cn as e\}from"\.\/index-DAk735IC\.js";/m, 'const e = () => ({ jsx, jsxs: jsx });')
+  .replace(/^import\{cn as e\}from"\.\/index-[^"]+\.js";/m, 'const e = () => ({ jsx, jsxs: jsx });')
   .replace(/export\{n as t\};?\s*$/m, 'module.exports = n;');
 
 const moduleShim = { exports: {} };
