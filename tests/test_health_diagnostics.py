@@ -96,5 +96,123 @@ class TestCaptivePortalCache(unittest.TestCase):
         self.assertFalse(hasattr(health, "submit_captive_portal"))
 
 
+class TestAutohealCaptiveProbe(unittest.TestCase):
+    """Internet-down + gateway-up should auto-probe for a captive portal once."""
+
+    def setUp(self):
+        import monitoring.autoheal as ah
+        self.ah = ah
+        self._saved = dict(ah._STATE)
+
+    def tearDown(self):
+        self.ah._STATE.clear()
+        self.ah._STATE.update(self._saved)
+
+    @patch("monitoring.health.analyze_and_cache_captive_portal")
+    def test_probe_runs_once_when_gateway_up(self, mock_probe):
+        mock_probe.return_value = {"captive": True, "page": {"title": "Hotel WiFi"},
+                                   "final_url": "http://portal", "http_status": 200}
+        self.ah._STATE["captive_probe_done"] = False
+        self.ah._maybe_probe_captive_portal({"gateway_up": True, "internet_up": False})
+        self.ah._maybe_probe_captive_portal({"gateway_up": True, "internet_up": False})
+        self.assertEqual(mock_probe.call_count, 1)
+        self.assertTrue(self.ah._STATE["captive_probe_done"])
+
+    @patch("monitoring.health.analyze_and_cache_captive_portal")
+    def test_probe_skipped_when_gateway_down(self, mock_probe):
+        self.ah._STATE["captive_probe_done"] = False
+        self.ah._maybe_probe_captive_portal({"gateway_up": False, "internet_up": False})
+        mock_probe.assert_not_called()
+        self.assertFalse(self.ah._STATE["captive_probe_done"])
+
+    @patch("monitoring.autoheal._emit")
+    @patch("monitoring.health.analyze_and_cache_captive_portal")
+    def test_probe_emits_captive_event_with_title(self, mock_probe, mock_emit):
+        mock_probe.return_value = {
+            "captive": True,
+            "page": {"title": "Hotel Guest WiFi"},
+            "final_url": "http://192.168.1.1/login.html",
+            "http_status": 200,
+        }
+        self.ah._STATE["captive_probe_done"] = False
+        self.ah._maybe_probe_captive_portal({"gateway_up": True, "internet_up": False})
+
+        mock_emit.assert_called_once()
+        args, kwargs = mock_emit.call_args
+        self.assertEqual(args[0], self.ah.EV_CAPTIVE)
+        self.assertEqual(args[1], "warning")
+        self.assertIn('("Hotel Guest WiFi")', args[2])
+        self.assertEqual(args[3]["final_url"], "http://192.168.1.1/login.html")
+        self.assertEqual(args[3]["http_status"], 200)
+        self.assertEqual(kwargs.get("notify"), False)
+
+    @patch("monitoring.autoheal._emit")
+    @patch("monitoring.health.analyze_and_cache_captive_portal")
+    def test_probe_emits_captive_event_without_title(self, mock_probe, mock_emit):
+        mock_probe.return_value = {
+            "captive": True,
+            "page": None,
+            "final_url": "http://10.0.0.1/portal",
+            "http_status": 302,
+        }
+        self.ah._STATE["captive_probe_done"] = False
+        self.ah._maybe_probe_captive_portal({"gateway_up": True, "internet_up": False})
+
+        mock_emit.assert_called_once()
+        args = mock_emit.call_args[0]
+        self.assertEqual(args[0], self.ah.EV_CAPTIVE)
+        self.assertEqual(args[2], "Captive portal detected — a login page is intercepting traffic.")
+
+    @patch("monitoring.autoheal._emit")
+    @patch("monitoring.health.analyze_and_cache_captive_portal")
+    def test_probe_handles_non_dict_page_gracefully(self, mock_probe, mock_emit):
+        mock_probe.return_value = {
+            "captive": True,
+            "page": "invalid page payload",
+            "final_url": "http://10.0.0.1/portal",
+            "http_status": 200,
+        }
+        self.ah._STATE["captive_probe_done"] = False
+        self.ah._maybe_probe_captive_portal({"gateway_up": True, "internet_up": False})
+
+        mock_emit.assert_called_once()
+        args = mock_emit.call_args[0]
+        self.assertEqual(args[2], "Captive portal detected — a login page is intercepting traffic.")
+
+    @patch("monitoring.autoheal._emit")
+    @patch("monitoring.health.analyze_and_cache_captive_portal")
+    def test_probe_does_not_emit_when_not_captive(self, mock_probe, mock_emit):
+        mock_probe.return_value = {
+            "captive": False,
+            "status": "online",
+            "page": None,
+        }
+        self.ah._STATE["captive_probe_done"] = False
+        self.ah._maybe_probe_captive_portal({"gateway_up": True, "internet_up": False})
+
+        mock_emit.assert_not_called()
+        self.assertTrue(self.ah._STATE["captive_probe_done"])
+
+    @patch("monitoring.health.analyze_and_cache_captive_portal")
+    def test_probe_resilient_to_exceptions(self, mock_probe):
+        mock_probe.side_effect = RuntimeError("Socket timeout during probing")
+        self.ah._STATE["captive_probe_done"] = False
+
+        # Should not raise exception
+        self.ah._maybe_probe_captive_portal({"gateway_up": True, "internet_up": False})
+
+        self.assertTrue(self.ah._STATE["captive_probe_done"])
+
+    def test_state_clearing_resets_captive_probe(self):
+        self.ah._STATE["captive_probe_done"] = True
+        self.ah._clear_internet_outage_state()
+        self.assertFalse(self.ah._STATE["captive_probe_done"])
+
+        self.ah._STATE["captive_probe_done"] = True
+        self.ah._reset_state()
+        self.assertFalse(self.ah._STATE["captive_probe_done"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
