@@ -38,6 +38,7 @@ EV_RECOVERED   = "recovered"
 EV_GIVEUP      = "giveup"
 EV_OUTAGE      = "outage_detected"
 EV_RESET       = "reboot_counter_reset"
+EV_CAPTIVE     = "captive_portal_detected"  # internet down + gateway up → login page found
 # Attempts that count against caps/cooldown (real + dry-run, so dry-run behaves identically)
 _ATTEMPT_EVENTS = (EV_REBOOT, EV_DRYRUN)
 _STORY_EVENTS = {EV_OUTAGE, EV_DRYRUN, EV_REBOOT, EV_RECOVERED, EV_GIVEUP, EV_RESET, EV_DNS_BLACKOUT}
@@ -58,6 +59,7 @@ _STATE: dict = {
     "cached_ai_diagnosis": None,
     "ai_diagnosis_in_progress": False,
     "ai_diagnosis_for_offline_since": None,
+    "captive_probe_done": False,  # captive-portal probe already run this outage
 }
 
 
@@ -66,7 +68,7 @@ def _reset_state() -> None:
                   rebooted_this_outage=False, gave_up=False, outage_announced=False,
                   dns_blackout_since=None, consecutive_dns_failures=0, dns_soft_heal_attempted=False,
                   cached_ai_diagnosis=None, ai_diagnosis_in_progress=False,
-                  ai_diagnosis_for_offline_since=None)
+                  ai_diagnosis_for_offline_since=None, captive_probe_done=False)
 
 
 def _clear_internet_outage_state() -> None:
@@ -74,7 +76,7 @@ def _clear_internet_outage_state() -> None:
     _STATE.update(offline_since=None, consecutive_offline=0,
                   rebooted_this_outage=False, gave_up=False, outage_announced=False,
                   cached_ai_diagnosis=None, ai_diagnosis_in_progress=False,
-                  ai_diagnosis_for_offline_since=None)
+                  ai_diagnosis_for_offline_since=None, captive_probe_done=False)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -812,6 +814,10 @@ def run_cycle(db=None, probe_fn=None) -> dict:
         offline_since = _STATE["offline_since"]
         offline_for_s = (now - offline_since).total_seconds()
 
+        # Internet down but the gateway answers on the LAN → likely a captive
+        # portal. Probe for the login page once and surface it in the UI.
+        _maybe_probe_captive_portal(pr)
+
         attempts = _attempts_since(db, offline_since)
         reboots_in_outage = len(attempts)
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -907,6 +913,34 @@ def _emit(event: str, level: str, summary: str, detail: dict, notify: bool) -> N
             alert(f"NetMon Uptime Guardian", summary, level=level, force_push=True)
         except Exception as exc:
             print(f"[autoheal] notify failed: {exc}")
+
+
+def _maybe_probe_captive_portal(pr: dict) -> None:
+    """Auto-probe for a captive portal when internet is down but the gateway is up.
+
+    That signature — no internet, LAN gateway responding — is the classic
+    hotel/guest-Wi-Fi interception case. We run the existing read-only analyzer
+    once per outage and cache the result so the dashboard's Captive Portal card
+    surfaces the login page without the user having to click "Analyze Now".
+    """
+    if _STATE.get("captive_probe_done") or not pr.get("gateway_up"):
+        return
+    _STATE["captive_probe_done"] = True
+    try:
+        from monitoring.health import analyze_and_cache_captive_portal
+        result = analyze_and_cache_captive_portal()
+    except Exception as exc:  # never let a probe failure disrupt the heal cycle
+        print(f"[autoheal] captive-portal probe failed: {exc}")
+        return
+    if result.get("captive"):
+        page = result.get("page") or {}
+        title = page.get("title") if isinstance(page, dict) else None
+        summary = "Captive portal detected — a login page is intercepting traffic."
+        if title:
+            summary += f' ("{title}")'
+        _emit(EV_CAPTIVE, "warning", summary,
+              {"final_url": result.get("final_url"), "http_status": result.get("http_status")},
+              notify=False)
 
 
 def manual_reboot(db=None, force: bool = False) -> dict:
