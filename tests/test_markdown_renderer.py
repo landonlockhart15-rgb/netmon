@@ -92,13 +92,23 @@ function renderNode(node) {
   return `${openTag}${renderNode(children)}</${node.type}>`;
 }
 
+function safeUrl(value) {
+  const url = String(value || '').trim();
+  const normalized = url.toLowerCase();
+  const allowed = ['http://', 'https://', 'mailto:', 'tel:', '/', '#'];
+  return allowed.some((prefix) => normalized.startsWith(prefix)) ? url : null;
+}
+
 const transformed = input
-  .replace(/^import\{cn as e\}from"\.\/index-[^"]+\.js";/m, 'const e = () => ({ jsx, jsxs: jsx });')
-  .replace(/export\{n as t\};?\s*$/m, 'module.exports = n;');
+  .replace(
+    /^import\{[^}]+\}from"\.\/index-[^"]+\.js";/m,
+    'const e = safeUrl; const t = () => ({ jsx, jsxs: jsx });',
+  )
+  .replace(/export\{([A-Za-z_$][\w$]*) as t\};?\s*$/m, 'module.exports = $1;');
 
 const moduleShim = { exports: {} };
-const compiled = new Function('module', 'exports', 'jsx', transformed);
-compiled(moduleShim, moduleShim.exports, jsx);
+const compiled = new Function('module', 'exports', 'jsx', 'safeUrl', transformed);
+compiled(moduleShim, moduleShim.exports, jsx, safeUrl);
 
 const Markdown = moduleShim.exports.default || moduleShim.exports;
 const text = JSON.parse(process.env.MARKDOWN_TEXT || '""');
