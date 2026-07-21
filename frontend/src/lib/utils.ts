@@ -36,6 +36,31 @@ export function clamp(v: number, min: number, max: number) {
   return Math.min(max, Math.max(min, v))
 }
 
+/**
+ * Return url only if it uses a safe, allow-listed protocol; otherwise null.
+ * Blocks javascript:/data:/vbscript: to mitigate XSS when placing untrusted
+ * strings into href attributes. Shared by the Markdown renderer and any UI
+ * that links to backend-derived URLs (e.g. device admin pages).
+ */
+export function safeUrl(url: string | undefined | null): string | null {
+  if (!url) return null
+  const trimmed = url.trim()
+  const lower = trimmed.toLowerCase()
+  const isBlocked =
+    lower.startsWith('javascript:') ||
+    lower.startsWith('data:') ||
+    lower.startsWith('vbscript:')
+  const isSafe =
+    !isBlocked &&
+    (lower.startsWith('http://') ||
+      lower.startsWith('https://') ||
+      lower.startsWith('mailto:') ||
+      lower.startsWith('tel:') ||
+      lower.startsWith('/') ||
+      lower.startsWith('#'))
+  return isSafe ? trimmed : null
+}
+
 export function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }

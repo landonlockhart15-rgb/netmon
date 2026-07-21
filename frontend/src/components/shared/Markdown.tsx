@@ -1,3 +1,5 @@
+import { safeUrl } from '../../lib/utils'
+
 /** Lightweight markdown renderer — headers, bold, bullets, code, links */
 export default function Markdown({ text, className = '' }: { text: string; className?: string }) {
   if (!text) return null
@@ -75,24 +77,9 @@ function inline(text: string): React.ReactNode {
     }
     const linkMatch = part.match(/^\[(.+)\]\((.+)\)$/)
     if (linkMatch) {
-      const url = linkMatch[2].trim()
-      const lowercaseUrl = url.toLowerCase()
-      // Prevent javascript:, data:, and vbscript: protocols to mitigate XSS
-      const isBlocked =
-        lowercaseUrl.startsWith('javascript:') ||
-        lowercaseUrl.startsWith('data:') ||
-        lowercaseUrl.startsWith('vbscript:')
-
-      const isSafe = !isBlocked && (
-        lowercaseUrl.startsWith('http://') ||
-        lowercaseUrl.startsWith('https://') ||
-        lowercaseUrl.startsWith('mailto:') ||
-        lowercaseUrl.startsWith('tel:') ||
-        lowercaseUrl.startsWith('/') ||
-        lowercaseUrl.startsWith('#')
-      )
-
-      if (isSafe) {
+      // Allow-list safe protocols to mitigate XSS (javascript:/data:/vbscript:)
+      const url = safeUrl(linkMatch[2])
+      if (url) {
         return (
           <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="text-purple-400 underline hover:text-purple-300">
             {linkMatch[1]}

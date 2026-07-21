@@ -9,7 +9,7 @@ import {
   securityChat, cancelSecurityRun, getContextualInsight,
   getFirmwareStatus, updateFirmware, type ShodanResult,
 } from '@/lib/api'
-import { formatRelativeTime, cn, getErrorMessage } from '@/lib/utils'
+import { formatRelativeTime, cn, getErrorMessage, safeUrl } from '@/lib/utils'
 import Card from '@/components/shared/Card'
 import Btn from '@/components/shared/Btn'
 import Badge from '@/components/shared/Badge'
@@ -577,8 +577,10 @@ function RemediationHint({ remediation }: { remediation?: Remediation }) {
       </span>
     )
   }
+  const adminUrl = safeUrl(remediation.admin_url)
+  if (!adminUrl) return null
   return (
-    <a href={remediation.admin_url} target="_blank" rel="noreferrer"
+    <a href={adminUrl} target="_blank" rel="noreferrer"
       onClick={e => e.stopPropagation()}
       className="inline-flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 whitespace-nowrap">
       <ExternalLink size={11} /> Open device admin page
