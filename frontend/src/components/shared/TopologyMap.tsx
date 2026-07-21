@@ -109,10 +109,7 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
   // Auto-play timer for synchronized time scrubber
   useEffect(() => {
     if (!isPlaying) return
-    if (!sliderScans.length) {
-      setIsPlaying(false)
-      return
-    }
+    if (!sliderScans.length) return
 
     const interval = setInterval(() => {
       setHistoricalScanId(prevId => {
@@ -406,7 +403,8 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
         ip: '0.0.0.0/0',
         details: 'External network interface gateway.',
         type: 'wan',
-        traffic: formatBytes(wanTraffic)
+        traffic: formatBytes(wanTraffic),
+        isNewlyJoined: false,
       }
     }
 
@@ -432,9 +430,10 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
       type: isGateway(dev) ? 'gateway' : 'client',
       vulnerability_count: dev.vulnerability_count || 0,
       max_cve_risk: dev.max_cve_risk || null,
+      isNewlyJoined: newlyJoinedDeviceIds.has(dev.id),
       raw: dev
     }
-  }, [hoveredNode, displayDevices, conversations, isGateway])
+  }, [hoveredNode, displayDevices, conversations, isGateway, newlyJoinedDeviceIds])
 
   // Speed and size based on connection metrics
   const getPulseProps = (bytes: number) => {
