@@ -21,7 +21,7 @@ so it remains trivially testable. Anything that needs the database lives here.
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import desc
+from sqlalchemy import and_, desc, or_
 
 from models.tables import Scan, ScanDevice, Setting
 
@@ -46,7 +46,13 @@ def window_scan_ids(db, anchor: Optional[Scan]) -> List[int]:
 
     The upper bound (started_at <= anchor.started_at) matters: it lets us build
     the "previous" device set anchored at an earlier scan without the newer scan
-    leaking into it.
+    leaking into it. When several scans share the exact same started_at, the bound
+    is tightened by scan id (id <= anchor.id) so a later scan recorded at the same
+    timestamp cannot leak future evidence into an earlier snapshot.
+
+    Baseline scans with a NULL started_at (e.g. imported seed data with no recorded
+    time) predate everything, so they are always included rather than being dropped
+    by the timestamp comparison.
     """
     if anchor is None:
         return []
@@ -57,8 +63,19 @@ def window_scan_ids(db, anchor: Optional[Scan]) -> List[int]:
         db.query(Scan.id)
         .filter(
             Scan.status == "complete",
-            Scan.started_at >= cutoff,
-            Scan.started_at <= anchor.started_at,
+            or_(
+                Scan.started_at.is_(None),
+                and_(
+                    Scan.started_at >= cutoff,
+                    or_(
+                        Scan.started_at < anchor.started_at,
+                        and_(
+                            Scan.started_at == anchor.started_at,
+                            Scan.id <= anchor.id,
+                        ),
+                    ),
+                ),
+            ),
         )
         .all()
     )
