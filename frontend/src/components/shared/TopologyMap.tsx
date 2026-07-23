@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Router, Laptop, Smartphone, Cpu, Globe, Server, RefreshCw, Activity, HelpCircle, Zap, ShieldAlert, Clock, Play, Pause, SkipBack, SkipForward, UserPlus, Radio, GitCompare, WifiOff, ArrowRight, Layers } from 'lucide-react'
+import { Router, Laptop, Smartphone, Cpu, Globe, Server, RefreshCw, Activity, HelpCircle, Zap, ShieldAlert, Clock, Play, Pause, SkipBack, SkipForward, UserPlus, Radio, GitCompare, WifiOff, Layers } from 'lucide-react'
 import { getTrafficDashboard, getNetworkInfo, getScans, getDevicesAtScan, type Device, type Scan } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -75,14 +75,6 @@ export default function TopologyMap({ devices, onSelect }: TopologyMapProps) {
     if (currentIndex <= 0 || currentIndex > liveIndex) return null
     return sliderScans[currentIndex - 1]?.id ?? null
   }, [currentIndex, sliderScans, liveIndex])
-
-  // Sync compare mode point indices when entering compare mode or when scans change
-  useEffect(() => {
-    if (sliderScans.length > 0 && comparePointBIndex === 0 && comparePointAIndex === 0) {
-      setComparePointBIndex(liveIndex)
-      setComparePointAIndex(Math.max(0, liveIndex - 1))
-    }
-  }, [sliderScans, liveIndex, comparePointAIndex, comparePointBIndex])
 
   const comparePointAScan = useMemo(() => {
     if (comparePointAIndex < liveIndex && sliderScans[comparePointAIndex]) {

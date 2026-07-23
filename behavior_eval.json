@@ -5,7 +5,10 @@
      "timeout": 120},
     {"name": "compiles", "type": "cmd",
      "cmd": ["${PYTHON}", "-m", "compileall", "-q", "."],
-     "timeout": 180}
+     "timeout": 180},
+    {"name": "frontend-ci-baseline", "type": "cmd",
+     "cmd": ["powershell", "-ExecutionPolicy", "Bypass", "-File", "tools/validate_frontend.ps1"],
+     "timeout": 600}
   ],
   "live": [
     {"name": "web-ui", "url": "http://127.0.0.1:8000/", "expect_status": 200}
