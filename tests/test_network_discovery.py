@@ -14,7 +14,7 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.tables import Base, Device, ScanDevice
+from models.tables import Base, Device, DHCPLeaseObservation, ScanDevice
 from network.discovery import (
     parse_dns_packet,
     _sanitize_string,
@@ -215,7 +215,23 @@ class TestNetworkDiscovery(unittest.TestCase):
         self.assertEqual(device_db.dhcp_option55, "1,3,6,15")
         self.assertEqual(device_db.vendor, "Microsoft")
         self.assertEqual(device_db.os_guess, "Windows")
+        observations = db.query(DHCPLeaseObservation).filter_by(device_id=device_db.id).all()
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0].requested_ip, "192.168.1.100")
         db.close()
+
+    def test_update_device_dhcp_deduplicates_retransmitted_lease_request(self):
+        info = {
+            "mac": "00:11:22:33:44:55", "hostname": "hidden-client",
+            "vendor_class": None, "param_list": None,
+            "requested_ip": "192.168.1.101", "message_type": 3,
+        }
+        with patch("network.discovery.SessionLocal", return_value=self.session), \
+             patch("monitoring.activity.write_log"):
+            _update_device_dhcp(info, "0.0.0.0")
+            _update_device_dhcp(info, "0.0.0.0")
+
+        self.assertEqual(self.session.query(DHCPLeaseObservation).count(), 1)
 
 
 if __name__ == "__main__":

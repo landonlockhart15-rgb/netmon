@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from models.tables import Base, TrafficSummary, HealthCheck, Setting, Device, Scan, ScanDevice, ActivityLog
+from models.tables import Base, TrafficSummary, HealthCheck, Setting, Device, DHCPLeaseObservation, Scan, ScanDevice, ActivityLog
 import monitoring.anomaly as anomaly
 
 
@@ -499,6 +499,23 @@ class TestShadowDevices(unittest.TestCase):
         events2 = anomaly.check_shadow_devices(self.session)
         integrity2 = [event for event in events2 if "Identity integrity" in event["title"]]
         self.assertEqual(len(integrity2), 0)
+
+    def test_untrusted_dhcp_client_absent_from_latest_scan_is_reported(self):
+        now = datetime.now(timezone.utc)
+        latest = Scan(status="complete", started_at=now)
+        hidden = Device(mac="02:11:22:33:44:55", hostname="hidden-client", is_known=False)
+        self.session.add_all([latest, hidden])
+        self.session.flush()
+        self.session.add(DHCPLeaseObservation(
+            device_id=hidden.id, mac=hidden.mac, requested_ip="192.168.1.222",
+            source_ip="0.0.0.0", message_type=3, observed_at=now,
+        ))
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        lease_events = [event for event in events if "Hidden DHCP client" in event["title"]]
+        self.assertEqual(len(lease_events), 1)
+        self.assertEqual(lease_events[0]["ip"], "192.168.1.222")
 
 
 class TestPortScans(unittest.TestCase):

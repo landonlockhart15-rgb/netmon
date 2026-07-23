@@ -28,7 +28,7 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from app.database import SessionLocal
 from models.tables import Device
@@ -315,7 +315,7 @@ def _update_device_dhcp(info: dict, sender_ip: str) -> None:
     mac = info["mac"].lower()
     db = SessionLocal()
     try:
-        from models.tables import Device, Alert
+        from models.tables import Device, Alert, DHCPLeaseObservation
         from network.oui import enrich_vendor
         
         # Check if the device exists by MAC
@@ -417,6 +417,32 @@ def _update_device_dhcp(info: dict, sender_ip: str) -> None:
                 dev.os_guess = os_guess
             if vendor_guess and (not dev.vendor or dev.vendor.lower() in ("", "unknown")):
                 dev.vendor = vendor_guess
+
+        # Keep a bounded-fidelity passive lease history. DHCP clients commonly
+        # retransmit the same request, so retain one observation per five-minute
+        # window rather than turning a noisy client into an unbounded event log.
+        if info.get("message_type") in (1, 3, 8):  # DISCOVER, REQUEST, INFORM
+            requested_ip = info.get("requested_ip") or None
+            cutoff = now - timedelta(minutes=5)
+            recent_observation = (
+                db.query(DHCPLeaseObservation)
+                .filter(
+                    DHCPLeaseObservation.device_id == dev.id,
+                    DHCPLeaseObservation.message_type == info["message_type"],
+                    DHCPLeaseObservation.requested_ip == requested_ip,
+                    DHCPLeaseObservation.observed_at >= cutoff,
+                )
+                .first()
+            )
+            if not recent_observation:
+                db.add(DHCPLeaseObservation(
+                    device_id=dev.id,
+                    mac=mac,
+                    requested_ip=requested_ip,
+                    source_ip=sender_ip or None,
+                    message_type=info["message_type"],
+                    observed_at=now,
+                ))
                 
         # Update ScanDevice row if we have IP
         target_ip = info["requested_ip"] or (sender_ip if sender_ip and sender_ip != "0.0.0.0" else None)
