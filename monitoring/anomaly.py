@@ -449,8 +449,8 @@ def check_shadow_devices(db) -> list[dict]:
       - an IP whose established MAC identity changes or OUI shifts
       - one IP seen with several different MAC addresses in the recent window
 
-    This deliberately uses only persisted scan history, so it is a safe first
-    phase before adding passive mDNS/DHCP event streams.
+    Scan history is supplemented by passive DHCP lease requests. NetMon never
+    sends DHCP packets or attempts to authenticate a device to discover it.
     """
     events: list[dict] = []
     latest = (
@@ -471,6 +471,47 @@ def check_shadow_devices(db) -> list[dict]:
         .filter(ScanDevice.scan_id == latest.id)
         .all()
     }
+
+    # A passive lease request is useful evidence when an untrusted client does
+    # not appear in the current scan. This catches transient or hidden nodes
+    # without claiming that a request proves malicious activity.
+    from models.tables import DHCPLeaseObservation
+    recent_lease_requests = (
+        db.query(DHCPLeaseObservation)
+        .filter(
+            DHCPLeaseObservation.observed_at >= lookback,
+            DHCPLeaseObservation.message_type.in_((1, 3, 8)),
+        )
+        .order_by(DHCPLeaseObservation.observed_at.desc())
+        .all()
+    )
+    seen_lease_devices: set[int] = set()
+    for observation in recent_lease_requests:
+        device = observation.device
+        if (observation.device_id in seen_lease_devices or device.is_known or
+                observation.device_id in current_device_ids):
+            continue
+        seen_lease_devices.add(observation.device_id)
+        key = f"shadow_device:dhcp_lease:{observation.device_id}:{observation.requested_ip or observation.mac}"
+        if not _is_cooled_down(key, "shadow_device"):
+            continue
+        _stamp(key)
+        label = device.hostname or device.dhcp_hostname or observation.requested_ip or observation.mac
+        requested_ip = observation.requested_ip or "no specific IP"
+        events.append({
+            "type": "shadow_device",
+            "ip": observation.requested_ip,
+            "device_id": observation.device_id,
+            "level": "warning",
+            "title": f"Hidden DHCP client detected — {label}",
+            "body": (
+                f"Untrusted device {label} requested DHCP lease {requested_ip} but is absent "
+                "from the latest scan. This is passive evidence of a transient or hidden node; "
+                "review the device before taking action."
+            ),
+            "actions": [notifier.investigate_action(observation.requested_ip), notifier.dismiss_action()]
+            if observation.requested_ip else [notifier.dismiss_action()],
+        })
 
     recent_rows = (
         db.query(ScanDevice)

@@ -81,6 +81,22 @@ class Device(Base):
     dhcp_hostname = Column(String, nullable=True)
 
     appearances = relationship("ScanDevice", back_populates="device")
+    dhcp_lease_observations = relationship("DHCPLeaseObservation", back_populates="device")
+
+
+class DHCPLeaseObservation(Base):
+    """A passive record of a client asking for or renewing a DHCP lease."""
+    __tablename__ = "dhcp_lease_observations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), nullable=False, index=True)
+    mac = Column(String, nullable=False, index=True)
+    requested_ip = Column(String, nullable=True, index=True)
+    source_ip = Column(String, nullable=True)
+    message_type = Column(Integer, nullable=False)
+    observed_at = Column(DateTime, default=utcnow, index=True)
+
+    device = relationship("Device", back_populates="dhcp_lease_observations")
 
 
 class ScanDevice(Base):
