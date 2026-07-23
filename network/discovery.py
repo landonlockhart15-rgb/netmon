@@ -781,3 +781,233 @@ def list_tunnel_interfaces() -> list[dict]:
                     else "vpn")
             tunnels.append({"name": name, "kind": kind})
     return tunnels
+
+
+# ── Shadow Device & DHCP Lease / Captive Portal Analysis ──────────────────────
+
+_SHADOW_CACHE: dict = {
+    "last_run": None,
+    "shadow_devices": [],
+    "summary": {"total_leases": 0, "shadow_count": 0, "captive_portals_found": 0}
+}
+
+
+def parse_dhcp_leases(lease_content: str) -> list[dict]:
+    """
+    Parse DHCP lease history formats (dnsmasq or ISC dhcpd).
+    
+    dnsmasq format line:
+      <timestamp/expiry> <mac> <ip> <hostname> <client-id>
+      e.g.: 1710000000 00:11:22:33:44:55 192.168.1.105 android-phone 01:00:11:22:33:44:55
+      
+    ISC dhcpd format block:
+      lease 192.168.1.105 {
+        hardware ethernet 00:11:22:33:44:55;
+        client-hostname "android-phone";
+      }
+    """
+    leases: list[dict] = []
+    if not lease_content or not lease_content.strip():
+        return leases
+
+    lines = lease_content.strip().splitlines()
+    dnsmasq_matches = 0
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 4 and ":" in parts[1] and len(parts[1].split(":")) == 6 and "." in parts[2]:
+            mac = parts[1].lower()
+            ip = parts[2]
+            hostname = parts[3] if parts[3] != "*" else ""
+            expiry = parts[0]
+            leases.append({
+                "mac": mac,
+                "ip": ip,
+                "hostname": hostname if hostname != "*" else "",
+                "expiry": expiry,
+                "source": "dnsmasq_lease"
+            })
+            dnsmasq_matches += 1
+
+    if dnsmasq_matches > 0:
+        return leases
+
+    current_lease: Optional[dict] = None
+    for line in lines:
+        line = line.strip()
+        if line.startswith("lease ") and line.endswith("{"):
+            parts = line.split()
+            if len(parts) >= 2:
+                ip = parts[1]
+                current_lease = {"ip": ip, "mac": "", "hostname": "", "source": "isc_dhcpd_lease"}
+        elif current_lease and line.startswith("hardware ethernet"):
+            mac_part = line.replace("hardware ethernet", "").replace(";", "").strip()
+            current_lease["mac"] = mac_part.lower()
+        elif current_lease and line.startswith("client-hostname"):
+            host_part = line.replace("client-hostname", "").replace(";", "").replace('"', '').strip()
+            current_lease["hostname"] = host_part
+        elif current_lease and line.startswith("}"):
+            if current_lease.get("mac"):
+                leases.append(current_lease)
+            current_lease = None
+
+    return leases
+
+
+def probe_node_captive_portal(target_ip: str, timeout: float = 3.0) -> dict:
+    """
+    Attempt to trigger/detect captive portal redirects for an unauthenticated or target node.
+    """
+    import urllib.request
+    import urllib.error
+
+    url = f"http://{target_ip}/generate_204"
+    result = {
+        "target_ip": target_ip,
+        "is_captive": False,
+        "status_code": None,
+        "redirect_url": None,
+        "portal_title": None,
+        "error": None
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NetMon/1.0 CaptiveProbe"}
+        )
+        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
+        with opener.open(req, timeout=timeout) as resp:
+            final_url = resp.geturl()
+            status = resp.getcode()
+            result["status_code"] = status
+            
+            if final_url != url:
+                result["is_captive"] = True
+                result["redirect_url"] = final_url
+
+            content_bytes = resp.read(2048)
+            content_str = content_bytes.decode("utf-8", errors="ignore")
+            title_match = re.search(r"<title>(.*?)</title>", content_str, re.IGNORECASE)
+            if title_match:
+                result["portal_title"] = title_match.group(1).strip()
+
+            if any(term in content_str.lower() for term in ("login", "captive", "authenticate", "splash", "access-grant")):
+                result["is_captive"] = True
+
+    except urllib.error.HTTPError as err:
+        result["status_code"] = err.code
+        if err.code in (301, 302, 303, 307, 308, 401, 403, 511):
+            result["is_captive"] = True
+            result["redirect_url"] = err.headers.get("Location")
+    except Exception as err:
+        result["error"] = str(err)
+
+    return result
+
+
+def analyze_shadow_devices(db, lease_content: Optional[str] = None, probe_nodes: bool = False) -> dict:
+    """
+    Proactively target 'hidden' / 'shadow' devices by analyzing DHCP lease history and DB state.
+    """
+    from models.tables import Device, ScanDevice, Scan
+
+    leases = parse_dhcp_leases(lease_content or "")
+    
+    db_devices = db.query(Device).all()
+    dev_by_mac = {dev.mac.lower(): dev for dev in db_devices if dev.mac}
+
+    latest_scan = db.query(Scan).filter(Scan.status == "complete").order_by(Scan.id.desc()).first()
+    active_ips = set()
+    if latest_scan:
+        scan_devs = db.query(ScanDevice).filter(ScanDevice.scan_id == latest_scan.id).all()
+        active_ips = {sd.ip for sd in scan_devs if sd.ip}
+
+    shadow_nodes: list[dict] = []
+    processed_macs: set[str] = set()
+
+    for lease in leases:
+        mac = lease["mac"].lower()
+        processed_macs.add(mac)
+        ip = lease["ip"]
+        dev = dev_by_mac.get(mac)
+        
+        is_active = ip in active_ips
+        is_known = dev.is_known if dev else False
+        is_shadow = not is_known or not is_active
+        
+        node_info = {
+            "mac": mac,
+            "ip": ip,
+            "hostname": lease["hostname"] or (dev.hostname if dev else ""),
+            "vendor": dev.vendor if dev else "Unknown",
+            "is_known": is_known,
+            "is_active_in_scan": is_active,
+            "is_shadow": is_shadow,
+            "lease_source": lease["source"],
+            "dhcp_option60": dev.dhcp_option60 if dev else None,
+            "dhcp_option55": dev.dhcp_option55 if dev else None,
+            "captive_probe": None
+        }
+
+        if is_shadow and probe_nodes and ip:
+            node_info["captive_probe"] = probe_node_captive_portal(ip)
+
+        if is_shadow:
+            shadow_nodes.append(node_info)
+
+    for dev in db_devices:
+        if not dev.mac or dev.mac.lower() in processed_macs:
+            continue
+        if dev.dhcp_hostname or dev.dhcp_option60 or dev.dhcp_option55:
+            latest_sd = db.query(ScanDevice).filter(ScanDevice.device_id == dev.id).order_by(ScanDevice.id.desc()).first()
+            ip = latest_sd.ip if latest_sd else None
+            is_active = ip in active_ips if ip else False
+            is_known = dev.is_known
+            is_shadow = not is_known or not is_active
+            
+            if is_shadow:
+                node_info = {
+                    "mac": dev.mac.lower(),
+                    "ip": ip,
+                    "hostname": dev.hostname or dev.dhcp_hostname or "",
+                    "vendor": dev.vendor or "Unknown",
+                    "is_known": is_known,
+                    "is_active_in_scan": is_active,
+                    "is_shadow": True,
+                    "lease_source": "database_dhcp_fingerprint",
+                    "dhcp_option60": dev.dhcp_option60,
+                    "dhcp_option55": dev.dhcp_option55,
+                    "captive_probe": None
+                }
+                if probe_nodes and ip:
+                    node_info["captive_probe"] = probe_node_captive_portal(ip)
+                shadow_nodes.append(node_info)
+
+    captive_count = sum(1 for n in shadow_nodes if n.get("captive_probe") and n["captive_probe"].get("is_captive"))
+    
+    now_str = datetime.now(timezone.utc).isoformat()
+    result = {
+        "timestamp": now_str,
+        "total_leases_analyzed": len(leases),
+        "shadow_count": len(shadow_nodes),
+        "captive_portals_found": captive_count,
+        "shadow_devices": shadow_nodes
+    }
+
+    _SHADOW_CACHE["last_run"] = result["timestamp"]
+    _SHADOW_CACHE["shadow_devices"] = shadow_nodes
+    _SHADOW_CACHE["summary"] = {
+        "total_leases": len(leases),
+        "shadow_count": len(shadow_nodes),
+        "captive_portals_found": captive_count
+    }
+
+    return result
+
+
+def get_cached_shadow_devices() -> dict:
+    return _SHADOW_CACHE
+

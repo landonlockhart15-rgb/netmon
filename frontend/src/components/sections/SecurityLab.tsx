@@ -734,9 +734,9 @@ function ProofOfVulnerabilityCard({ finding }: { finding?: CveFinding }) {
         <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
           <p className="text-[10px] uppercase tracking-wider text-gray-500">Evidence found</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            {evidenceItems.map(item => (
+            {evidenceItems.map((item, idx) => (
               <span
-                key={item}
+                key={`${item}-${idx}`}
                 className="inline-flex items-center gap-1 rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2.5 py-1 text-[11px] text-cyan-100"
               >
                 <Info size={11} />

@@ -1089,6 +1089,22 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertIn("Evidence is linked directly to the CVE row that generated it", text)
         self.assertIn("Evidence found", text)
         self.assertIn("(finding.service || finding.port)", text)
+        # Verify unique key indexing to prevent React key collision on duplicate evidence strings
+        self.assertIn("key={`${item}-${idx}`}", text)
+        # Verify null check guard for missing/undefined finding
+        self.assertIn("if (!finding) return null", text)
+        # Verify evidence parsing delimiters (newlines, semicolons, bullet points, pipe separators)
+        self.assertIn("/(?:\\r?\\n|;|\\u2022|\\s+\\|\\s+)/", text)
+        # Verify evidence list truncation to max 4 items
+        self.assertIn("items.slice(0, 4)", text)
+        # Verify fallback evidence options when raw evidence is missing or empty
+        self.assertIn("finding.port ? `Port ${finding.port} is open` : ''", text)
+        self.assertIn("finding.service ? `Service banner shows ${finding.service}` : ''", text)
+        self.assertIn("['Evidence not captured in this scan']", text)
+        # Verify host display fallback order
+        self.assertIn("finding.label || finding.hostname || finding.ip || 'Unknown host'", text)
+        # Verify backend evidence audit notice
+        self.assertIn("The backend evidence field is preserved here so the row can be audited without guessing from the CVE label alone.", text)
         self.assertNotIn(
             "{finding.label || finding.hostname || finding.ip || 'Unknown host'} · {finding.service}:{finding.port}",
             text,

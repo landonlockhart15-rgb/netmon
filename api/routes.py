@@ -1573,6 +1573,30 @@ def analyze_captive_portal_now():
     return analyze_and_cache_captive_portal()
 
 
+@router.get("/api/discovery/shadow-devices")
+def get_shadow_devices_status():
+    """
+    Return cached/latest shadow device discovery findings.
+    """
+    from network.discovery import get_cached_shadow_devices
+
+    return get_cached_shadow_devices()
+
+
+@router.post("/api/discovery/shadow-devices/analyze")
+def analyze_shadow_devices_now(req: dict = None, db: Session = Depends(get_db)):
+    """
+    Proactively analyze DHCP lease history and DB state for unauthenticated / shadow devices.
+    Optionally probe target nodes for captive portal redirects.
+    """
+    from network.discovery import analyze_shadow_devices
+
+    lease_content = req.get("lease_content") if req else None
+    probe_nodes = bool(req.get("probe_nodes", False)) if req else False
+    return analyze_shadow_devices(db, lease_content=lease_content, probe_nodes=probe_nodes)
+
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # SPEED TEST
 # ═════════════════════════════════════════════════════════════════════════════
