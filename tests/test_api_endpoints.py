@@ -1126,6 +1126,16 @@ class TestAPIEndpoints(unittest.TestCase):
         response = self.client.get("/login")
         self.assertEqual(response.status_code, 200)
 
+    def test_healthz_redirects_to_login_when_unauthenticated(self):
+        """The service watchdog treats this redirect as the live health contract."""
+        self.patch_auth.stop()
+        try:
+            response = self.client.get("/healthz", follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            self.assertEqual(response.headers.get("location"), "/login")
+        finally:
+            self.patch_auth.start()
+
     @patch("api.auth_routes.check_credentials")
     def test_auth_login_success(self, mock_check):
         """Test POST /auth/login with valid credentials redirects with cookie."""
