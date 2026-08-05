@@ -409,6 +409,47 @@ export const sendCommand = (body: object) =>
 export const exportDevicesCSV = () => window.open('/api/export/devices.csv')
 export const exportScansCSV = () => window.open('/api/export/scans.csv')
 
+export interface BlastRadiusReachablePeer {
+  device_id: number
+  name: string
+  ip: string
+  vendor: string
+  mac: string
+}
+
+export interface BlastRadiusFinding {
+  device_id: number
+  name: string
+  ip: string
+  mac: string
+  vendor: string
+  open_ports: number[]
+  cves: unknown[]
+  cve_count: number
+  max_cve_risk: string
+  reachable_device_count: number
+  reachable_devices: BlastRadiusReachablePeer[]
+  blast_radius_score: number
+  risk_level: string
+  subnet: string
+  summary: string
+  remediation: string
+}
+
+export interface BlastRadiusReport {
+  scan?: { id?: number; started_at?: string | null }
+  total_devices_analyzed: number
+  vulnerable_device_count: number
+  blast_radius_findings: BlastRadiusFinding[]
+}
+
+export const getBlastRadius = (deviceId?: number, currentOnly = true) => {
+  const q = new URLSearchParams()
+  if (deviceId !== undefined) q.set('device_id', String(deviceId))
+  q.set('current_only', String(currentOnly))
+  return apiFetch<BlastRadiusReport>(`/api/security/blast-radius?${q.toString()}`)
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface AppStatus {

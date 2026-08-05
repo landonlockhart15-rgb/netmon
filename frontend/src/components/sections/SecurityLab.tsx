@@ -7,7 +7,8 @@ import {
   startNikto, startHydra, startJohn, startMetasploit,
   startWifiCapture, startAircrack, shodanCheck,
   securityChat, cancelSecurityRun, getContextualInsight,
-  getFirmwareStatus, updateFirmware, type ShodanResult,
+  getFirmwareStatus, updateFirmware, getBlastRadius, type ShodanResult,
+  type BlastRadiusReport, type BlastRadiusFinding,
 } from '@/lib/api'
 import { formatRelativeTime, cn, getErrorMessage, safeUrl } from '@/lib/utils'
 import Card from '@/components/shared/Card'
@@ -19,7 +20,7 @@ import PageHero from '@/components/shared/PageHero'
 import StatTile from '@/components/shared/StatTile'
 import Markdown from '@/components/shared/Markdown'
 
-type Tab = 'least_resistance' | 'cve' | 'attack_tree' | 'vulnerability' | 'password' | 'exploit' | 'wifi' | 'exposure'
+type Tab = 'blast_radius' | 'least_resistance' | 'cve' | 'attack_tree' | 'vulnerability' | 'password' | 'exploit' | 'wifi' | 'exposure'
 type FixSuggestion = { action_key: string; type: 'router_link' | 'info' | 'windows_cmd' | string; label: string }
 type StreamChunk = { content: string; sequence: number }
 type Remediation = { type?: string; admin_url?: string }
@@ -47,6 +48,7 @@ type LeastResistanceHost = {
 type LeastResistanceData = { hosts?: LeastResistanceHost[] }
 
 const TABS: { id: Tab; label: string }[] = [
+  { id: 'blast_radius', label: 'Blast Radius' },
   { id: 'least_resistance', label: 'Least Resistance' },
   { id: 'cve', label: 'CVE Mapping' },
   { id: 'attack_tree', label: 'Attack Tree' },
@@ -119,6 +121,12 @@ export default function SecurityLab() {
       if (!res.ok) throw new Error(`Attack tree failed: ${res.status}`)
       return res.json() as Promise<AttackTreeData>
     },
+    refetchInterval: activeRunId ? 5000 : 30_000,
+  })
+
+  const blastRadiusQuery = useQuery({
+    queryKey: ['blast-radius'],
+    queryFn: () => getBlastRadius(),
     refetchInterval: activeRunId ? 5000 : 30_000,
   })
 
@@ -310,6 +318,14 @@ export default function SecurityLab() {
           </button>
         ))}
       </div>
+
+      {tab === 'blast_radius' && (
+        <BlastRadiusPanel
+          data={blastRadiusQuery.data}
+          loading={blastRadiusQuery.isFetching}
+          onRefresh={() => blastRadiusQuery.refetch()}
+        />
+      )}
 
       {tab === 'least_resistance' && (
         <LeastResistancePanel
@@ -1375,6 +1391,133 @@ function ShodanPanel() {
         </div>
       )}
     </Card>
+  )
+}
+
+function BlastRadiusPanel({
+  data,
+  loading,
+  onRefresh,
+}: {
+  data?: BlastRadiusReport
+  loading: boolean
+  onRefresh: () => void
+}) {
+  const findings = data?.blast_radius_findings ?? []
+
+  return (
+    <div className="space-y-4">
+      <Card
+        title="Automated Exploit Surface — Blast Radius Analysis"
+        badge={findings.length ? String(findings.length) : undefined}
+        action={
+          <Btn variant="ghost" size="sm" loading={loading} onClick={onRefresh}>
+            <RefreshCw size={13} /> Refresh
+          </Btn>
+        }
+      >
+        <p className="text-xs text-gray-400 leading-relaxed mb-4">
+          Blast Radius analysis maps which active peer devices on your home network can reach vulnerable services or open ports on a device. Higher blast radius scores indicate a greater lateral movement risk if that host is compromised.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+          <StatTile
+            label="Analyzed Devices"
+            value={data?.total_devices_analyzed ?? 0}
+            sub="Active network endpoints"
+          />
+          <StatTile
+            label="Vulnerable Hosts"
+            value={data?.vulnerable_device_count ?? 0}
+            sub="Devices with exposed surface"
+          />
+          <StatTile
+            label="Max Reachable Peers"
+            value={findings.length ? Math.max(...findings.map(f => f.reachable_device_count)) : 0}
+            sub="Across current subnet"
+          />
+        </div>
+
+        {findings.length === 0 ? (
+          <EmptyState
+            icon="🛡️"
+            text="No Vulnerable Services Exposed"
+            hint="All active network endpoints currently have clean exposure profiles with no open vulnerable services."
+          />
+        ) : (
+          <div className="space-y-4">
+            {findings.map((finding) => (
+              <div
+                key={finding.device_id}
+                className={cn(
+                  'rounded-xl border p-4 transition-all',
+                  finding.risk_level === 'critical'
+                    ? 'border-red-500/30 bg-red-950/10 hover:border-red-500/50'
+                    : finding.risk_level === 'high'
+                    ? 'border-orange-500/30 bg-orange-950/10 hover:border-orange-500/50'
+                    : 'border-yellow-500/30 bg-yellow-950/10 hover:border-yellow-500/50'
+                )}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle
+                      size={16}
+                      className={
+                        finding.risk_level === 'critical'
+                          ? 'text-red-400'
+                          : finding.risk_level === 'high'
+                          ? 'text-orange-400'
+                          : 'text-yellow-400'
+                      }
+                    />
+                    <h4 className="text-sm font-semibold text-white">
+                      {finding.name}{' '}
+                      <span className="text-xs font-normal text-gray-400">({finding.ip || 'No IP'})</span>
+                    </h4>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={severityVariant(finding.risk_level)}>
+                      Blast Radius: {finding.blast_radius_score.toFixed(1)} / 10
+                    </Badge>
+                    <Badge variant="muted" className="text-xs">
+                      Subnet: {finding.subnet}
+                    </Badge>
+                  </div>
+                </div>
+
+                <p className="text-xs text-gray-300 mb-3 bg-black/20 p-2.5 rounded-lg border border-white/5">
+                  {finding.summary}
+                </p>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs text-gray-400 font-medium">
+                    <span>Reachable Peer Devices ({finding.reachable_device_count})</span>
+                    <span>Open Ports: {finding.open_ports.join(', ') || 'None'}</span>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {finding.reachable_devices.map((peer) => (
+                      <span
+                        key={peer.device_id}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-mono bg-white/5 border border-white/10 text-gray-300"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                        {peer.name} ({peer.ip})
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-3 pt-3 border-t border-white/5 flex items-start gap-2 text-xs text-purple-200/80">
+                  <Info size={14} className="mt-0.5 shrink-0 text-purple-400" />
+                  <span>{finding.remediation}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
   )
 }
 

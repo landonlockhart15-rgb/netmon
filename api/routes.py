@@ -1407,6 +1407,20 @@ def get_least_resistance_report(current_only: bool = True, db: Session = Depends
     }
 
 
+@router.get("/api/security/blast-radius")
+def get_blast_radius_report(
+    device_id: int | None = None,
+    current_only: bool = True,
+    db: Session = Depends(get_db),
+):
+    """
+    Calculate and return Blast Radius analysis for network devices with identified vulnerabilities.
+    Maps which other devices on the local network can reach vulnerable services.
+    """
+    from security.blast_radius import calculate_blast_radius
+    return calculate_blast_radius(db, device_id=device_id, current_only=current_only)
+
+
 @router.get("/api/security/firmware-status")
 def get_firmware_status(db: Session = Depends(get_db)):
     """

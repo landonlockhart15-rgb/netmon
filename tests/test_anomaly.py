@@ -538,6 +538,234 @@ class TestShadowDevices(unittest.TestCase):
         self.assertEqual(len(lease_events), 1)
         self.assertEqual(lease_events[0]["ip"], "192.168.1.222")
 
+    def test_orphaned_dhcp_lease_observation_does_not_crash(self):
+        now = datetime.now(timezone.utc)
+        latest = Scan(status="complete", started_at=now)
+        self.session.add(latest)
+        self.session.flush()
+        # Add an observation with a non-existent device_id (9999)
+        self.session.add(DHCPLeaseObservation(
+            device_id=9999, mac="02:00:00:00:00:99", requested_ip="192.168.1.250",
+            source_ip="0.0.0.0", message_type=3, observed_at=now,
+        ))
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        # Should complete without raising AttributeError and return [] or valid events
+        self.assertIsInstance(events, list)
+
+    def test_orphaned_scan_device_does_not_crash(self):
+        first = self._scan(20)
+        latest = self._scan(5)
+        stable = Device(mac="00:11:22:33:44:55", hostname="router", is_known=True)
+        self.session.add(stable)
+        self.session.flush()
+        # ScanDevice pointing to a non-existent device_id 8888
+        self.session.add(ScanDevice(scan_id=first.id, device_id=8888, ip="192.168.1.99"))
+        self.session.add(ScanDevice(scan_id=latest.id, device_id=stable.id, ip="192.168.1.1"))
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        self.assertIsInstance(events, list)
+
+    def test_mac_rotation_detection_triggers_warning_for_frequent_mac_changes(self):
+        # 1 IP used by 3 different MAC addresses within 24h, 2 of which are locally administered (randomized)
+        s1 = Scan(status="complete", started_at=datetime.now(timezone.utc) - timedelta(hours=3))
+        s2 = Scan(status="complete", started_at=datetime.now(timezone.utc) - timedelta(hours=2))
+        s3 = Scan(status="complete", started_at=datetime.now(timezone.utc) - timedelta(hours=1))
+        self.session.add_all([s1, s2, s3])
+        self.session.flush()
+
+        dev1 = Device(mac="02:11:22:33:44:55", is_known=False)  # local (bit 0x02 set, OUI 021122)
+        dev2 = Device(mac="02:11:22:33:44:66", is_known=False)  # local (bit 0x02 set, OUI 021122)
+        dev3 = Device(mac="02:11:22:33:44:77", is_known=False)  # local (bit 0x02 set, OUI 021122)
+        self.session.add_all([dev1, dev2, dev3])
+        self.session.flush()
+
+        ip = "192.168.1.180"
+        self.session.add_all([
+            ScanDevice(scan_id=s1.id, device_id=dev1.id, ip=ip),
+            ScanDevice(scan_id=s2.id, device_id=dev2.id, ip=ip),
+            ScanDevice(scan_id=s3.id, device_id=dev3.id, ip=ip),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        rot_events = [e for e in events if "MAC rotation" in e["title"]]
+        self.assertEqual(len(rot_events), 1)
+        self.assertEqual(rot_events[0]["ip"], ip)
+        self.assertEqual(rot_events[0]["level"], "warning")
+        self.assertIn("3 different MAC addresses", rot_events[0]["body"])
+
+    def test_mac_rotation_skipped_when_identity_integrity_alert_already_fired(self):
+        # When an identity integrity alert fires for an IP, MAC rotation should be suppressed for that IP
+        first, latest = self._scan(20), self._scan(5)
+        known = Device(mac="00:11:22:33:44:55", is_known=True)
+        replacement = Device(mac="aa:bb:cc:dd:ee:ff", is_known=False)
+        self.session.add_all([known, replacement])
+        self.session.flush()
+        ip = "192.168.1.181"
+        self.session.add_all([
+            ScanDevice(scan_id=first.id, device_id=known.id, ip=ip),
+            ScanDevice(scan_id=latest.id, device_id=replacement.id, ip=ip),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        integrity = [e for e in events if "Identity integrity" in e["title"]]
+        rotation = [e for e in events if "MAC rotation" in e["title"]]
+        self.assertEqual(len(integrity), 1)
+        self.assertEqual(len(rotation), 0)
+
+    def test_mac_rotation_filtering_thresholds(self):
+        # Fewer than 3 MACs for an IP should not trigger rotation alert
+        s1, s2 = self._scan(20), self._scan(5)
+        dev1 = Device(mac="02:11:22:33:44:55", is_known=False)
+        dev2 = Device(mac="06:11:22:33:44:55", is_known=False)
+        self.session.add_all([dev1, dev2])
+        self.session.flush()
+        ip = "192.168.1.182"
+        self.session.add_all([
+            ScanDevice(scan_id=s1.id, device_id=dev1.id, ip=ip),
+            ScanDevice(scan_id=s2.id, device_id=dev2.id, ip=ip),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        rotation = [e for e in events if "MAC rotation" in e["title"]]
+        self.assertEqual(len(rotation), 0)
+
+    def test_dhcp_lease_message_types_filtering(self):
+        # Message types 1 (DISCOVER), 3 (REQUEST), 8 (INFORM) should trigger passive detection,
+        # while message types 2 (OFFER) or 5 (ACK) should be ignored.
+        now = datetime.now(timezone.utc)
+        latest = Scan(status="complete", started_at=now)
+        dev_disc = Device(mac="02:11:22:33:44:01", is_known=False)
+        dev_offer = Device(mac="02:11:22:33:44:02", is_known=False)
+        dev_inform = Device(mac="02:11:22:33:44:08", is_known=False)
+        self.session.add_all([latest, dev_disc, dev_offer, dev_inform])
+        self.session.flush()
+
+        self.session.add_all([
+            DHCPLeaseObservation(device_id=dev_disc.id, mac=dev_disc.mac, requested_ip="192.168.1.201", message_type=1, observed_at=now),
+            DHCPLeaseObservation(device_id=dev_offer.id, mac=dev_offer.mac, requested_ip="192.168.1.202", message_type=2, observed_at=now),
+            DHCPLeaseObservation(device_id=dev_inform.id, mac=dev_inform.mac, requested_ip="192.168.1.208", message_type=8, observed_at=now),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        lease_ips = [e["ip"] for e in events if "Hidden DHCP client" in e["title"]]
+        self.assertIn("192.168.1.201", lease_ips)
+        self.assertNotIn("192.168.1.202", lease_ips)
+        self.assertIn("192.168.1.208", lease_ips)
+
+    def test_dhcp_lease_observation_with_missing_ip_falls_back_to_mac(self):
+        now = datetime.now(timezone.utc)
+        latest = Scan(status="complete", started_at=now)
+        dev = Device(mac="02:aa:bb:cc:dd:ee", hostname=None, dhcp_hostname=None, is_known=False)
+        self.session.add_all([latest, dev])
+        self.session.flush()
+
+        self.session.add(DHCPLeaseObservation(
+            device_id=dev.id, mac=dev.mac, requested_ip=None,
+            source_ip="0.0.0.0", message_type=3, observed_at=now,
+        ))
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        lease_events = [e for e in events if "Hidden DHCP client" in e["title"]]
+        self.assertEqual(len(lease_events), 1)
+        self.assertIn("02:aa:bb:cc:dd:ee", lease_events[0]["title"])
+        self.assertEqual(lease_events[0]["ip"], None)
+        # Verify actions list contains only dismiss action when ip is None
+        self.assertEqual(len(lease_events[0]["actions"]), 1)
+        self.assertEqual(lease_events[0]["actions"][0]["label"], "Dismiss")
+
+    def test_brief_shadow_device_disappeared_boundary_conditions(self):
+        # Device appeared in 2 scans 25 mins ago, absent in latest scan 10 mins ago -> reported
+        now = datetime.now(timezone.utc)
+        s1 = Scan(status="complete", started_at=now - timedelta(minutes=35))
+        s2 = Scan(status="complete", started_at=now - timedelta(minutes=10))
+        latest = Scan(status="complete", started_at=now)
+        shadow_dev = Device(mac="02:99:88:77:66:55", hostname="temp-phone", is_known=False)
+        self.session.add_all([s1, s2, latest, shadow_dev])
+        self.session.flush()
+
+        self.session.add_all([
+            ScanDevice(scan_id=s1.id, device_id=shadow_dev.id, ip="192.168.1.199"),
+            ScanDevice(scan_id=s2.id, device_id=shadow_dev.id, ip="192.168.1.199"),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        disappeared = [e for e in events if "Shadow device disappeared" in e["title"]]
+        self.assertEqual(len(disappeared), 1)
+        self.assertEqual(disappeared[0]["ip"], "192.168.1.199")
+
+    def test_brief_shadow_device_disappeared_ignored_if_present_in_latest_scan(self):
+        now = datetime.now(timezone.utc)
+        s1 = Scan(status="complete", started_at=now - timedelta(minutes=10))
+        latest = Scan(status="complete", started_at=now)
+        active_dev = Device(mac="02:99:88:77:66:54", is_known=False)
+        self.session.add_all([s1, latest, active_dev])
+        self.session.flush()
+
+        self.session.add_all([
+            ScanDevice(scan_id=s1.id, device_id=active_dev.id, ip="192.168.1.198"),
+            ScanDevice(scan_id=latest.id, device_id=active_dev.id, ip="192.168.1.198"),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        disappeared = [e for e in events if "Shadow device disappeared" in e["title"]]
+        self.assertEqual(len(disappeared), 0)
+
+    def test_shadow_devices_empty_db_and_incomplete_scans(self):
+        # When DB has no scans or only incomplete scans, check_shadow_devices returns empty list
+        events_empty = anomaly.check_shadow_devices(self.session)
+        self.assertEqual(events_empty, [])
+
+        inc_scan = Scan(status="running", started_at=datetime.now(timezone.utc))
+        self.session.add(inc_scan)
+        self.session.commit()
+
+        events_inc = anomaly.check_shadow_devices(self.session)
+        self.assertEqual(events_inc, [])
+
+    def test_is_locally_administered_mac_helper_comprehensive(self):
+        # Test private/randomized MAC detection across formats and bit patterns
+        self.assertTrue(anomaly._is_locally_administered_mac("02:00:00:00:00:00"))  # bit 1 set (2)
+        self.assertTrue(anomaly._is_locally_administered_mac("06-00-00-00-00-00"))  # bit 1 set (6)
+        self.assertTrue(anomaly._is_locally_administered_mac("0A:00:00:00:00:00"))  # bit 1 set (A = 10)
+        self.assertTrue(anomaly._is_locally_administered_mac("0E:00:00:00:00:00"))  # bit 1 set (E = 14)
+        self.assertFalse(anomaly._is_locally_administered_mac("00:11:22:33:44:55")) # OUI global (0)
+        self.assertFalse(anomaly._is_locally_administered_mac("04:11:22:33:44:55")) # bit 1 not set
+        self.assertFalse(anomaly._is_locally_administered_mac(None))
+        self.assertFalse(anomaly._is_locally_administered_mac(""))
+        self.assertFalse(anomaly._is_locally_administered_mac("invalid"))
+
+    def test_identity_integrity_when_latest_device_is_known_and_same_oui(self):
+        # Probe edge case: latest_row device is known, older_rows device is unknown, same OUI vendor.
+        first, latest = self._scan(20), self._scan(5)
+        unknown_older = Device(mac="00:11:22:33:44:55", is_known=False)
+        known_latest = Device(mac="00:11:22:99:88:77", hostname="core-router", is_known=True)
+        self.session.add_all([unknown_older, known_latest])
+        self.session.flush()
+
+        self.session.add_all([
+            ScanDevice(scan_id=first.id, device_id=unknown_older.id, ip="192.168.1.25"),
+            ScanDevice(scan_id=latest.id, device_id=known_latest.id, ip="192.168.1.25"),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+        integrity = [e for e in events if "Identity integrity" in e["title"]]
+        # Note: older_macs values are all unknown, so established_identity_changed is False
+        # and oui_shifted is False (same OUI prefix '001122'), meaning no integrity event is emitted.
+        self.assertEqual(len(integrity), 0)
+
+
+
 
 class TestPortScans(unittest.TestCase):
     def setUp(self):

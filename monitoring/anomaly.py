@@ -490,15 +490,14 @@ def check_shadow_devices(db) -> list[dict]:
     seen_lease_devices: set[int] = set()
     for observation in recent_lease_requests:
         device = observation.device
-        if (observation.device_id in seen_lease_devices or device.is_known or
-                observation.device_id in current_device_ids):
+        if not device or observation.device_id in seen_lease_devices or device.is_known or observation.device_id in current_device_ids:
             continue
         seen_lease_devices.add(observation.device_id)
         key = f"shadow_device:dhcp_lease:{observation.device_id}:{observation.requested_ip or observation.mac}"
         if not _is_cooled_down(key, "shadow_device"):
             continue
         _stamp(key)
-        label = device.hostname or device.dhcp_hostname or observation.requested_ip or observation.mac
+        label = (device.hostname if device else None) or (device.dhcp_hostname if device else None) or observation.requested_ip or observation.mac
         requested_ip = observation.requested_ip or "no specific IP"
         events.append({
             "type": "shadow_device",
@@ -534,20 +533,20 @@ def check_shadow_devices(db) -> list[dict]:
 
     for device_id, rows in rows_by_device.items():
         dev = rows[-1].device
-        if dev.is_known or device_id in current_device_ids:
+        if not dev or dev.is_known or device_id in current_device_ids:
             continue
-        first_seen = min(_utc_naive(r.scan.started_at) for r in rows if r.scan.started_at)
-        last_seen = max(_utc_naive(r.scan.started_at) for r in rows if r.scan.started_at)
+        first_seen = min(_utc_naive(r.scan.started_at) for r in rows if r.scan and r.scan.started_at)
+        last_seen = max(_utc_naive(r.scan.started_at) for r in rows if r.scan and r.scan.started_at)
         age_s = (last_seen - first_seen).total_seconds()
         absent_s = (latest_started - last_seen).total_seconds()
         if len(rows) <= 2 and age_s <= 30 * 60 and absent_s >= 5 * 60:
-            mac = dev.mac or "unknown"
+            mac = (dev.mac if dev else None) or "unknown"
             ip = rows[-1].ip
             key = f"shadow_device:brief:{device_id}:{mac}"
             if not _is_cooled_down(key, "shadow_device"):
                 continue
             _stamp(key)
-            label = dev.hostname or rows[-1].hostname or ip or f"device #{device_id}"
+            label = (dev.hostname if dev else None) or rows[-1].hostname or ip or f"device #{device_id}"
             events.append({
                 "type": "shadow_device",
                 "ip": ip,
@@ -562,15 +561,15 @@ def check_shadow_devices(db) -> list[dict]:
             })
 
     for ip, rows in rows_by_ip.items():
-        rows.sort(key=lambda row: (_utc_naive(row.scan.started_at), row.id))
+        rows.sort(key=lambda row: (_utc_naive(row.scan.started_at) if (row.scan and row.scan.started_at) else datetime.min, row.id))
         latest_rows = [row for row in rows if row.scan_id == latest.id]
         latest_row = latest_rows[-1] if latest_rows else None
-        latest_mac = (latest_row.device.mac or "").lower() if latest_row else ""
+        latest_mac = (latest_row.device.mac or "").lower() if (latest_row and latest_row.device and latest_row.device.mac) else ""
         older_rows = [row for row in rows if latest_row and row.scan_id != latest_row.scan_id]
         older_macs = {
             (row.device.mac or "").lower(): row.device
             for row in older_rows
-            if row.device.mac and (row.device.mac or "").lower() != latest_mac
+            if row.device and row.device.mac and (row.device.mac or "").lower() != latest_mac
         }
 
         # A recognized device changing MAC is a direct spoofing signal.  For an
@@ -579,7 +578,7 @@ def check_shadow_devices(db) -> list[dict]:
         prior_ouis = {_oui_prefix(mac) for mac in older_macs}
         oui_shifted = bool(latest_mac and _oui_prefix(latest_mac) and
                            any(oui and oui != _oui_prefix(latest_mac) for oui in prior_ouis))
-        established_identity_changed = bool(older_macs and any(dev.is_known for dev in older_macs.values()))
+        established_identity_changed = bool(older_macs and any(dev and dev.is_known for dev in older_macs.values()))
         if latest_mac and (established_identity_changed or oui_shifted):
             key = f"shadow_device:identity_integrity:{ip}:{latest_mac}"
             if _is_cooled_down(key, "shadow_device"):
@@ -588,21 +587,21 @@ def check_shadow_devices(db) -> list[dict]:
                 # Name the specific prior MAC that drove the alert (a known
                 # device for an identity change, the OUI-shifted MAC otherwise).
                 if established_identity_changed:
-                    prior_mac = next((mac for mac, dev in older_macs.items() if dev.is_known), "")
+                    prior_mac = next((mac for mac, dev in older_macs.items() if dev and dev.is_known), "")
                 else:
                     latest_oui = _oui_prefix(latest_mac)
                     prior_mac = next((mac for mac in older_macs if _oui_prefix(mac) and _oui_prefix(mac) != latest_oui), "")
                 # Escalate to critical when a known device's identity is on either
                 # side of the change — an unrecognized-to-unrecognized OUI shift
                 # stays a warning.
-                involves_known = established_identity_changed or latest_row.device.is_known
+                involves_known = established_identity_changed or bool(latest_row and latest_row.device and latest_row.device.is_known)
                 level = "critical" if involves_known else "warning"
                 prior_vendor = (lookup_vendor(prior_mac) or "unknown") if prior_mac else "unknown"
                 latest_vendor = lookup_vendor(latest_mac) or "unknown"
                 events.append({
                     "type": "shadow_device",
                     "ip": ip,
-                    "device_id": latest_row.device_id,
+                    "device_id": latest_row.device_id if latest_row else None,
                     "level": level,
                     "title": f"Identity integrity alert — {ip}",
                     "body": (
@@ -618,13 +617,13 @@ def check_shadow_devices(db) -> list[dict]:
 
         macs: dict[str, Device] = {}
         for sd in rows:
-            mac = (sd.device.mac or "").lower()
-            if mac:
+            if sd.device and sd.device.mac:
+                mac = sd.device.mac.lower()
                 macs[mac] = sd.device
         if len(macs) < 3:
             continue
         local_count = sum(1 for mac in macs if _is_locally_administered_mac(mac))
-        unknown_count = sum(1 for dev in macs.values() if not dev.is_known)
+        unknown_count = sum(1 for dev in macs.values() if dev and not dev.is_known)
         if local_count < 2 and unknown_count < 3:
             continue
         key = f"shadow_device:mac_rotation:{ip}"
