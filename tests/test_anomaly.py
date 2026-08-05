@@ -479,6 +479,27 @@ class TestShadowDevices(unittest.TestCase):
         self.assertEqual(len(integrity), 1)
         self.assertIn("established device identity changed", integrity[0]["body"])
 
+    def test_delayed_import_of_older_scan_is_not_treated_as_current(self):
+        # Import order is not scan order: an older result may be persisted only
+        # after a newer scan has already completed.
+        now = datetime.now(timezone.utc)
+        current = Scan(started_at=now - timedelta(minutes=5), status="complete")
+        delayed_old = Scan(started_at=now - timedelta(minutes=20), status="complete")
+        known = Device(mac="00:11:22:33:44:55", is_known=True)
+        prior = Device(mac="00:11:22:aa:bb:cc", is_known=False)
+        self.session.add_all([current, known, delayed_old, prior])
+        self.session.flush()
+        self.session.add_all([
+            ScanDevice(scan_id=current.id, device_id=known.id, ip="192.168.1.105"),
+            ScanDevice(scan_id=delayed_old.id, device_id=prior.id, ip="192.168.1.105"),
+        ])
+        self.session.commit()
+
+        events = anomaly.check_shadow_devices(self.session)
+
+        integrity = [event for event in events if "Identity integrity" in event["title"]]
+        self.assertEqual(integrity, [])
+
     def test_identity_integrity_cooldown(self):
         # Verify that identity integrity alert respects the cooldown logic
         first, latest = self._scan(20), self._scan(5)
