@@ -456,7 +456,9 @@ def check_shadow_devices(db) -> list[dict]:
     latest = (
         db.query(Scan)
         .filter(Scan.status == "complete")
-        .order_by(Scan.id.desc())
+        # Scan rows can be imported after their recorded start time, so IDs do
+        # not reliably describe which scan represents the current network.
+        .order_by(Scan.started_at.desc(), Scan.id.desc())
         .first()
     )
     if not latest or not latest.started_at:
