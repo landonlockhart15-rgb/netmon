@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 
 LOG_MAX_ROWS  = 10_000
 LOG_KEEP_ROWS =  7_500
+# Never evicted by the row cap: outage/reboot history (and autoheal's daily
+# reboot cap) would otherwise be flushed out by high-volume DNS entries.
+LOG_PROTECTED_CATEGORIES = ("autoheal",)
 
 
 def write_log(
@@ -79,7 +82,10 @@ def write_log(
                 .scalar()
             )
             if cutoff_id:
-                db.query(ActivityLog).filter(ActivityLog.id < cutoff_id).delete()
+                db.query(ActivityLog).filter(
+                    ActivityLog.id < cutoff_id,
+                    ActivityLog.category.notin_(LOG_PROTECTED_CATEGORIES),
+                ).delete(synchronize_session=False)
                 db.commit()
 
         return new_id

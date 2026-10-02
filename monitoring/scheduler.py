@@ -909,6 +909,36 @@ async def autoheal_loop() -> None:
             await asyncio.sleep(30)
 
 
+# ── External heartbeat (dead-man's switch) ────────────────────────────────────
+
+HEARTBEAT_INTERVAL_S = 60
+
+
+async def heartbeat_loop() -> None:
+    """
+    Ping HEARTBEAT_URL every minute so an external service can alert the phone
+    in real time when the pings stop. Deliberately ignores guest mode and the
+    NetMon enable switch: it's a liveness signal for the whole box.
+    """
+    from monitoring.heartbeat import ping
+    loop = asyncio.get_running_loop()
+    await asyncio.sleep(STARTUP_DELAY_S)
+
+    while True:
+        try:
+            await loop.run_in_executor(_executor, ping)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            print(f"[heartbeat] Loop error: {exc}")
+
+        try:
+            await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+        except asyncio.CancelledError:
+            print("[heartbeat] Scheduler cancelled — shutting down.")
+            break
+
+
 # ── Anomaly detection loop ────────────────────────────────────────────────────
 
 def _run_anomaly_checks() -> None:
@@ -1793,16 +1823,24 @@ def _run_log_cleanup() -> None:
             ActivityLog.created_at < dns_cutoff,
         ).delete(synchronize_session=False)
 
-        # All other entries older than 30 days
+        # All other entries older than 30 days (outage/reboot history excepted)
         gen_cutoff = now - timedelta(days=30)
         gen_deleted = db.query(ActivityLog).filter(
-            ActivityLog.category != "dns",
+            ActivityLog.category.notin_(("dns", "autoheal")),
             ActivityLog.created_at < gen_cutoff,
         ).delete(synchronize_session=False)
 
+        # Outage/reboot history: low volume, useful long-term — keep 1 year
+        heal_cutoff = now - timedelta(days=365)
+        heal_deleted = db.query(ActivityLog).filter(
+            ActivityLog.category == "autoheal",
+            ActivityLog.created_at < heal_cutoff,
+        ).delete(synchronize_session=False)
+
         db.commit()
-        if dns_deleted or gen_deleted:
-            print(f"[cleanup] Pruned logs: {dns_deleted} DNS entries (>7d), {gen_deleted} general entries (>30d)")
+        if dns_deleted or gen_deleted or heal_deleted:
+            print(f"[cleanup] Pruned logs: {dns_deleted} DNS entries (>7d), {gen_deleted} general entries (>30d), "
+                  f"{heal_deleted} autoheal entries (>365d)")
     except Exception as exc:
         print(f"[cleanup] Log cleanup error: {exc}")
     finally:

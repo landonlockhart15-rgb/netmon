@@ -114,7 +114,7 @@ async def lifespan(app: FastAPI):
         anomaly_loop, command_poll_loop, autonomous_report_loop,
         log_cleanup_loop, dns_health_loop, port_refresh_loop,
         ssl_cert_scan_loop, doh_leak_loop, deep_scan_ai_loop, hunt_loop,
-        autoheal_loop, active_discovery_loop,
+        autoheal_loop, active_discovery_loop, heartbeat_loop,
     )
     health_task    = asyncio.create_task(health_check_loop())
     traffic_task   = asyncio.create_task(traffic_analysis_loop())
@@ -131,7 +131,8 @@ async def lifespan(app: FastAPI):
     hunt_task       = asyncio.create_task(hunt_loop())
     autoheal_task   = asyncio.create_task(autoheal_loop())
     active_discovery_task = asyncio.create_task(active_discovery_loop())
-    print("[main] Schedulers started: health, traffic, auto-scan, anomaly, command, report, log-cleanup, dns-health, port-refresh, ssl-cert, doh-leak, deep-scan-ai, hunt, autoheal, active-discovery.")
+    heartbeat_task  = asyncio.create_task(heartbeat_loop())
+    print("[main] Schedulers started: health, traffic, auto-scan, anomaly, command, report, log-cleanup, dns-health, port-refresh, ssl-cert, doh-leak, deep-scan-ai, hunt, autoheal, active-discovery, heartbeat.")
 
     # Auto-resume capture if it was enabled before the server restarted
     _maybe_resume_capture()
@@ -206,7 +207,7 @@ async def lifespan(app: FastAPI):
     for task in (health_task, traffic_task, auto_scan_task, anomaly_task,
                  command_task, report_task, cleanup_task, dns_health_task,
                  port_refresh_task, ssl_cert_task, doh_task, deep_ai_task,
-                 hunt_task, autoheal_task, active_discovery_task):
+                 hunt_task, autoheal_task, active_discovery_task, heartbeat_task):
         task.cancel()
         try:
             await task
