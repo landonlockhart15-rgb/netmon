@@ -258,6 +258,7 @@ def alert(
     tags: list[str] | None = None,
     actions: list[dict] | None = None,
     force_push: bool = False,
+    notification_class: str | None = None,
 ) -> None:
     """
     Send a notification through all enabled channels.
@@ -273,16 +274,22 @@ def alert(
     db = SessionLocal()
     try:
         try:
-            row = db.query(Setting).filter(Setting.key == "ntfy_min_level").first()
-            min_level = row.value if (row and row.value) else "critical"
+            rows = db.query(Setting).filter(
+                Setting.key.in_(("ntfy_min_level", "ntfy_outage_only"))
+            ).all()
+            settings = {row.key: row.value for row in rows}
+            min_level = settings.get("ntfy_min_level") or "critical"
+            outage_only = (settings.get("ntfy_outage_only") or "false").lower() == "true"
         except Exception:
             min_level = "critical"
+            outage_only = False
     finally:
         db.close()
 
+    allowed_class = not outage_only or notification_class == "internet_outage"
     threshold_met = _LEVEL_RANK.get(level, 0) >= _LEVEL_RANK.get(min_level, 3)
-    if force_push or threshold_met:
+    if allowed_class and (force_push or threshold_met):
         send_ntfy(title, body, level=level, tags=tags, actions=actions)
 
-    if level in ("warning", "critical", "threat", "action"):
+    if allowed_class and level in ("warning", "critical", "threat", "action"):
         send_email(title, body)

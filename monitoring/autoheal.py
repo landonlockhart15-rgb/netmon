@@ -910,7 +910,13 @@ def _emit(event: str, level: str, summary: str, detail: dict, notify: bool) -> N
             from monitoring.notifier import alert
             # force_push so uptime events reach the phone regardless of min-level.
             # (Outage pushes may only land after connectivity returns — expected.)
-            alert(f"NetMon Uptime Guardian", summary, level=level, force_push=True)
+            alert(
+                "NetMon Uptime Guardian",
+                summary,
+                level=level,
+                force_push=True,
+                notification_class="internet_outage",
+            )
         except Exception as exc:
             print(f"[autoheal] notify failed: {exc}")
 
